@@ -466,6 +466,7 @@ class CamForm : Form
     }
     void PtzStop()
     {
+        PulseOff();
         if (!ptzOn) return;
         ptzOn = false;
         long lg = login; int ch = ptzCh; uint cmd = ptzCmd; int p1 = ptzP1, p2 = ptzP2;
@@ -478,13 +479,37 @@ class CamForm : Form
         if (C("ptz_invertir_pan", "0") == "1") dx = -dx;
         double ang = Math.Atan2(-dy, dx) * 180 / Math.PI;   // 0 = right, 90 = up
         int sector = (int)Math.Round(((ang + 360) % 360) / 45) % 8;
-        int speed = Math.Max(1, Math.Min(8, (int)(Math.Sqrt(dx * dx + dy * dy) / 40)));
-        speed = Math.Max(1, (int)Math.Round(speed * int.Parse(C("ptz_velocidad", "100")) / 100.0));
+        int speed0 = Math.Max(1, Math.Min(8, (int)(Math.Sqrt(dx * dx + dy * dy) / 40)));
+        double want = speed0 * int.Parse(C("ptz_velocidad", "100")) / 100.0;   // may be below 1, the slowest real speed
+        int speed = Math.Max(1, (int)Math.Round(want));
         uint[] cmds = { 3, 0x21, 0, 0x20, 2, 0x22, 1, 0x23 };   // right, up-right, up, up-left, left, down-left, down, down-right
         uint cmd = cmds[sector];
         bool diag = cmd >= 0x20;
-        PtzStart(ch, cmd, diag ? speed : 0, speed);
+        if (want >= 1) { PulseOff(); PtzStart(ch, cmd, diag ? speed : 0, speed); return; }
+        // Slower than speed 1: move at speed 1 in short pulses (on for want x 400 ms of every 400 ms, at least 60 ms).
+        if (ptzOn) PtzStop();
+        pulseCh = ch; pulseCmd = cmd; pulseOnMs = Math.Max(60, (int)(want * 400));
+        if (pulseThread == null)
+        {
+            pulseRun = true;
+            pulseThread = new Thread(() =>
+            {
+                long lg = login;
+                while (pulseRun)
+                {
+                    int c = pulseCh; uint k = pulseCmd; int on = pulseOnMs; int p1 = k >= 0x20 ? 1 : 0;
+                    Native.CLIENT_DHPTZControlEx2(lg, c, k, p1, 1, 0, false, IntPtr.Zero);
+                    Thread.Sleep(on);
+                    Native.CLIENT_DHPTZControlEx2(lg, c, k, p1, 1, 0, true, IntPtr.Zero);
+                    Thread.Sleep(Math.Max(0, 400 - on));
+                }
+            }) { IsBackground = true };
+            pulseThread.Start();
+            Log("ptz canal " + ch + " pulsos de " + pulseOnMs + " ms cada 400 ms");
+        }
     }
+    volatile bool pulseRun; volatile int pulseCh, pulseOnMs; volatile uint pulseCmd; Thread pulseThread;
+    void PulseOff() { pulseRun = false; pulseThread = null; }
 
     // Click on a camera: show it alone, full screen. Click again: back to all cameras.
     void ClickAt(Point p)
