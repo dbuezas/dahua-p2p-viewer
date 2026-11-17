@@ -22,3 +22,5 @@ dividir=
 ; dahua=C:\Program Files\SmartPSSLite   folder with P2PDll.dll and dhnetsdk.dll
 ; Phone remote (web page for the local network). 0 = off.
 puerto_web=8080
+; Channels with a camera that can move (PTZ), e.g. ptz=2. Drag on it (full screen) moves it.
+ptz=

@@ -136,7 +136,7 @@ class CamForm : Form
                 pressOk = Win.GetAncestor(Win.WindowFromPoint(Cursor.Position), 2) == Handle;   // 2 = the top window
                 pressAt = pos; dragging = false;
                 dragFrom = pressOk && big == null ? TileAt(pos) : null;
-                ptzTile = pressOk && big != null && TileAt(pos) == big ? big : null;
+                ptzTile = pressOk && big != null && TileAt(pos) == big && CanPtz(big.Ch) ? big : null;
             }
             else if (down && ptzTile != null)
             {
@@ -166,7 +166,7 @@ class CamForm : Form
             // + / - held down: zoom the full screen PTZ camera in / out.
             bool zin = (Win.GetAsyncKeyState(0x6B) & 0x8000) != 0 || (Win.GetAsyncKeyState(0xBB) & 0x8000) != 0;
             bool zout = (Win.GetAsyncKeyState(0x6D) & 0x8000) != 0 || (Win.GetAsyncKeyState(0xBD) & 0x8000) != 0;
-            int zoom = big == null ? 0 : zin ? 4 : zout ? 5 : 0;
+            int zoom = big == null || !CanPtz(big.Ch) ? 0 : zin ? 4 : zout ? 5 : 0;
             if (zoom != zoomWas) { if (zoomWas != 0) PtzStop(); if (zoom != 0) PtzStart(big.Ch, (uint)zoom, 0, 4); zoomWas = zoom; }
             bool esc = (Win.GetAsyncKeyState(0x1B) & 0x8000) != 0;
             if (esc && !escWas) { if (big != null) { big = null; DoLayout(); } else Close(); }
@@ -214,6 +214,10 @@ class CamForm : Form
             refresh.Start();
         }
     }
+
+    // Channels whose camera can really be moved (PTZ). The recorder sends every PTZ command to its one PTZ camera,
+    // whatever channel is asked, so only these channels get commands. Setting "ptz" in camaras.ini, e.g. ptz=2.
+    bool CanPtz(int ch) { foreach (var c in C("ptz", "").Split(',')) { int n; if (int.TryParse(c.Trim(), out n) && n == ch) return true; } return false; }
 
     // Channels whose picture is two cameras stacked (top + bottom). Default: channel 2 ("Device1").
     HashSet<int> SplitChannels()
@@ -440,7 +444,7 @@ class CamForm : Form
         if (ptzOn) PtzStop();
         ptzOn = true; ptzCh = ch; ptzCmd = cmd; ptzP1 = p1; ptzP2 = p2;
         long lg = login;
-        PtzSend(() => { bool ok = Native.CLIENT_DHPTZControlEx2(lg, ch, cmd, p1, p2, 0, false, IntPtr.Zero); if (!ok) Log("ptz canal " + ch + " cmd " + cmd + " error 0x" + Native.CLIENT_GetLastError().ToString("X")); });
+        PtzSend(() => { bool ok = Native.CLIENT_DHPTZControlEx2(lg, ch, cmd, p1, p2, 0, false, IntPtr.Zero); Log("ptz canal " + ch + " cmd 0x" + cmd.ToString("X") + " vel " + p1 + "/" + p2 + (ok ? " ok" : " error 0x" + Native.CLIENT_GetLastError().ToString("X"))); });
     }
     void PtzStop()
     {
@@ -523,7 +527,7 @@ class CamForm : Form
     void UpdateState()
     {
         var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"cams\":[");
-        for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"k\":\"" + Key(tiles[k]) + "\",\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + "}");
+        for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"k\":\"" + Key(tiles[k]) + "\",\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + ",\"ptz\":" + (CanPtz(tiles[k].Ch) ? "true" : "false") + "}");
         stateJson = sb.Append("]}").ToString();
         var ph = new long[tiles.Count]; var hv = new int[tiles.Count];
         for (int k = 0; k < tiles.Count; k++) { ph[k] = tiles[k].Play; hv[k] = tiles[k].Half; }
@@ -719,6 +723,11 @@ class CamForm : Form
             if (p[0] == "big") { if (big != t) { big = t; DoLayout(); } }
             else if (p[0] == "hd" && t != null && p.Length > 2) SetHd(t, p[2] == "1");
             else if (p[0] == "order" && p.Length > 1) SetOrder(p[1].Split(','));
+            // Phone joystick on camera i: "ptz i dx dy" (drag in phone pixels), "ptzstop".
+            else if (p[0] == "ptz" && t != null && CanPtz(t.Ch) && p.Length > 3) { int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy); PtzDrag(t.Ch, dx * 2, dy * 2); }
+            else if (p[0] == "ptzstop") PtzStop();
+            // Test: "ptzraw channel cmd speed" moves a recorder channel directly ("ptzstop" stops it).
+            else if (p[0] == "ptzraw" && p.Length > 3) { int ch, pc, sp; int.TryParse(p[1], out ch); int.TryParse(p[2], out pc); int.TryParse(p[3], out sp); PtzStart(ch, (uint)pc, pc >= 0x20 ? sp : 0, sp); }
         });
     }
 
@@ -818,7 +827,7 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 .hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
 </style></head><body>
 <header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
-<p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
+<p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar. Camara movil en grande: arrastrar sobre ella la mueve.</p>
 <div id=grid></div><img id=ghost>
 <script>
 var st={big:-1,cams:[]};
@@ -850,12 +859,19 @@ function setBig(i){st.big=i;draw(st);cmd('big '+i)}
 var drag=null,ghost=document.getElementById('ghost');
 function camAt(x,y){var e=document.elementFromPoint(x,y);while(e&&!(e.classList&&e.classList.contains('cam')))e=e.parentNode;return e}
 document.addEventListener('pointerdown',function(e){if(!e.target.dataset||e.target.dataset.i==null)return;e.preventDefault();
- drag={i:+e.target.dataset.i,x:e.clientX,y:e.clientY,moved:false,el:e.target.parentNode,to:null};});
-document.addEventListener('pointermove',function(e){if(!drag)return;
+ var i=+e.target.dataset.i,c=st.cams[i];
+ drag={i:i,x:e.clientX,y:e.clientY,moved:false,el:e.target.parentNode,to:null,ptz:i==st.big&&c&&c.ptz};});
+// Joystick on the big PTZ camera: send the drag (at most every 150 ms), stop when the finger lifts.
+var lastPtz=0;
+document.addEventListener('pointermove',function(e){if(!drag||!drag.ptz)return;var dx=e.clientX-drag.x,dy=e.clientY-drag.y;
+ if(!drag.moved&&Math.abs(dx)+Math.abs(dy)>15)drag.moved=true;
+ if(drag.moved&&Date.now()-lastPtz>150){lastPtz=Date.now();cmd('ptz '+drag.i+' '+Math.round(dx)+' '+Math.round(dy))}});
+document.addEventListener('pointermove',function(e){if(!drag||drag.ptz)return;
  if(!drag.moved&&Math.abs(e.clientX-drag.x)+Math.abs(e.clientY-drag.y)>15){drag.moved=true;drag.el.classList.add('drag');ghost.src=drag.el.querySelector('img').src;ghost.style.display='block'}
  if(!drag.moved)return;ghost.style.left=(e.clientX-70)+'px';ghost.style.top=(e.clientY-40)+'px';
  var c=camAt(e.clientX,e.clientY);if(drag.to&&drag.to!=c)drag.to.classList.remove('target');drag.to=c&&c!=drag.el?c:null;if(drag.to)drag.to.classList.add('target')});
 function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='none';d.el.classList.remove('drag');if(d.to)d.to.classList.remove('target');
+ if(d.ptz&&d.moved){cmd('ptzstop');return}
  if(!d.moved){setBig(st.big==d.i?-1:d.i);return}
  if(d.to){var j=[].indexOf.call(d.to.parentNode.children,d.to),a=d.el.querySelector('img'),b=d.to.querySelector('img'),t=a.src;a.src=b.src;b.src=t;
   var x=st.cams[d.i];st.cams[d.i]=st.cams[j];st.cams[j]=x;draw(st);cmd('order '+st.cams.map(function(c){return c.k}).join(','))}}
