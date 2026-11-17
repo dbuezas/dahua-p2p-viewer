@@ -18,8 +18,9 @@ This app shows the cameras in about 10 seconds.
   shows on HD cameras. The choice is saved in `hd.txt`. Too many HD cameras at once can hit the NVR's stream limit.
 - Drag a camera onto another one: they swap places. The order is saved in `orden.txt`.
 - Phone remote: a small web page on port 8080 (`puerto_web` in `camaras.ini`, 0 = off), only for the local network.
-  It shows a picture of each camera: tap one to make it big (tap again for all), and an HD button per camera.
-  The address shows on screen for 20 s when the app starts.
+  It shows a picture of each camera: tap one to make it big (tap again for all), drag one onto another to swap
+  them, and an HD button per camera.
+  Its address stays on screen, small, in the bottom right corner.
 - Only one copy runs. Opening it again brings the running copy to the front.
 - Uses as much of the screen as possible without stretching the pictures: it tries normal grids
   and rows with different counts (for example 5 cameras = 2 big on top + 3 smaller below) and keeps the bigger one.

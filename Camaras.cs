@@ -168,16 +168,20 @@ class CamForm : Form
         Resize += (s, e) => DoLayout();
         Shown += (s, e) => new Thread(Connect) { IsBackground = true }.Start();
         Shown += (s, e) => StartRemote();
-        // Show the address of the phone remote for 20 s (the PC's address can change).
+        // Show the address of the phone remote on screen (it can change, so it is refreshed).
         var ips = LocalIps();
         if (ips.Count > 0 && C("puerto_web", "8080") != "0")
         {
             var addr = new Label { Text = "Control desde el telefono: http://" + ips[0] + ":" + C("puerto_web", "8080"), ForeColor = Color.White, BackColor = Color.FromArgb(40, 40, 40), AutoSize = true, Font = new Font("Segoe UI", 12) };
+            addr.Font = new Font("Segoe UI", 9); addr.ForeColor = Color.Silver;
             Controls.Add(addr);
-            Shown += (s, e) => { addr.Location = new Point(ClientSize.Width - addr.Width - 20, ClientSize.Height - addr.Height - 20); addr.BringToFront(); };
-            var hide = new System.Windows.Forms.Timer { Interval = 20000 };
-            hide.Tick += (s, e) => { addr.Visible = false; hide.Stop(); };
-            hide.Start();
+            addrLabel = addr;
+            Shown += (s, e) => PlaceAddr();
+            Resize += (s, e) => PlaceAddr();
+            // The PC's address can change (DHCP): check it every 30 s.
+            var refresh = new System.Windows.Forms.Timer { Interval = 30000 };
+            refresh.Tick += (s, e) => { var l = LocalIps(); if (l.Count > 0) { addr.Text = "Control desde el telefono: http://" + l[0] + ":" + C("puerto_web", "8080"); PlaceAddr(); } };
+            refresh.Start();
         }
     }
 
@@ -291,6 +295,7 @@ class CamForm : Form
             if (t.Tag.Font.Size != (small ? 8f : 18f)) t.Tag.Font = new Font("Segoe UI", small ? 8f : 18f, FontStyle.Bold);
             t.Tag.Location = small ? new Point(4, 4) : new Point(24, 24);
             if (small) t.Box.BringToFront();   // small pictures float over the big one
+            if (addrLabel != null) addrLabel.BringToFront();
             int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
             // A half square holds a video panel twice as tall, shifted so only its half shows.
             t.Video.Bounds = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
@@ -408,6 +413,15 @@ class CamForm : Form
 
     // ---- Remote control for a phone on the same network: a tiny web page (port `puerto_web`, default 8080). ----
     // Only answers addresses of the local network. Tap a camera to make it big, tap again for all; HD button per camera.
+    Label addrLabel;
+    // The phone remote address stays on screen, small, in the bottom right corner, over the video.
+    void PlaceAddr()
+    {
+        if (addrLabel == null) return;
+        addrLabel.Location = new Point(ClientSize.Width - addrLabel.Width - 6, ClientSize.Height - addrLabel.Height - 4);
+        addrLabel.BringToFront();
+    }
+
     void ToggleHd(Tile t)
     {
         int ch = t.Ch;
@@ -469,7 +483,8 @@ class CamForm : Form
                 string path = parts.Length > 1 ? parts[1] : "/";
                 string q = path.Contains("?") ? path.Substring(path.IndexOf('?') + 1) : "";
                 path = path.Split('?')[0];
-                int i = -1; foreach (var kv in q.Split('&')) if (kv.StartsWith("i=")) int.TryParse(kv.Substring(2), out i);
+                int i = -1, j = -1;
+                foreach (var kv in q.Split('&')) { if (kv.StartsWith("i=")) int.TryParse(kv.Substring(2), out i); if (kv.StartsWith("j=")) int.TryParse(kv.Substring(2), out j); }
 
                 if (path == "/") { Send(st, "200 OK", "text/html; charset=utf-8", Encoding.UTF8.GetBytes(Page)); return; }
                 if (path.StartsWith("/snap")) { var jpg = Snapshot(i); if (jpg == null) Send(st, "404 Not Found", "text/plain", new byte[0]); else Send(st, "200 OK", "image/jpeg", jpg); return; }
@@ -480,6 +495,7 @@ class CamForm : Form
                     if (path == "/api/big" && t != null) { big = big == t ? null : t; DoLayout(); }
                     else if (path == "/api/all") { big = null; DoLayout(); }
                     else if (path == "/api/hd" && t != null) ToggleHd(t);
+                    else if (path == "/api/swap" && t != null && j >= 0 && j < tiles.Count && j != i) Swap(t, tiles[j]);
                     var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"cams\":[");
                     for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + "}");
                     json = sb.Append("]}").ToString();
@@ -542,20 +558,37 @@ button{font-size:16px;padding:10px 14px;border:0;border-radius:8px;background:#3
 #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;padding:10px}
 .cam{background:#000;border-radius:8px;overflow:hidden;border:3px solid transparent}
 .cam.big{border-color:#fc0}
-.cam img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#222}
+.cam img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#222;touch-action:none;-webkit-user-drag:none;user-select:none}
+.cam.target{border-color:#4af}.cam.drag{opacity:.5}
+#ghost{position:fixed;width:140px;pointer-events:none;opacity:.8;border-radius:6px;display:none;z-index:9}
+p.tip{color:#888;font-size:13px;margin:0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px}
 .hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
 </style></head><body>
 <header><h1>Camaras</h1><button onclick=""act('/api/all')"">Ver todas</button></header>
-<div id=grid></div>
+<p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
+<div id=grid></div><img id=ghost>
 <script>
 var st={big:-1,cams:[]};
 function act(u){fetch(u,{cache:'no-store'}).then(r=>r.json()).then(draw)}
 function draw(s){st=s;var g=document.getElementById('grid');
  while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
-  d.innerHTML='<img onclick=""act(\'/api/big?i='+i+'\')""><div class=row><span>Camara '+(i+1)+'</span><button class=hd onclick=""act(\'/api/hd?i='+i+'\')"">HD</button></div>';g.appendChild(d)}
+  d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd onclick=""act(\'/api/hd?i='+i+'\')"">HD</button></div>';g.appendChild(d)}
  while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
  s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd)})}
+// Tap = big; drag onto another camera = swap (pointer events work with fingers and mouse).
+var drag=null,ghost=document.getElementById('ghost');
+function camAt(x,y){var e=document.elementFromPoint(x,y);while(e&&!(e.classList&&e.classList.contains('cam')))e=e.parentNode;return e}
+document.addEventListener('pointerdown',function(e){if(!e.target.dataset||e.target.dataset.i==null)return;e.preventDefault();
+ drag={i:+e.target.dataset.i,x:e.clientX,y:e.clientY,moved:false,el:e.target.parentNode,to:null};});
+document.addEventListener('pointermove',function(e){if(!drag)return;
+ if(!drag.moved&&Math.abs(e.clientX-drag.x)+Math.abs(e.clientY-drag.y)>15){drag.moved=true;drag.el.classList.add('drag');ghost.src=drag.el.querySelector('img').src;ghost.style.display='block'}
+ if(!drag.moved)return;ghost.style.left=(e.clientX-70)+'px';ghost.style.top=(e.clientY-40)+'px';
+ var c=camAt(e.clientX,e.clientY);if(drag.to&&drag.to!=c)drag.to.classList.remove('target');drag.to=c&&c!=drag.el?c:null;if(drag.to)drag.to.classList.add('target')});
+function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='none';d.el.classList.remove('drag');if(d.to)d.to.classList.remove('target');
+ if(!d.moved){act('/api/big?i='+d.i);return}
+ if(d.to){var j=[].indexOf.call(d.to.parentNode.children,d.to),a=d.el.querySelector('img'),b=d.to.querySelector('img'),t=a.src;a.src=b.src;b.src=t;act('/api/swap?i='+d.i+'&j='+j)}}
+document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
 function snaps(){[].forEach.call(document.querySelectorAll('.cam img'),function(im,i){var n=new Image();n.onload=function(){im.src=n.src};n.src='/snap?i='+i+'&t='+Date.now()})}
 act('/api/state');setInterval(function(){act('/api/state')},3000);snaps();setInterval(snaps,4000);
 </script></body></html>";
