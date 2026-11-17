@@ -21,7 +21,7 @@ This app shows the cameras in about 10 seconds.
   One WebSocket connection carries everything (opening new connections is what fails on a weak Wi-Fi).
   It shows a picture of each camera: tap one to make it big (tap again for all), drag one onto another to swap
   them, and an HD button per camera.
-  Its address stays on screen, small, in the bottom right corner.
+  Its address and a QR code of it stay on screen in the bottom right corner (scan it with the phone).
 - While the app is in front, the PC does not sleep and the screen stays on.
 - Only one copy runs. Opening it again brings the running copy to the front.
 - Uses as much of the screen as possible without stretching the pictures: it tries normal grids

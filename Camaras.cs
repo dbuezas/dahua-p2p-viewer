@@ -183,11 +183,15 @@ class CamForm : Form
             addr.Font = new Font("Segoe UI", 9); addr.ForeColor = Color.Silver;
             Controls.Add(addr);
             addrLabel = addr;
+            // QR code of the same address, above it: point the phone's camera at it to open the remote.
+            qrBox = new PictureBox { SizeMode = PictureBoxSizeMode.AutoSize };
+            Controls.Add(qrBox);
+            SetQr("http://" + ips[0] + ":" + C("puerto_web", "8080"));
             Shown += (s, e) => PlaceAddr();
             Resize += (s, e) => PlaceAddr();
             // The PC's address can change (DHCP): check it every 30 s.
             var refresh = new System.Windows.Forms.Timer { Interval = 30000 };
-            refresh.Tick += (s, e) => { var l = LocalIps(); if (l.Count > 0) { addr.Text = "Control desde el telefono: http://" + l[0] + ":" + C("puerto_web", "8080"); PlaceAddr(); } };
+            refresh.Tick += (s, e) => { var l = LocalIps(); if (l.Count > 0) { addr.Text = "Control desde el telefono: http://" + l[0] + ":" + C("puerto_web", "8080"); SetQr("http://" + l[0] + ":" + C("puerto_web", "8080")); PlaceAddr(); } };
             refresh.Start();
         }
     }
@@ -305,6 +309,7 @@ class CamForm : Form
             t.Tag.Location = small ? new Point(4, 4) : new Point(24, 24);
             if (small) t.Box.BringToFront();   // small pictures float over the big one
             if (addrLabel != null) addrLabel.BringToFront();
+            if (qrBox != null) qrBox.BringToFront();
             int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
             // A half square holds a video panel twice as tall, shifted so only its half shows.
             t.Video.Bounds = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
@@ -438,6 +443,17 @@ class CamForm : Form
         if (addrLabel == null) return;
         addrLabel.Location = new Point(ClientSize.Width - addrLabel.Width - 6, ClientSize.Height - addrLabel.Height - 4);
         addrLabel.BringToFront();
+        if (qrBox != null) { qrBox.Location = new Point(ClientSize.Width - qrBox.Width - 6, addrLabel.Top - qrBox.Height - 4); qrBox.BringToFront(); }
+    }
+
+    PictureBox qrBox;
+    string qrText;
+    void SetQr(string text)
+    {
+        if (qrBox == null || text == qrText) return;
+        qrText = text;
+        try { var old = qrBox.Image; qrBox.Image = Qr.ToBitmap(Qr.Encode(text), 4); if (old != null) old.Dispose(); }
+        catch (Exception ex) { Log("qr: " + ex.Message); }
     }
 
     void ToggleHd(Tile t) { SetHd(t, !hd.Contains(t.Ch)); }
@@ -963,8 +979,10 @@ connect();
     }
 
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        // Test: Camaras.exe --qr file.png text   (writes the QR as an image and exits)
+        if (args.Length == 3 && args[0] == "--qr") { Qr.ToBitmap(Qr.Encode(args[2]), 8).Save(args[1], System.Drawing.Imaging.ImageFormat.Png); return; }
         // Draw in real screen pixels. Without this, with Windows zoom (e.g. 150%) Windows draws the video smaller
         // and then stretches the whole window up, which makes every picture blurry.
         Win.SetProcessDPIAware();
@@ -988,5 +1006,194 @@ connect();
         if (!EnsurePassword()) return;
         Application.Run(new CamForm());
         HardExit();
+    }
+}
+
+// Minimal QR code generator (byte mode, error correction level M, versions 1-6: up to 106 bytes).
+// Follows the QR standard (ISO 18004); same steps as Nayuki's public-domain-style reference implementation.
+static class Qr
+{
+    // Per version 1-6, level M: total codewords, EC codewords per block, number of blocks.
+    static readonly int[] Total = { 0, 26, 44, 70, 100, 134, 172 };
+    static readonly int[] EcLen = { 0, 10, 16, 26, 18, 24, 16 };
+    static readonly int[] Blocks = { 0, 1, 1, 1, 2, 2, 4 };
+
+    public static bool[,] Encode(string text)
+    {
+        byte[] data = Encoding.UTF8.GetBytes(text);
+        int ver = 1;
+        while (ver <= 6 && (Total[ver] - EcLen[ver] * Blocks[ver]) * 8 < 4 + 8 + data.Length * 8) ver++;
+        if (ver > 6) throw new ArgumentException("texto muy largo para el QR");
+        int dataCap = Total[ver] - EcLen[ver] * Blocks[ver];
+        // Bits: mode 0100 (bytes), 8-bit length, the bytes, terminator, then pad bytes.
+        var bits = new List<bool>();
+        Action<int, int> add = (v, n) => { for (int i = n - 1; i >= 0; i--) bits.Add(((v >> i) & 1) != 0); };
+        add(4, 4); add(data.Length, 8); foreach (var b in data) add(b, 8);
+        add(0, Math.Min(4, dataCap * 8 - bits.Count));
+        while (bits.Count % 8 != 0) bits.Add(false);
+        for (int pad = 0xEC; bits.Count < dataCap * 8; pad ^= 0xEC ^ 0x11) add(pad, 8);
+        var cw = new byte[dataCap];
+        for (int i = 0; i < bits.Count; i++) if (bits[i]) cw[i >> 3] |= (byte)(1 << (7 - (i & 7)));
+        // Error correction per block, then interleave.
+        int nb = Blocks[ver], ec = EcLen[ver], blen = dataCap / nb;
+        var div = RsDivisor(ec);
+        var dataBlocks = new List<byte[]>(); var ecBlocks = new List<byte[]>();
+        for (int b = 0; b < nb; b++)
+        {
+            var d = new byte[blen]; Array.Copy(cw, b * blen, d, 0, blen);
+            dataBlocks.Add(d); ecBlocks.Add(RsRemainder(d, div));
+        }
+        var all = new List<byte>();
+        for (int i = 0; i < blen; i++) foreach (var d in dataBlocks) all.Add(d[i]);
+        for (int i = 0; i < ec; i++) foreach (var e in ecBlocks) all.Add(e[i]);
+
+        int size = 17 + 4 * ver;
+        var m = new bool[size, size]; var fn = new bool[size, size];   // [y, x]
+        Action<int, int, bool> setF = (x, y, v) => { m[y, x] = v; fn[y, x] = true; };
+        // Timing patterns.
+        for (int i = 0; i < size; i++) { setF(6, i, i % 2 == 0); setF(i, 6, i % 2 == 0); }
+        // Finder patterns with separators.
+        foreach (var c in new[] { new[] { 3, 3 }, new[] { size - 4, 3 }, new[] { 3, size - 4 } })
+            for (int dy = -4; dy <= 4; dy++) for (int dx = -4; dx <= 4; dx++)
+            {
+                int x = c[0] + dx, y = c[1] + dy;
+                if (x < 0 || y < 0 || x >= size || y >= size) continue;
+                int dist = Math.Max(Math.Abs(dx), Math.Abs(dy));
+                setF(x, y, dist != 2 && dist != 4);
+            }
+        // Alignment pattern (versions 2-6 have one, at (pos, pos)).
+        if (ver >= 2)
+        {
+            int p = size - 7;
+            for (int dy = -2; dy <= 2; dy++) for (int dx = -2; dx <= 2; dx++) setF(p + dx, p + dy, Math.Max(Math.Abs(dx), Math.Abs(dy)) != 1);
+        }
+        // Reserve the format areas (filled later) and the dark module.
+        DrawFormat(m, fn, size, 0, setF);
+        // Data, in the zigzag order.
+        int bi = 0;
+        for (int right = size - 1; right >= 1; right -= 2)
+        {
+            if (right == 6) right = 5;
+            for (int vert = 0; vert < size; vert++)
+                for (int j = 0; j < 2; j++)
+                {
+                    int x = right - j; bool up = ((right + 1) & 2) == 0; int y = up ? size - 1 - vert : vert;
+                    if (!fn[y, x] && bi < all.Count * 8) { m[y, x] = ((all[bi >> 3] >> (7 - (bi & 7))) & 1) != 0; bi++; }
+                }
+        }
+        // Try the 8 masks, keep the one with the lowest penalty.
+        bool[,] best = null; int bestScore = int.MaxValue;
+        for (int mask = 0; mask < 8; mask++)
+        {
+            var t = (bool[,])m.Clone();
+            for (int y = 0; y < size; y++) for (int x = 0; x < size; x++)
+                if (!fn[y, x] && MaskBit(mask, x, y)) t[y, x] = !t[y, x];
+            Action<int, int, bool> setT = (x, y, v) => { t[y, x] = v; };
+            DrawFormat(t, fn, size, mask, setT);
+            int s = Penalty(t, size);
+            if (s < bestScore) { bestScore = s; best = t; }
+        }
+        return best;
+    }
+
+    static bool MaskBit(int mask, int x, int y)
+    {
+        switch (mask)
+        {
+            case 0: return (x + y) % 2 == 0;
+            case 1: return y % 2 == 0;
+            case 2: return x % 3 == 0;
+            case 3: return (x + y) % 3 == 0;
+            case 4: return (x / 3 + y / 2) % 2 == 0;
+            case 5: return x * y % 2 + x * y % 3 == 0;
+            case 6: return (x * y % 2 + x * y % 3) % 2 == 0;
+            default: return ((x + y) % 2 + x * y % 3) % 2 == 0;
+        }
+    }
+
+    // Format info: level M (bits 00) + mask, BCH protected, written twice; plus the dark module.
+    static void DrawFormat(bool[,] m, bool[,] fn, int size, int mask, Action<int, int, bool> set)
+    {
+        int data = (0 << 3) | mask, rem = data;
+        for (int i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >> 9) * 0x537);
+        int bits = ((data << 10) | rem) ^ 0x5412;
+        Func<int, bool> b = i => ((bits >> i) & 1) != 0;
+        for (int i = 0; i <= 5; i++) set(8, i, b(i));
+        set(8, 7, b(6)); set(8, 8, b(7)); set(7, 8, b(8));
+        for (int i = 9; i < 15; i++) set(14 - i, 8, b(i));
+        for (int i = 0; i < 8; i++) set(size - 1 - i, 8, b(i));
+        for (int i = 8; i < 15; i++) set(8, size - 15 + i, b(i));
+        set(8, size - 8, true);
+    }
+
+    // Standard penalty rules: runs of 5+, 2x2 blocks, finder-like patterns, dark/light balance.
+    static int Penalty(bool[,] m, int size)
+    {
+        int p = 0, dark = 0;
+        for (int pass = 0; pass < 2; pass++)
+            for (int a = 0; a < size; a++)
+            {
+                int run = 1;
+                for (int c = 1; c < size; c++)
+                {
+                    bool cur = pass == 0 ? m[a, c] : m[c, a], prev = pass == 0 ? m[a, c - 1] : m[c - 1, a];
+                    if (cur == prev) { run++; if (run == 5) p += 3; else if (run > 5) p++; } else run = 1;
+                }
+                for (int c = 0; c + 6 < size; c++)
+                {
+                    bool ok = true; bool[] pat = { true, false, true, true, true, false, true };
+                    for (int k = 0; k < 7 && ok; k++) ok = (pass == 0 ? m[a, c + k] : m[c + k, a]) == pat[k];
+                    if (ok) p += 40;
+                }
+            }
+        for (int y = 0; y < size; y++) for (int x = 0; x < size; x++)
+        {
+            if (m[y, x]) dark++;
+            if (x + 1 < size && y + 1 < size && m[y, x] == m[y, x + 1] && m[y, x] == m[y + 1, x] && m[y, x] == m[y + 1, x + 1]) p += 3;
+        }
+        p += Math.Abs(dark * 20 - size * size * 10) / (size * size) * 10;
+        return p;
+    }
+
+    static int Mul(int x, int y)
+    {
+        int z = 0;
+        for (int i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >> 7) * 0x11D); z ^= ((y >> i) & 1) * x; }
+        return z & 0xFF;
+    }
+    static byte[] RsDivisor(int degree)
+    {
+        var r = new byte[degree]; r[degree - 1] = 1; int root = 1;
+        for (int i = 0; i < degree; i++)
+        {
+            for (int j = 0; j < degree; j++) { r[j] = (byte)Mul(r[j], root); if (j + 1 < degree) r[j] ^= r[j + 1]; }
+            root = Mul(root, 2);
+        }
+        return r;
+    }
+    static byte[] RsRemainder(byte[] data, byte[] div)
+    {
+        var r = new byte[div.Length];
+        foreach (var b in data)
+        {
+            int f = b ^ r[0];
+            Array.Copy(r, 1, r, 0, r.Length - 1); r[r.Length - 1] = 0;
+            for (int i = 0; i < r.Length; i++) r[i] ^= (byte)Mul(div[i], f);
+        }
+        return r;
+    }
+
+    // Draws the code black on white with a quiet zone of 4 modules.
+    public static Bitmap ToBitmap(bool[,] q, int px)
+    {
+        int n = q.GetLength(0), side = (n + 8) * px;
+        var bmp = new Bitmap(side, side);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.Clear(Color.White);
+            for (int y = 0; y < n; y++) for (int x = 0; x < n; x++)
+                if (q[y, x]) g.FillRectangle(Brushes.Black, (x + 4) * px, (y + 4) * px, px, px);
+        }
+        return bmp;
     }
 }
