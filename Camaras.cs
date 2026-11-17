@@ -46,6 +46,10 @@ static class Native
     public delegate void RealDataCb(long lRealHandle, uint dwDataType, IntPtr pBuffer, uint dwBufSize, long param, IntPtr dwUser);
     [DllImport("dhnetsdk.dll")] public static extern bool CLIENT_SetRealDataCallBackEx2(long lRealHandle, RealDataCb cb, IntPtr dwUser, uint dwFlag);
     [DllImport("dhnetsdk.dll")] public static extern bool CLIENT_SetConnectTime(int nWaitTime, int nTryTimes);
+    // Moves a PTZ camera. Start with stop=false, stop the same command with stop=true.
+    // Commands: 0 up, 1 down, 2 left, 3 right, 4 zoom in, 5 zoom out, 0x20 up-left, 0x21 up-right, 0x22 down-left, 0x23 down-right.
+    // Speeds 1-8: p2 = speed (diagonals: p1 = vertical speed, p2 = horizontal speed).
+    [DllImport("dhnetsdk.dll")] public static extern bool CLIENT_DHPTZControlEx2(long lLoginID, int nChannelID, uint cmd, int p1, int p2, int p3, bool stop, IntPtr p4);
     // Saves the current picture of a live video to a file (format 1 = JPEG).
     [DllImport("dhnetsdk.dll", CharSet = CharSet.Ansi)] public static extern bool CLIENT_CapturePicture(long hPlayHandle, string fileName);
     [DllImport("dhnetsdk.dll", CharSet = CharSet.Ansi)] public static extern bool CLIENT_CapturePictureEx(long hPlayHandle, string fileName, int format);
@@ -115,6 +119,8 @@ class CamForm : Form
         // So read the mouse button and Esc directly, every 40 ms, while this app is in front.
         try { foreach (var c in File.ReadAllText(HdFile).Split(',')) { int ch; if (int.TryParse(c.Trim(), out ch)) hd.Add(ch); } } catch { }
         bool wasDown = false, rightWas = false, escWas = false, pressOk = false, dragging = false;
+        Tile ptzTile = null;
+        int zoomWas = 0;
         Point pressAt = Point.Empty;
         Tile dragFrom = null;
         for (int i = 0; i < 4; i++) { frame[i] = new Panel { BackColor = Color.Yellow, Visible = false }; Controls.Add(frame[i]); }
@@ -130,6 +136,13 @@ class CamForm : Form
                 pressOk = Win.GetAncestor(Win.WindowFromPoint(Cursor.Position), 2) == Handle;   // 2 = the top window
                 pressAt = pos; dragging = false;
                 dragFrom = pressOk && big == null ? TileAt(pos) : null;
+                ptzTile = pressOk && big != null && TileAt(pos) == big ? big : null;
+            }
+            else if (down && ptzTile != null)
+            {
+                // Full screen camera: dragging moves a PTZ camera like a joystick (direction and speed from the drag).
+                if (!dragging && (Math.Abs(pos.X - pressAt.X) > 20 || Math.Abs(pos.Y - pressAt.Y) > 20)) dragging = true;
+                if (dragging) PtzDrag(ptzTile.Ch, pos.X - pressAt.X, pos.Y - pressAt.Y);
             }
             else if (down && dragFrom != null)
             {
@@ -139,9 +152,10 @@ class CamForm : Form
             else if (!down && wasDown)
             {
                 ShowFrame(Rectangle.Empty);
-                if (dragging) { var to = TileAt(pos); if (to != null && to != dragFrom) Swap(dragFrom, to); }
+                if (ptzTile != null && dragging) PtzStop();
+                else if (dragging) { var to = TileAt(pos); if (to != null && to != dragFrom) Swap(dragFrom, to); }
                 else if (pressOk) ClickAt(pressAt);
-                dragFrom = null; dragging = false;
+                dragFrom = null; ptzTile = null; dragging = false;
             }
             wasDown = down;
             bool right = (Win.GetAsyncKeyState(0x02) & 0x8001) != 0;   // right mouse button
@@ -149,6 +163,11 @@ class CamForm : Form
             rightWas = right;
             // Esc: only when this app is in front.
             if (Win.GetForegroundWindow() != Handle) { escWas = false; return; }
+            // + / - held down: zoom the full screen PTZ camera in / out.
+            bool zin = (Win.GetAsyncKeyState(0x6B) & 0x8000) != 0 || (Win.GetAsyncKeyState(0xBB) & 0x8000) != 0;
+            bool zout = (Win.GetAsyncKeyState(0x6D) & 0x8000) != 0 || (Win.GetAsyncKeyState(0xBD) & 0x8000) != 0;
+            int zoom = big == null ? 0 : zin ? 4 : zout ? 5 : 0;
+            if (zoom != zoomWas) { if (zoomWas != 0) PtzStop(); if (zoom != 0) PtzStart(big.Ch, (uint)zoom, 0, 4); zoomWas = zoom; }
             bool esc = (Win.GetAsyncKeyState(0x1B) & 0x8000) != 0;
             if (esc && !escWas) { if (big != null) { big = null; DoLayout(); } else Close(); }
             escWas = esc;
@@ -401,6 +420,45 @@ class CamForm : Form
         var keys = new List<string>(); foreach (var t in tiles) keys.Add(Key(t));
         try { File.WriteAllText(OrderFile, string.Join(",", keys)); } catch { }
         Log("orden: " + string.Join(",", keys));
+    }
+
+    // ---- PTZ: commands go to a worker thread in order, so the screen never waits for the network. ----
+    System.Collections.Concurrent.BlockingCollection<Action> ptzQ;
+    uint ptzCmd; int ptzCh = -1, ptzP1, ptzP2; bool ptzOn;
+    void PtzSend(Action a)
+    {
+        if (ptzQ == null)
+        {
+            ptzQ = new System.Collections.Concurrent.BlockingCollection<Action>();
+            new Thread(() => { foreach (var x in ptzQ.GetConsumingEnumerable()) try { x(); } catch (Exception ex) { Log("ptz: " + ex.Message); } }) { IsBackground = true }.Start();
+        }
+        ptzQ.Add(a);
+    }
+    void PtzStart(int ch, uint cmd, int p1, int p2)
+    {
+        if (ptzOn && ch == ptzCh && cmd == ptzCmd && p1 == ptzP1 && p2 == ptzP2) return;
+        if (ptzOn) PtzStop();
+        ptzOn = true; ptzCh = ch; ptzCmd = cmd; ptzP1 = p1; ptzP2 = p2;
+        long lg = login;
+        PtzSend(() => { bool ok = Native.CLIENT_DHPTZControlEx2(lg, ch, cmd, p1, p2, 0, false, IntPtr.Zero); if (!ok) Log("ptz canal " + ch + " cmd " + cmd + " error 0x" + Native.CLIENT_GetLastError().ToString("X")); });
+    }
+    void PtzStop()
+    {
+        if (!ptzOn) return;
+        ptzOn = false;
+        long lg = login; int ch = ptzCh; uint cmd = ptzCmd; int p1 = ptzP1, p2 = ptzP2;
+        PtzSend(() => Native.CLIENT_DHPTZControlEx2(lg, ch, cmd, p1, p2, 0, true, IntPtr.Zero));
+    }
+    // Drag of (dx, dy) pixels from the press point: 8 directions, speed 1-8 grows with the distance.
+    void PtzDrag(int ch, int dx, int dy)
+    {
+        double ang = Math.Atan2(-dy, dx) * 180 / Math.PI;   // 0 = right, 90 = up
+        int sector = (int)Math.Round(((ang + 360) % 360) / 45) % 8;
+        int speed = Math.Max(1, Math.Min(8, (int)(Math.Sqrt(dx * dx + dy * dy) / 40)));
+        uint[] cmds = { 3, 0x21, 0, 0x20, 2, 0x22, 1, 0x23 };   // right, up-right, up, up-left, left, down-left, down, down-right
+        uint cmd = cmds[sector];
+        bool diag = cmd >= 0x20;
+        PtzStart(ch, cmd, diag ? speed : 0, speed);
     }
 
     // Click on a camera: show it alone, full screen. Click again: back to all cameras.
