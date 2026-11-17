@@ -46,6 +46,11 @@ static class Native
     public delegate void RealDataCb(long lRealHandle, uint dwDataType, IntPtr pBuffer, uint dwBufSize, long param, IntPtr dwUser);
     [DllImport("dhnetsdk.dll")] public static extern bool CLIENT_SetRealDataCallBackEx2(long lRealHandle, RealDataCb cb, IntPtr dwUser, uint dwFlag);
     [DllImport("dhnetsdk.dll")] public static extern bool CLIENT_SetConnectTime(int nWaitTime, int nTryTimes);
+    // The player behind a live video (Dahua's play library, called play.dll by SmartPSS).
+    [DllImport("dhnetsdk.dll")] public static extern int CLIENT_GetRealPlayPort(long lRealHandle);
+    // Smooths the picture when it is drawn smaller than the video (without it, small squares look jagged).
+    [DllImport("play.dll")] public static extern int PLAY_AntiAliasEnable(int port, int enable);
+    [DllImport("play.dll")] public static extern int PLAY_SetPicQuality(int port, int highQuality);
 }
 
 static class Win
@@ -166,7 +171,7 @@ class CamForm : Form
                 t.Box = new Panel { BackColor = Color.Black };
                 t.Video = new Panel { BackColor = Color.Black };
                 t.Box.Controls.Add(t.Video);
-                t.Tag = new Label { Text = "HD", ForeColor = Color.White, BackColor = Color.FromArgb(200, 0, 0), AutoSize = true, Font = new Font("Segoe UI", 9, FontStyle.Bold), Location = new Point(4, 4), Visible = hd.Contains(ch) };
+                t.Tag = new Label { Text = "HD", ForeColor = Color.White, BackColor = Color.FromArgb(200, 0, 0), AutoSize = true, Font = new Font("Segoe UI", 9, FontStyle.Bold), Location = new Point(8, 8), Visible = hd.Contains(ch) };
                 t.Box.Controls.Add(t.Tag);
                 t.Tag.BringToFront();
                 tiles.Add(t);
@@ -182,10 +187,20 @@ class CamForm : Form
     {
         if (t.Play != 0) Native.CLIENT_StopRealPlayEx(t.Play);
         t.Play = Native.CLIENT_RealPlayEx(login, t.Ch, t.Video.Handle, hd.Contains(t.Ch) ? 0 : int.Parse(C("flujo", "3")));   // 0 = main stream (HD)
-        if (t.Play != 0) Native.CLIENT_SetRealDataCallBackEx2(t.Play, dataCb, IntPtr.Zero, 1);
+        string smooth = "";
+        if (t.Play != 0)
+        {
+            Native.CLIENT_SetRealDataCallBackEx2(t.Play, dataCb, IntPtr.Zero, 1);
+            try
+            {
+                int port = Native.CLIENT_GetRealPlayPort(t.Play);
+                if (C("suavizar", "1") == "1") smooth = " suavizado " + port + ":" + Native.PLAY_AntiAliasEnable(port, 1) + "/" + Native.PLAY_SetPicQuality(port, 1);
+            }
+            catch (Exception ex) { smooth = " suavizado: " + ex.Message; }
+        }
         t.LastBytes = 0;
         t.LastData = DateTime.Now;
-        Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : " (abajo)") : "") + (hd.Contains(t.Ch) ? " HD" : "") + " -> " + t.Play + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
+        Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : " (abajo)") : "") + (hd.Contains(t.Ch) ? " HD" : "") + " -> " + t.Play + smooth + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
     }
 
     static long BytesOf(long play) { long b = 0; if (play != 0) lock (bytesPerPlay) bytesPerPlay.TryGetValue(play, out b); return b; }
