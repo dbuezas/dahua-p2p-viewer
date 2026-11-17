@@ -73,6 +73,9 @@ class CamForm : Form
     class Tile { public Panel Box, Video; public Label Tag; public int Ch, Half; public long Play, LastBytes; public bool PlayingHd; public DateTime LastData; }
     List<Tile> tiles = new List<Tile>();
     Tile big = null;
+    Panel[] frame = new Panel[4];   // yellow frame around the camera a dragged camera will swap with
+    static string OrderFile = Path.Combine(Dir, "orden.txt");
+    static string Key(Tile t) { return t.Half == 0 ? t.Ch.ToString() : t.Ch + "." + t.Half; }
     Label status;
     long login = 0;
     static string CacheFile = Path.Combine(Dir, "canales.txt");
@@ -107,16 +110,34 @@ class CamForm : Form
         // Dahua's video library puts its own window over each square and that window takes the clicks and keys.
         // So read the mouse button and Esc directly, every 40 ms, while this app is in front.
         try { foreach (var c in File.ReadAllText(HdFile).Split(',')) { int ch; if (int.TryParse(c.Trim(), out ch)) hd.Add(ch); } } catch { }
-        bool wasDown = false, rightWas = false, escWas = false;
+        bool wasDown = false, rightWas = false, escWas = false, pressOk = false, dragging = false;
+        Point pressAt = Point.Empty;
+        Tile dragFrom = null;
+        for (int i = 0; i < 4; i++) { frame[i] = new Panel { BackColor = Color.Yellow, Visible = false }; Controls.Add(frame[i]); }
         var poll = new System.Windows.Forms.Timer { Interval = 40 };
         poll.Tick += (s, e) =>
         {
-            // Mouse: count the click when the pointer is over this app (any of its windows, also the video ones).
-            bool down = (Win.GetAsyncKeyState(0x01) & 0x8001) != 0;   // left mouse button (0x0001 = pressed since last check, catches short clicks)
+            // Left mouse button, only when the pointer is over this app (any of its windows, also the video ones).
+            // Press and release in the same place = click. Press, move and release over another camera = swap them.
+            bool down = (Win.GetAsyncKeyState(0x01) & 0x8001) != 0;   // 0x0001 = pressed since last check, catches short clicks
+            Point pos = PointToClient(Cursor.Position);
             if (down && !wasDown)
             {
-                var over = Win.GetAncestor(Win.WindowFromPoint(Cursor.Position), 2);   // 2 = the top window
-                if (over == Handle) ClickAt(PointToClient(Cursor.Position));
+                pressOk = Win.GetAncestor(Win.WindowFromPoint(Cursor.Position), 2) == Handle;   // 2 = the top window
+                pressAt = pos; dragging = false;
+                dragFrom = pressOk && big == null ? TileAt(pos) : null;
+            }
+            else if (down && dragFrom != null)
+            {
+                if (!dragging && (Math.Abs(pos.X - pressAt.X) > 20 || Math.Abs(pos.Y - pressAt.Y) > 20)) dragging = true;
+                if (dragging) { var to = TileAt(pos); ShowFrame(to != null && to != dragFrom ? to.Box.Bounds : Rectangle.Empty); }
+            }
+            else if (!down && wasDown)
+            {
+                ShowFrame(Rectangle.Empty);
+                if (dragging) { var to = TileAt(pos); if (to != null && to != dragFrom) Swap(dragFrom, to); }
+                else if (pressOk) ClickAt(pressAt);
+                dragFrom = null; dragging = false;
             }
             wasDown = down;
             bool right = (Win.GetAsyncKeyState(0x02) & 0x8001) != 0;   // right mouse button
@@ -173,6 +194,17 @@ class CamForm : Form
                 tiles.Add(t);
                 Controls.Add(t.Box);
             }
+        // Order saved by drag and drop; cameras not in the file go at the end.
+        var order = new List<string>();
+        try { order.AddRange(File.ReadAllText(OrderFile).Split(',')); } catch { }
+        var orig = new List<Tile>(tiles);
+        tiles.Sort((a, b) =>
+        {
+            int ia = order.IndexOf(Key(a)), ib = order.IndexOf(Key(b));
+            if (ia < 0) ia = 1000 + orig.IndexOf(a);
+            if (ib < 0) ib = 1000 + orig.IndexOf(b);
+            return ia.CompareTo(ib);
+        });
         status.Visible = tiles.Count == 0;
         DoLayout();
         foreach (var t in tiles) PlayTile(t);
@@ -288,6 +320,26 @@ class CamForm : Form
             consider(list);
         }
         return best;
+    }
+
+    Tile TileAt(Point p) { foreach (var t in tiles) if (t.Box.Visible && t.Box.Bounds.Contains(p)) return t; return null; }
+
+    void ShowFrame(Rectangle r)
+    {
+        int w = 6;
+        var parts = new[] { new Rectangle(r.X, r.Y, r.Width, w), new Rectangle(r.X, r.Bottom - w, r.Width, w), new Rectangle(r.X, r.Y, w, r.Height), new Rectangle(r.Right - w, r.Y, w, r.Height) };
+        for (int i = 0; i < 4; i++) { frame[i].Visible = !r.IsEmpty; if (!r.IsEmpty) { frame[i].Bounds = parts[i]; frame[i].BringToFront(); } }
+    }
+
+    // Drag and drop: the two cameras swap places (the video keeps running) and the order is saved.
+    void Swap(Tile a, Tile b)
+    {
+        int ia = tiles.IndexOf(a), ib = tiles.IndexOf(b);
+        tiles[ia] = b; tiles[ib] = a;
+        DoLayout();
+        var keys = new List<string>(); foreach (var t in tiles) keys.Add(Key(t));
+        try { File.WriteAllText(OrderFile, string.Join(",", keys)); } catch { }
+        Log("orden: " + string.Join(",", keys));
     }
 
     // Click on a camera: show it alone, full screen. Click again: back to all cameras.

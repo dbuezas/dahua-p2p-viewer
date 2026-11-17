@@ -14,6 +14,7 @@ This app shows the cameras in about 10 seconds.
 - Click a camera: full screen. Click again or Esc: all cameras. Esc with all cameras: close.
 - Right click a camera: switch it between low quality (sub stream, fast) and HD (main stream). A red "HD"
   shows on HD cameras. The choice is saved in `hd.txt`. Too many HD cameras at once can hit the NVR's stream limit.
+- Drag a camera onto another one: they swap places. The order is saved in `orden.txt`.
 - Only one copy runs. Opening it again brings the running copy to the front.
 - Uses as much of the screen as possible without stretching the pictures: it tries normal grids
   and rows with different counts (for example 5 cameras = 2 big on top + 3 smaller below) and keeps the bigger one.
