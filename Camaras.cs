@@ -78,7 +78,7 @@ class CamForm : Form
 
     // One square on screen. Half: 0 = whole picture, 1 = top half, 2 = bottom half
     // (for a channel whose picture is two cameras stacked; it is played twice and each square shows one half).
-    class Tile { public Panel Box, Video; public Label Tag; public int Ch, Half; public long Play, LastBytes; public bool PlayingHd; public DateTime LastData; }
+    class Tile { public Panel Box, Video; public Label Tag; public int Ch, Half; public long Play, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1; }
     List<Tile> tiles = new List<Tile>();
     Tile big = null;
     Panel[] frame = new Panel[4];   // yellow frame around the camera a dragged camera will swap with
@@ -120,7 +120,7 @@ class CamForm : Form
         try { foreach (var c in File.ReadAllText(HdFile).Split(',')) { int ch; if (int.TryParse(c.Trim(), out ch)) hd.Add(ch); } } catch { }
         bool wasDown = false, rightWas = false, escWas = false, pressOk = false, dragging = false;
         Tile ptzTile = null;
-        int zoomWas = 0;
+        int zoomWas = 0; DateTime zoomStep = DateTime.MinValue;
         Point pressAt = Point.Empty;
         Tile dragFrom = null;
         for (int i = 0; i < 4; i++) { frame[i] = new Panel { BackColor = Color.Yellow, Visible = false }; Controls.Add(frame[i]); }
@@ -166,8 +166,9 @@ class CamForm : Form
             // + / - held down: zoom the full screen PTZ camera in / out.
             bool zin = (Win.GetAsyncKeyState(0x6B) & 0x8000) != 0 || (Win.GetAsyncKeyState(0xBB) & 0x8000) != 0;
             bool zout = (Win.GetAsyncKeyState(0x6D) & 0x8000) != 0 || (Win.GetAsyncKeyState(0xBD) & 0x8000) != 0;
-            int zoom = big == null || !CanPtz(big.Ch) ? 0 : zin ? 4 : zout ? 5 : 0;
-            if (zoom != zoomWas) { if (zoomWas != 0) PtzStop(); if (zoom != 0) PtzStart(big.Ch, (uint)zoom, 0, 4); zoomWas = zoom; }
+            int zoom = big == null ? 0 : zin ? 1 : zout ? -1 : 0;
+            if (zoom != 0 && (zoom != zoomWas || (DateTime.Now - zoomStep).TotalMilliseconds > 250)) { ZoomStep(big, zoom); zoomStep = DateTime.Now; }
+            zoomWas = zoom;
             bool esc = (Win.GetAsyncKeyState(0x1B) & 0x8000) != 0;
             if (esc && !escWas) { if (big != null) { big = null; DoLayout(); } else Close(); }
             escWas = esc;
@@ -335,7 +336,15 @@ class CamForm : Form
             if (qrBox != null) qrBox.BringToFront();
             int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
             // A half square holds a video panel twice as tall, shifted so only its half shows.
-            t.Video.Bounds = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
+            var vr = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
+            // Digital zoom (full screen only): the video panel grows around the middle of the square; the square cuts it.
+            if (t != big) t.Zoom = 1;
+            if (t.Zoom > 1)
+            {
+                double cx = bw / 2.0, cy = bh / 2.0, z = t.Zoom;
+                vr = new Rectangle((int)(cx - (cx - vr.X) * z), (int)(cy - (cy - vr.Y) * z), (int)(vr.Width * z), (int)(vr.Height * z));
+            }
+            t.Video.Bounds = vr;
         }
     }
 
@@ -424,6 +433,15 @@ class CamForm : Form
         var keys = new List<string>(); foreach (var t in tiles) keys.Add(Key(t));
         try { File.WriteAllText(OrderFile, string.Join(",", keys)); } catch { }
         Log("orden: " + string.Join(",", keys));
+    }
+
+    // Digital zoom of the full screen camera: one step = x1.25 (in) or /1.25 (out), from 1x to 4x.
+    void ZoomStep(Tile t, int dir)
+    {
+        if (t == null || t != big) return;
+        t.Zoom = Math.Max(1, Math.Min(4, dir > 0 ? t.Zoom * 1.25 : t.Zoom / 1.25));
+        if (t.Zoom < 1.01) t.Zoom = 1;
+        DoLayout();
     }
 
     // ---- PTZ: commands go to a worker thread in order, so the screen never waits for the network. ----
@@ -726,8 +744,8 @@ class CamForm : Form
             // Phone joystick on camera i: "ptz i dx dy" (drag in phone pixels), "ptzstop".
             else if (p[0] == "ptz" && t != null && CanPtz(t.Ch) && p.Length > 3) { int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy); PtzDrag(t.Ch, dx * 2, dy * 2); }
             else if (p[0] == "ptzstop") PtzStop();
-            // Phone zoom buttons: "zoom i 1" (in) / "zoom i -1" (out) while held, then "ptzstop".
-            else if (p[0] == "zoom" && t != null && CanPtz(t.Ch) && p.Length > 2) PtzStart(t.Ch, p[2] == "1" ? 4u : 5u, 0, 4);
+            // Phone zoom buttons: "zoom i 1" (in) / "zoom i -1" (out): one digital zoom step each.
+            else if (p[0] == "zoom" && t != null && p.Length > 2) ZoomStep(t, p[2] == "1" ? 1 : -1);
             // Test: "ptzraw channel cmd speed" moves a recorder channel directly ("ptzstop" stops it).
             else if (p[0] == "ptzraw" && p.Length > 3) { int ch, pc, sp; int.TryParse(p[1], out ch); int.TryParse(p[2], out pc); int.TryParse(p[3], out sp); PtzStart(ch, (uint)pc, pc >= 0x20 ? sp : 0, sp); }
         });
@@ -833,7 +851,7 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 #zoom{display:flex;flex-direction:column;gap:14px}#zoom button{width:64px;height:64px;font-size:28px;touch-action:none}
 </style></head><body>
 <header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
-<p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar. Camara movil en grande: arrastrar sobre ella la mueve.</p>
+<p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=grid></div><img id=ghost>
 <script>
@@ -861,7 +879,7 @@ function draw(s){st=s;var g=document.getElementById('grid');
   d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd data-hd='+i+'>HD</button></div>';g.appendChild(d)}
  while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
  s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd)});
- var c=s.cams[s.big];document.getElementById('ptz').style.display=c&&c.ptz?'flex':'none'}
+ var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none';pad.style.display=c&&c.ptz?'block':'none'}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
 var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
 function padMove(e){var r=pad.getBoundingClientRect(),dx=e.clientX-r.left-r.width/2,dy=e.clientY-r.top-r.height/2,m=Math.hypot(dx,dy),max=r.width/2-30;
@@ -871,28 +889,23 @@ pad.addEventListener('pointerdown',function(e){padOn=true;pad.setPointerCapture(
 pad.addEventListener('pointermove',function(e){if(padOn)padMove(e)});
 function padEnd(){if(!padOn)return;padOn=false;knob.style.left='55px';knob.style.top='55px';cmd('ptzstop')}
 pad.addEventListener('pointerup',padEnd);pad.addEventListener('pointercancel',padEnd);
-// Zoom buttons: zoom while held.
-[['zin',1],['zout',-1]].forEach(function(z){var b=document.getElementById(z[0]);
- b.addEventListener('pointerdown',function(e){e.preventDefault();b.setPointerCapture(e.pointerId);cmd('zoom '+st.big+' '+z[1])});
- b.addEventListener('pointerup',function(){cmd('ptzstop')});b.addEventListener('pointercancel',function(){cmd('ptzstop')})});
+// Zoom buttons (digital zoom on the TV): one step per tap, repeats every 250 ms while held.
+[['zin',1],['zout',-1]].forEach(function(z){var b=document.getElementById(z[0]),rep=null;
+ function step(){ws&&ws.readyState==1&&ws.send('zoom '+st.big+' '+z[1])}
+ function end(){clearInterval(rep);rep=null}
+ b.addEventListener('pointerdown',function(e){e.preventDefault();b.setPointerCapture(e.pointerId);step();end();rep=setInterval(step,250)});
+ b.addEventListener('pointerup',end);b.addEventListener('pointercancel',end)});
 function setBig(i){st.big=i;draw(st);cmd('big '+i)}
 // Tap = big; drag onto another camera = swap (pointer events work with fingers and mouse).
 var drag=null,ghost=document.getElementById('ghost');
 function camAt(x,y){var e=document.elementFromPoint(x,y);while(e&&!(e.classList&&e.classList.contains('cam')))e=e.parentNode;return e}
 document.addEventListener('pointerdown',function(e){if(!e.target.dataset||e.target.dataset.i==null)return;e.preventDefault();
- var i=+e.target.dataset.i,c=st.cams[i];
- drag={i:i,x:e.clientX,y:e.clientY,moved:false,el:e.target.parentNode,to:null,ptz:i==st.big&&c&&c.ptz};});
-// Joystick on the big PTZ camera: send the drag (at most every 150 ms), stop when the finger lifts.
-var lastPtz=0;
-document.addEventListener('pointermove',function(e){if(!drag||!drag.ptz)return;var dx=e.clientX-drag.x,dy=e.clientY-drag.y;
- if(!drag.moved&&Math.abs(dx)+Math.abs(dy)>15)drag.moved=true;
- if(drag.moved&&Date.now()-lastPtz>150){lastPtz=Date.now();cmd('ptz '+drag.i+' '+Math.round(dx)+' '+Math.round(dy))}});
-document.addEventListener('pointermove',function(e){if(!drag||drag.ptz)return;
+ drag={i:+e.target.dataset.i,x:e.clientX,y:e.clientY,moved:false,el:e.target.parentNode,to:null};});
+document.addEventListener('pointermove',function(e){if(!drag)return;
  if(!drag.moved&&Math.abs(e.clientX-drag.x)+Math.abs(e.clientY-drag.y)>15){drag.moved=true;drag.el.classList.add('drag');ghost.src=drag.el.querySelector('img').src;ghost.style.display='block'}
  if(!drag.moved)return;ghost.style.left=(e.clientX-70)+'px';ghost.style.top=(e.clientY-40)+'px';
  var c=camAt(e.clientX,e.clientY);if(drag.to&&drag.to!=c)drag.to.classList.remove('target');drag.to=c&&c!=drag.el?c:null;if(drag.to)drag.to.classList.add('target')});
 function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='none';d.el.classList.remove('drag');if(d.to)d.to.classList.remove('target');
- if(d.ptz&&d.moved){cmd('ptzstop');return}
  if(!d.moved){setBig(st.big==d.i?-1:d.i);return}
  if(d.to){var j=[].indexOf.call(d.to.parentNode.children,d.to),a=d.el.querySelector('img'),b=d.to.querySelector('img'),t=a.src;a.src=b.src;b.src=t;
   var x=st.cams[d.i];st.cams[d.i]=st.cams[j];st.cams[j]=x;draw(st);cmd('order '+st.cams.map(function(c){return c.k}).join(','))}}
