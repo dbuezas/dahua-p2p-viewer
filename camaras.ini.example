@@ -20,3 +20,5 @@ dividir=
 ; flujo=3              stream type: 3 = sub stream (light), 2 = main stream
 ; busqueda_segundos=8  how long each channel is watched to decide if it has a camera
 ; dahua=C:\Program Files\SmartPSSLite   folder with P2PDll.dll and dhnetsdk.dll
+; Phone remote (web page for the local network). 0 = off.
+puerto_web=8080

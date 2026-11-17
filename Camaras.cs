@@ -46,6 +46,9 @@ static class Native
     public delegate void RealDataCb(long lRealHandle, uint dwDataType, IntPtr pBuffer, uint dwBufSize, long param, IntPtr dwUser);
     [DllImport("dhnetsdk.dll")] public static extern bool CLIENT_SetRealDataCallBackEx2(long lRealHandle, RealDataCb cb, IntPtr dwUser, uint dwFlag);
     [DllImport("dhnetsdk.dll")] public static extern bool CLIENT_SetConnectTime(int nWaitTime, int nTryTimes);
+    // Saves the current picture of a live video to a file (format 1 = JPEG).
+    [DllImport("dhnetsdk.dll", CharSet = CharSet.Ansi)] public static extern bool CLIENT_CapturePicture(long hPlayHandle, string fileName);
+    [DllImport("dhnetsdk.dll", CharSet = CharSet.Ansi)] public static extern bool CLIENT_CapturePictureEx(long hPlayHandle, string fileName, int format);
 }
 
 static class Win
@@ -164,6 +167,18 @@ class CamForm : Form
         Controls.Add(status);
         Resize += (s, e) => DoLayout();
         Shown += (s, e) => new Thread(Connect) { IsBackground = true }.Start();
+        Shown += (s, e) => StartRemote();
+        // Show the address of the phone remote for 20 s (the PC's address can change).
+        var ips = LocalIps();
+        if (ips.Count > 0 && C("puerto_web", "8080") != "0")
+        {
+            var addr = new Label { Text = "Control desde el telefono: http://" + ips[0] + ":" + C("puerto_web", "8080"), ForeColor = Color.White, BackColor = Color.FromArgb(40, 40, 40), AutoSize = true, Font = new Font("Segoe UI", 12) };
+            Controls.Add(addr);
+            Shown += (s, e) => { addr.Location = new Point(ClientSize.Width - addr.Width - 20, ClientSize.Height - addr.Height - 20); addr.BringToFront(); };
+            var hide = new System.Windows.Forms.Timer { Interval = 20000 };
+            hide.Tick += (s, e) => { addr.Visible = false; hide.Stop(); };
+            hide.Start();
+        }
     }
 
     // Channels whose picture is two cameras stacked (top + bottom). Default: channel 2 ("Device1").
@@ -344,7 +359,12 @@ class CamForm : Form
         return best;
     }
 
-    Tile TileAt(Point p) { foreach (var t in tiles) if (t.Box.Visible && t.Box.Bounds.Contains(p)) return t; return null; }
+    // The camera under a point. The small pictures lie on top of the big one, so they are checked first.
+    Tile TileAt(Point p)
+    {
+        foreach (var t in tiles) if (t != big && t.Box.Visible && t.Box.Bounds.Contains(p)) return t;
+        return big != null && big.Box.Bounds.Contains(p) ? big : null;
+    }
 
     void ShowFrame(Rectangle r)
     {
@@ -381,14 +401,164 @@ class CamForm : Form
         foreach (var t in tiles)
         {
             if (!t.Box.Visible || !t.Box.Bounds.Contains(p)) continue;
-            int ch = t.Ch;
-            if (!hd.Remove(ch)) hd.Add(ch);
-            try { File.WriteAllText(HdFile, string.Join(",", hd)); } catch { }
-            foreach (var u in tiles) if (u.Ch == ch) PlayTile(u);
-            DoLayout();   // shows or hides the HD tag
+            ToggleHd(t);
             return;
         }
     }
+
+    // ---- Remote control for a phone on the same network: a tiny web page (port `puerto_web`, default 8080). ----
+    // Only answers addresses of the local network. Tap a camera to make it big, tap again for all; HD button per camera.
+    void ToggleHd(Tile t)
+    {
+        int ch = t.Ch;
+        if (!hd.Remove(ch)) hd.Add(ch);
+        try { File.WriteAllText(HdFile, string.Join(",", hd)); } catch { }
+        foreach (var u in tiles) if (u.Ch == ch) PlayTile(u);
+        DoLayout();   // shows or hides the HD tag
+    }
+
+    static bool IsLocal(System.Net.IPAddress a)
+    {
+        if (System.Net.IPAddress.IsLoopback(a)) return true;
+        var b = a.GetAddressBytes();
+        return b.Length == 4 && (b[0] == 10 || (b[0] == 192 && b[1] == 168) || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 169 && b[1] == 254));
+    }
+
+    static List<string> LocalIps()
+    {
+        var l = new List<string>();
+        try { foreach (var a in System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName())) if (a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !System.Net.IPAddress.IsLoopback(a)) l.Add(a.ToString()); } catch { }
+        return l;
+    }
+
+    void StartRemote()
+    {
+        int port = int.Parse(C("puerto_web", "8080"));
+        if (port <= 0) return;
+        var srv = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Any, port);
+        try { srv.Start(); } catch (Exception ex) { Log("web: no pude abrir el puerto " + port + ": " + ex.Message); return; }
+        Log("web: control remoto en puerto " + port + " (" + string.Join(", ", LocalIps()) + ")");
+        new Thread(() =>
+        {
+            while (true)
+            {
+                try
+                {
+                    var c = srv.AcceptTcpClient();
+                    new Thread(() => Serve(c)) { IsBackground = true }.Start();
+                }
+                catch (Exception ex) { Log("web: " + ex.Message); Thread.Sleep(1000); }
+            }
+        }) { IsBackground = true }.Start();
+    }
+
+    void Serve(System.Net.Sockets.TcpClient c)
+    {
+        using (c)
+        {
+            try
+            {
+                c.ReceiveTimeout = 5000; c.SendTimeout = 10000;
+                var remote = ((System.Net.IPEndPoint)c.Client.RemoteEndPoint).Address;
+                var st = c.GetStream();
+                var rd = new StreamReader(st, Encoding.ASCII);
+                string req = rd.ReadLine() ?? "";
+                while (!string.IsNullOrEmpty(rd.ReadLine())) { }   // skip the headers
+                if (!IsLocal(remote)) { Send(st, "403 Forbidden", "text/plain", Encoding.ASCII.GetBytes("solo red local")); return; }
+                var parts = req.Split(' ');
+                string path = parts.Length > 1 ? parts[1] : "/";
+                string q = path.Contains("?") ? path.Substring(path.IndexOf('?') + 1) : "";
+                path = path.Split('?')[0];
+                int i = -1; foreach (var kv in q.Split('&')) if (kv.StartsWith("i=")) int.TryParse(kv.Substring(2), out i);
+
+                if (path == "/") { Send(st, "200 OK", "text/html; charset=utf-8", Encoding.UTF8.GetBytes(Page)); return; }
+                if (path.StartsWith("/snap")) { var jpg = Snapshot(i); if (jpg == null) Send(st, "404 Not Found", "text/plain", new byte[0]); else Send(st, "200 OK", "image/jpeg", jpg); return; }
+                string json = null;
+                Invoke((MethodInvoker)delegate
+                {
+                    Tile t = i >= 0 && i < tiles.Count ? tiles[i] : null;
+                    if (path == "/api/big" && t != null) { big = big == t ? null : t; DoLayout(); }
+                    else if (path == "/api/all") { big = null; DoLayout(); }
+                    else if (path == "/api/hd" && t != null) ToggleHd(t);
+                    var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"cams\":[");
+                    for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + "}");
+                    json = sb.Append("]}").ToString();
+                });
+                Send(st, "200 OK", "application/json", Encoding.UTF8.GetBytes(json));
+            }
+            catch (Exception ex) { Log("web: " + ex.Message); }
+        }
+    }
+
+    static void Send(Stream st, string status, string type, byte[] body)
+    {
+        var head = Encoding.ASCII.GetBytes("HTTP/1.1 " + status + "\r\nContent-Type: " + type + "\r\nContent-Length: " + body.Length + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
+        st.Write(head, 0, head.Length);
+        st.Write(body, 0, body.Length);
+    }
+
+    // Current picture of camera i as a small JPEG (only its half for a split channel).
+    byte[] Snapshot(int i)
+    {
+        long play = 0; int half = 0;
+        Invoke((MethodInvoker)delegate { if (i >= 0 && i < tiles.Count) { play = tiles[i].Play; half = tiles[i].Half; } });
+        if (play == 0) return null;
+        string f = Path.Combine(Path.GetTempPath(), "camaras_snap_" + i + ".jpg");
+        lock (snapLock)
+        {
+            try { File.Delete(f); } catch { }
+            // JPEG first; some SDK builds only write BMP (CLIENT_CapturePicture). Bitmap reads both.
+            if (!Native.CLIENT_CapturePictureEx(play, f, 1) || !File.Exists(f))
+            {
+                string e1 = Native.CLIENT_GetLastError().ToString("X");
+                f = Path.ChangeExtension(f, ".bmp");
+                try { File.Delete(f); } catch { }
+                if (!Native.CLIENT_CapturePicture(play, f) || !File.Exists(f)) { Log("foto camara " + i + ": error 0x" + e1 + " / 0x" + Native.CLIENT_GetLastError().ToString("X")); return null; }
+            }
+            using (var src = new Bitmap(f))
+            {
+                int h = half == 0 ? src.Height : src.Height / 2, y = half == 2 ? src.Height / 2 : 0;
+                int w = 480, oh = Math.Max(1, h * w / src.Width);
+                using (var dst = new Bitmap(w, oh))
+                using (var g = Graphics.FromImage(dst))
+                using (var ms = new MemoryStream())
+                {
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    g.DrawImage(src, new Rectangle(0, 0, w, oh), new Rectangle(0, y, src.Width, h), GraphicsUnit.Pixel);
+                    dst.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    return ms.ToArray();
+                }
+            }
+        }
+    }
+    static object snapLock = new object();
+
+    const string Page = @"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Camaras</title><style>
+body{margin:0;background:#111;color:#eee;font-family:sans-serif}
+header{position:sticky;top:0;background:#111;padding:10px;display:flex;gap:10px;align-items:center;z-index:1}
+h1{font-size:18px;margin:0;flex:1}
+button{font-size:16px;padding:10px 14px;border:0;border-radius:8px;background:#333;color:#eee}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;padding:10px}
+.cam{background:#000;border-radius:8px;overflow:hidden;border:3px solid transparent}
+.cam.big{border-color:#fc0}
+.cam img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#222}
+.row{display:flex;justify-content:space-between;align-items:center;padding:6px}
+.hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
+</style></head><body>
+<header><h1>Camaras</h1><button onclick=""act('/api/all')"">Ver todas</button></header>
+<div id=grid></div>
+<script>
+var st={big:-1,cams:[]};
+function act(u){fetch(u,{cache:'no-store'}).then(r=>r.json()).then(draw)}
+function draw(s){st=s;var g=document.getElementById('grid');
+ while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
+  d.innerHTML='<img onclick=""act(\'/api/big?i='+i+'\')""><div class=row><span>Camara '+(i+1)+'</span><button class=hd onclick=""act(\'/api/hd?i='+i+'\')"">HD</button></div>';g.appendChild(d)}
+ while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
+ s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd)})}
+function snaps(){[].forEach.call(document.querySelectorAll('.cam img'),function(im,i){var n=new Image();n.onload=function(){im.src=n.src};n.src='/snap?i='+i+'&t='+Date.now()})}
+act('/api/state');setInterval(function(){act('/api/state')},3000);snaps();setInterval(snaps,4000);
+</script></body></html>";
 
     void Status(string s)
     {
