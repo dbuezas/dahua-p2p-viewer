@@ -537,9 +537,15 @@ class CamForm : Form
                     if (req == null) return;            // the phone closed the connection
                     if (req == "") continue;
                     bool close = false;
-                    string h;
-                    while (!string.IsNullOrEmpty(h = rd.ReadLine())) if (h.ToLower().StartsWith("connection:") && h.ToLower().Contains("close")) close = true;
+                    string h, wsKey = null;
+                    while (!string.IsNullOrEmpty(h = rd.ReadLine()))
+                    {
+                        string hl = h.ToLower();
+                        if (hl.StartsWith("connection:") && hl.Contains("close")) close = true;
+                        if (hl.StartsWith("sec-websocket-key:")) wsKey = h.Substring(18).Trim();
+                    }
                     if (!IsLocal(remote)) { Send(st, "403 Forbidden", "text/plain", Encoding.ASCII.GetBytes("solo red local")); return; }
+                    if (wsKey != null && req.StartsWith("GET /ws")) { c.ReceiveTimeout = 30000; RunWs(st, wsKey); return; }
                     HandleRequest(st, req);
                     if (close) return;
                 }
@@ -547,6 +553,99 @@ class CamForm : Form
             catch (IOException) { }   // idle timeout or the phone went away
             catch (Exception ex) { Log("web: " + ex.Message); }
         }
+    }
+
+    // ---- WebSocket: ONE connection that stays open carries everything (buttons, state, pictures). ----
+    // On the PC's Wi-Fi, opening new connections is what fails while the cameras stream; an open one works fine.
+    void RunWs(Stream st, string key)
+    {
+        string accept = Convert.ToBase64String(System.Security.Cryptography.SHA1.Create().ComputeHash(Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+        var hs = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n");
+        st.Write(hs, 0, hs.Length);
+        var wlock = new object();
+        bool alive = true;
+        Action<int, byte[]> frame = (op, data) =>
+        {
+            lock (wlock)
+            {
+                var head = new List<byte> { (byte)(0x80 | op) };
+                if (data.Length < 126) head.Add((byte)data.Length);
+                else if (data.Length < 65536) { head.Add(126); head.Add((byte)(data.Length >> 8)); head.Add((byte)data.Length); }
+                else { head.Add(127); for (int s8 = 56; s8 >= 0; s8 -= 8) head.Add((byte)((long)data.Length >> s8)); }
+                st.Write(head.ToArray(), 0, head.Count);
+                st.Write(data, 0, data.Length);
+            }
+        };
+        // Sender: state when it changes (and every 3 s as a heartbeat), one camera picture per second in turn.
+        new Thread(() =>
+        {
+            string last = null; var lastBeat = DateTime.MinValue; int cam = 0; var lastPic = DateTime.MinValue;
+            try
+            {
+                while (alive)
+                {
+                    string sj = stateJson;
+                    if (sj != last || (DateTime.Now - lastBeat).TotalSeconds >= 3) { frame(1, Encoding.UTF8.GetBytes(sj)); last = sj; lastBeat = DateTime.Now; }
+                    int n = playHandles.Length;
+                    if (n > 0 && (DateTime.Now - lastPic).TotalMilliseconds >= 1000)
+                    {
+                        lastPic = DateTime.Now;
+                        cam = (cam + 1) % n;
+                        var jpg = Snapshot(cam);
+                        if (jpg != null) { var b = new byte[jpg.Length + 1]; b[0] = (byte)cam; Buffer.BlockCopy(jpg, 0, b, 1, jpg.Length); frame(2, b); }
+                    }
+                    Thread.Sleep(100);
+                }
+            }
+            catch { alive = false; try { st.Close(); } catch { } }
+        }) { IsBackground = true }.Start();
+        // Receiver: commands from the phone.
+        try
+        {
+            while (alive)
+            {
+                int b0 = st.ReadByte(), b1 = st.ReadByte();
+                if (b0 < 0 || b1 < 0) break;
+                int op = b0 & 0x0F; long len = b1 & 0x7F;
+                if (len == 126) len = (st.ReadByte() << 8) | st.ReadByte();
+                else if (len == 127) { len = 0; for (int k = 0; k < 8; k++) len = (len << 8) | (uint)st.ReadByte(); }
+                if (len > 65536) break;
+                var mask = new byte[4]; ReadAll(st, mask, 4);
+                var data = new byte[len]; ReadAll(st, data, (int)len);
+                if ((b1 & 0x80) != 0) for (int k = 0; k < len; k++) data[k] ^= mask[k % 4];
+                if (op == 8) break;                                   // close
+                if (op == 9) { frame(10, data); continue; }           // ping -> pong
+                if (op == 1) Command(Encoding.UTF8.GetString(data));
+            }
+        }
+        catch (IOException) { }
+        catch (Exception ex) { Log("ws: " + ex.Message); }
+        alive = false;
+    }
+
+    static void ReadAll(Stream st, byte[] buf, int n)
+    {
+        for (int got = 0; got < n; )
+        {
+            int r = st.Read(buf, got, n - got);
+            if (r <= 0) throw new IOException("cerrado");
+            got += r;
+        }
+    }
+
+    // Commands say the wanted result, so a repeated one changes nothing more: "big N" (N=-1: all), "hd N 0|1", "order k,k,..".
+    // They run on the screen thread when it is free; the new state goes back to the phone by itself.
+    void Command(string cmd)
+    {
+        var p = cmd.Split(' ');
+        int i = -1; if (p.Length > 1) int.TryParse(p[1], out i);
+        BeginInvoke((MethodInvoker)delegate
+        {
+            Tile t = i >= 0 && i < tiles.Count ? tiles[i] : null;
+            if (p[0] == "big") { if (big != t) { big = t; DoLayout(); } }
+            else if (p[0] == "hd" && t != null && p.Length > 2) SetHd(t, p[2] == "1");
+            else if (p[0] == "order" && p.Length > 1) SetOrder(p[1].Split(','));
+        });
     }
 
     void HandleRequest(Stream st, string req)
@@ -644,21 +743,35 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px}
 .hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
 </style></head><body>
-<header><h1>Camaras</h1><button onclick=""act('/api/all')"">Ver todas</button></header>
+<header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
 <p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
 <div id=grid></div><img id=ghost>
 <script>
 var st={big:-1,cams:[]};
-// The PC's Wi-Fi still loses some new connections while the cameras stream. The app answers at once,
-// so: buttons wait 1.5 s and try at most 3 times; pictures try once (the next one comes 4 s later).
-function get(u,n,ms){n=n||3;ms=ms||1500;var c=new AbortController(),t=setTimeout(function(){c.abort()},ms);
- return fetch(u,{cache:'no-store',signal:c.signal}).then(function(r){clearTimeout(t);if(!r.ok)throw 0;return r},function(e){clearTimeout(t);if(n>1)return get(u,n-1,ms);throw e})}
-function act(u){get(u).then(function(r){return r.json()}).then(draw).catch(function(){})}
+// ONE connection that stays open (WebSocket) for everything; if it drops, connect again at once.
+// Buttons change on the phone right away; the TV follows when the command arrives.
+var ws=null,queue=[],lastMsg=0,net=document.getElementById('net');
+// Opening sometimes gets stuck on the PC's Wi-Fi: if it is not open in 1.5 s, drop it and try again.
+function connect(){
+ var w=new WebSocket('ws://'+location.host+'/ws');ws=w;w.binaryType='arraybuffer';
+ var stuck=setTimeout(function(){if(w.readyState!=1)w.close()},1500);
+ w.onopen=function(){clearTimeout(stuck);net.textContent='';lastMsg=Date.now();while(queue.length)w.send(queue.shift())};
+ w.onmessage=function(e){lastMsg=Date.now();
+  if(typeof e.data=='string'){draw(JSON.parse(e.data));return}
+  var b=new Uint8Array(e.data),im=document.querySelectorAll('.cam img')[b[0]];if(!im)return;
+  var old=im.src;im.src=URL.createObjectURL(new Blob([b.subarray(1)],{type:'image/jpeg'}));if(old.indexOf('blob:')==0)URL.revokeObjectURL(old)};
+ w.onclose=function(){clearTimeout(stuck);if(ws!=w)return;net.textContent='reconectando...';setTimeout(connect,200)};
+}
+function cmd(c){queue=queue.filter(function(q){return q.split(' ')[0]+q.split(' ')[1]!=c.split(' ')[0]+c.split(' ')[1]});
+ if(ws&&ws.readyState==1)ws.send(c);else queue.push(c)}
+// The PC sends its state every 3 s: 6 s of silence means the connection is dead, so drop it and connect again.
+setInterval(function(){if(ws&&ws.readyState==1&&Date.now()-lastMsg>6000)ws.close()},1000);
 function draw(s){st=s;var g=document.getElementById('grid');
  while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
   d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd data-hd='+i+'>HD</button></div>';g.appendChild(d)}
  while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
  s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd)})}
+function setBig(i){st.big=i;draw(st);cmd('big '+i)}
 // Tap = big; drag onto another camera = swap (pointer events work with fingers and mouse).
 var drag=null,ghost=document.getElementById('ghost');
 function camAt(x,y){var e=document.elementFromPoint(x,y);while(e&&!(e.classList&&e.classList.contains('cam')))e=e.parentNode;return e}
@@ -669,15 +782,14 @@ document.addEventListener('pointermove',function(e){if(!drag)return;
  if(!drag.moved)return;ghost.style.left=(e.clientX-70)+'px';ghost.style.top=(e.clientY-40)+'px';
  var c=camAt(e.clientX,e.clientY);if(drag.to&&drag.to!=c)drag.to.classList.remove('target');drag.to=c&&c!=drag.el?c:null;if(drag.to)drag.to.classList.add('target')});
 function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='none';d.el.classList.remove('drag');if(d.to)d.to.classList.remove('target');
- if(!d.moved){act('/api/big?i='+(st.big==d.i?-1:d.i));return}
+ if(!d.moved){setBig(st.big==d.i?-1:d.i);return}
  if(d.to){var j=[].indexOf.call(d.to.parentNode.children,d.to),a=d.el.querySelector('img'),b=d.to.querySelector('img'),t=a.src;a.src=b.src;b.src=t;
-  var o=st.cams.map(function(c){return c.k}),x=o[d.i];o[d.i]=o[j];o[j]=x;act('/api/order?o='+encodeURIComponent(o.join(',')))}}
-// HD button: says the wanted state; the button changes at once.
-document.addEventListener('click',function(e){var b=e.target;if(!b.dataset||b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;
- st.cams[i].hd=on;b.classList.toggle('on',on);act('/api/hd?i='+i+'&on='+(on?1:0))});
+  var x=st.cams[d.i];st.cams[d.i]=st.cams[j];st.cams[j]=x;draw(st);cmd('order '+st.cams.map(function(c){return c.k}).join(','))}}
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
-function snaps(){[].forEach.call(document.querySelectorAll('.cam img'),function(im,i){get('/snap?i='+i+'&t='+Date.now(),1,3000).then(function(r){return r.blob()}).then(function(b){var old=im.src;im.src=URL.createObjectURL(b);if(old.indexOf('blob:')==0)URL.revokeObjectURL(old)}).catch(function(){})})}
-act('/api/state');setInterval(function(){act('/api/state')},3000);snaps();setInterval(snaps,4000);
+document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)return;
+ if(b.dataset.all){setBig(-1);return}
+ if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
+connect();
 </script></body></html>";
 
     void Status(string s)
