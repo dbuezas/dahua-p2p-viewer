@@ -146,7 +146,7 @@ class CamForm : Form
             // Esc: only when this app is in front.
             if (Win.GetForegroundWindow() != Handle) { escWas = false; return; }
             bool esc = (Win.GetAsyncKeyState(0x1B) & 0x8000) != 0;
-            if (esc && !escWas) { if (big != null) { big = null; DoLayout(); SyncStreams(); } else Close(); }
+            if (esc && !escWas) { if (big != null) { big = null; DoLayout(); } else Close(); }
             escWas = esc;
         };
         poll.Start();
@@ -262,22 +262,50 @@ class CamForm : Form
     {
         int n = tiles.Count;
         if (n == 0) return;
-        var cells = Arrange(n, ClientSize.Width, ClientSize.Height);
         int W = ClientSize.Width, H = ClientSize.Height;
-        // Full screen camera: biggest 16:9 rectangle, centered.
-        double fs = Math.Min((double)W / 16, (double)H / 9);
-        var full = new Rectangle((W - (int)(fs * 16)) / 2, (H - (int)(fs * 9)) / 2, (int)(fs * 16), (int)(fs * 9));
+        var cells = big == null ? Arrange(n, W, H) : ArrangeBig(n, tiles.IndexOf(big), W, H);
         for (int i = 0; i < n; i++)
         {
             var t = tiles[i];
-            if (big != null && t != big) { t.Box.Visible = false; continue; }
             t.Box.Visible = true;
             var c = cells[i];
-            t.Box.Bounds = big == t ? full : new Rectangle(c.X + 1, c.Y + 1, c.Width - 2, c.Height - 2);
+            t.Box.Bounds = new Rectangle(c.X + 1, c.Y + 1, c.Width - 2, c.Height - 2);
+            t.Tag.Visible = hd.Contains(t.Ch) && (big == null || big == t);   // no HD tag on the small ones
             int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
             // A half square holds a video panel twice as tall, shifted so only its half shows.
             t.Video.Bounds = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
         }
+    }
+
+    // One camera big, the others small (thumbnails 10% of the screen width) in a column on the right,
+    // or in a row below if that leaves the big one bigger. The result is centered.
+    static List<Rectangle> ArrangeBig(int n, int bigIdx, int W, int H)
+    {
+        int m = n - 1;
+        // Side: thumbnails stacked on the right (smaller if they do not fit in the height).
+        double sw = W * 0.10, sh = sw * 9 / 16;
+        if (m * sh > H) { sh = (double)H / m; sw = sh * 16 / 9; }
+        double sideBig = Math.Min((W - sw) / 16, (double)H / 9);
+        // Below: thumbnails in a row under the big one.
+        double bw = W * 0.10, bh = bw * 9 / 16;
+        if (m * bw > W) { bw = (double)W / m; bh = bw * 9 / 16; }
+        double belowBig = Math.Min((double)W / 16, (H - bh) / 9);
+        var list = new List<Rectangle>();
+        if (m == 0) { sw = 0; sh = 0; }
+        bool side = sideBig >= belowBig;
+        double s = side ? sideBig : belowBig;
+        double gw = s * 16, gh = s * 9;
+        double x0 = side ? (W - gw - sw) / 2 : (W - gw) / 2, y0 = side ? (H - gh) / 2 : (H - gh - bh) / 2;
+        // Thumbnails centered next to (or under) the big one.
+        double tx = side ? x0 + gw : (W - m * bw) / 2, ty = side ? (H - m * sh) / 2 : y0 + gh;
+        int k = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (i == bigIdx) { list.Add(new Rectangle((int)x0, (int)y0, (int)gw, (int)gh)); continue; }
+            list.Add(side ? new Rectangle((int)tx, (int)(ty + k * sh), (int)sw, (int)sh) : new Rectangle((int)(tx + k * bw), (int)ty, (int)bw, (int)bh));
+            k++;
+        }
+        return list;
     }
 
     // Places n 16:9 pictures (no stretching) so that together they cover as much of the screen as possible.
@@ -345,13 +373,13 @@ class CamForm : Form
     // Click on a camera: show it alone, full screen. Click again: back to all cameras.
     void ClickAt(Point p)
     {
-        if (big != null) { big = null; DoLayout(); SyncStreams(); return; }
-        foreach (var t in tiles) if (t.Box.Visible && t.Box.Bounds.Contains(p)) { big = t; DoLayout(); SyncStreams(); return; }
+        var t = TileAt(p);
+        if (big != null && (t == null || t == big)) big = null;   // click on the big camera: back to all cameras
+        else if (t != null) big = t;                                // click on a camera (also a small one on the side): make it big
+        DoLayout();
     }
 
-    // HD only for cameras on screen: with one camera full screen, the hidden ones use the low quality stream.
-    bool WantHd(Tile t) { return hd.Contains(t.Ch) && (big == null || big == t); }
-    void SyncStreams() { foreach (var t in tiles) if (t.PlayingHd != WantHd(t)) PlayTile(t); }
+    bool WantHd(Tile t) { return hd.Contains(t.Ch); }
 
     // Right click on a camera: switch its channel between low quality and HD (both halves of a split channel).
     void RightClickAt(Point p)
@@ -362,7 +390,8 @@ class CamForm : Form
             int ch = t.Ch;
             if (!hd.Remove(ch)) hd.Add(ch);
             try { File.WriteAllText(HdFile, string.Join(",", hd)); } catch { }
-            foreach (var u in tiles) if (u.Ch == ch) { u.Tag.Visible = hd.Contains(ch); PlayTile(u); }
+            foreach (var u in tiles) if (u.Ch == ch) PlayTile(u);
+            DoLayout();   // shows or hides the HD tag
             return;
         }
     }
