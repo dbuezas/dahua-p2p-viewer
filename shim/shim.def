@@ -1,0 +1,10 @@
+LIBRARY P2PDll
+EXPORTS
+    P2P_Init
+    P2P_Connect
+    P2P_GetDeviceInfo
+    P2P_DeviceStatus = P2Preal.P2P_DeviceStatus
+    P2P_QueryServerStatus = P2Preal.P2P_QueryServerStatus
+    P2P_QueryChannelStatus = P2Preal.P2P_QueryChannelStatus
+    P2P_Disconnect = P2Preal.P2P_Disconnect
+    P2P_UnInit = P2Preal.P2P_UnInit

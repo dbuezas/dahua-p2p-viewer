@@ -1,0 +1,22 @@
+; Copy this file to camaras.ini, next to Camaras.exe, and fill in your values.
+; camaras.ini is in .gitignore: never commit it.
+
+; Serial number of the NVR (DMSS shows it in the device details).
+sn=YOUR_NVR_SERIAL
+
+; NVR user. The password is asked on the first start and saved encrypted for the Windows user (DPAPI).
+usuario=admin
+
+; P2P servers, comma separated: host|key|user
+; key and user are the two strings SmartPSS Lite passes to P2P_Init (a4 and a5).
+; Capture them with the shim in shim/ (see README.md).
+servidores=www.easy4ipcloud.com|KEY_FROM_SHIM|USER_FROM_SHIM,p2p.dolynkcloud.com|KEY_FROM_SHIM|USER_FROM_SHIM
+
+; Channels whose picture is two cameras stacked (top + bottom); each half gets its own square.
+; Comma separated channel numbers (0 = first channel). Empty = none.
+dividir=
+
+; Optional:
+; flujo=3              stream type: 3 = sub stream (light), 2 = main stream
+; busqueda_segundos=8  how long each channel is watched to decide if it has a camera
+; dahua=C:\Program Files\SmartPSSLite   folder with P2PDll.dll and dhnetsdk.dll

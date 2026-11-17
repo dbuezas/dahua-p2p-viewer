@@ -1,0 +1,8 @@
+camaras.ini
+canales.txt
+*.log
+*.exe
+*.dll
+*.obj
+*.lib
+*.jpg
