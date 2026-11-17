@@ -452,7 +452,7 @@ class CamForm : Form
     {
         if (qrBox == null || text == qrText) return;
         qrText = text;
-        try { var old = qrBox.Image; qrBox.Image = Qr.ToBitmap(Qr.Encode(text), 4); if (old != null) old.Dispose(); }
+        try { var old = qrBox.Image; qrBox.Image = Qr.ToBitmap(Qr.Encode(text), 2); if (old != null) old.Dispose(); }
         catch (Exception ex) { Log("qr: " + ex.Message); }
     }
 
