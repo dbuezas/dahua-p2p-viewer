@@ -70,7 +70,7 @@ class CamForm : Form
 
     // One square on screen. Half: 0 = whole picture, 1 = top half, 2 = bottom half
     // (for a channel whose picture is two cameras stacked; it is played twice and each square shows one half).
-    class Tile { public Panel Box, Video; public Label Tag; public int Ch, Half; public long Play, LastBytes; public DateTime LastData; }
+    class Tile { public Panel Box, Video; public Label Tag; public int Ch, Half; public long Play, LastBytes; public bool PlayingHd; public DateTime LastData; }
     List<Tile> tiles = new List<Tile>();
     Tile big = null;
     Label status;
@@ -125,7 +125,7 @@ class CamForm : Form
             // Esc: only when this app is in front.
             if (Win.GetForegroundWindow() != Handle) { escWas = false; return; }
             bool esc = (Win.GetAsyncKeyState(0x1B) & 0x8000) != 0;
-            if (esc && !escWas) { if (big != null) { big = null; DoLayout(); } else Close(); }
+            if (esc && !escWas) { if (big != null) { big = null; DoLayout(); SyncStreams(); } else Close(); }
             escWas = esc;
         };
         poll.Start();
@@ -156,7 +156,7 @@ class CamForm : Form
     // Must run on the UI thread. Replaces all squares with one per camera, then starts the video.
     void BuildTiles(List<int> chans)
     {
-        foreach (var t in tiles) { if (t.Play != 0) Native.CLIENT_StopRealPlayEx(t.Play); Controls.Remove(t.Box); t.Box.Dispose(); }
+        foreach (var t in tiles) { if (t.Play != 0) { Native.CLIENT_StopRealPlayEx(t.Play); lock (bytesPerPlay) bytesPerPlay.Remove(t.Play); } Controls.Remove(t.Box); t.Box.Dispose(); }
         tiles.Clear();
         big = null;
         var split = SplitChannels();
@@ -181,12 +181,15 @@ class CamForm : Form
     // (Re)starts the video of one square and counts its bytes, so the watchdog can see if it stops.
     void PlayTile(Tile t)
     {
-        if (t.Play != 0) Native.CLIENT_StopRealPlayEx(t.Play);
-        t.Play = Native.CLIENT_RealPlayEx(login, t.Ch, t.Video.Handle, hd.Contains(t.Ch) ? 0 : int.Parse(C("flujo", "3")));   // 0 = main stream (HD)
+        if (t.Play != 0) { Native.CLIENT_StopRealPlayEx(t.Play); lock (bytesPerPlay) bytesPerPlay.Remove(t.Play); }
+        t.PlayingHd = WantHd(t);
+        t.Play = Native.CLIENT_RealPlayEx(login, t.Ch, t.Video.Handle, t.PlayingHd ? 0 : int.Parse(C("flujo", "3")));   // 0 = main stream (HD)
+        // The SDK reuses the numbers of stopped streams: start counting this one from zero.
+        lock (bytesPerPlay) bytesPerPlay.Remove(t.Play);
         if (t.Play != 0) Native.CLIENT_SetRealDataCallBackEx2(t.Play, dataCb, IntPtr.Zero, 1);
         t.LastBytes = 0;
         t.LastData = DateTime.Now;
-        Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : " (abajo)") : "") + (hd.Contains(t.Ch) ? " HD" : "") + " -> " + t.Play + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
+        Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : " (abajo)") : "") + (t.PlayingHd ? " HD" : "") + " -> " + t.Play + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
     }
 
     static long BytesOf(long play) { long b = 0; if (play != 0) lock (bytesPerPlay) bytesPerPlay.TryGetValue(play, out b); return b; }
@@ -290,9 +293,13 @@ class CamForm : Form
     // Click on a camera: show it alone, full screen. Click again: back to all cameras.
     void ClickAt(Point p)
     {
-        if (big != null) { big = null; DoLayout(); return; }
-        foreach (var t in tiles) if (t.Box.Visible && t.Box.Bounds.Contains(p)) { big = t; DoLayout(); return; }
+        if (big != null) { big = null; DoLayout(); SyncStreams(); return; }
+        foreach (var t in tiles) if (t.Box.Visible && t.Box.Bounds.Contains(p)) { big = t; DoLayout(); SyncStreams(); return; }
     }
+
+    // HD only for cameras on screen: with one camera full screen, the hidden ones use the low quality stream.
+    bool WantHd(Tile t) { return hd.Contains(t.Ch) && (big == null || big == t); }
+    void SyncStreams() { foreach (var t in tiles) if (t.PlayingHd != WantHd(t)) PlayTile(t); }
 
     // Right click on a camera: switch its channel between low quality and HD (both halves of a split channel).
     void RightClickAt(Point p)
@@ -330,6 +337,7 @@ class CamForm : Form
             {
                 long h = Native.CLIENT_RealPlayEx(login, todo[k], IntPtr.Zero, 3);
                 if (h == 0) continue;
+                lock (bytesPerPlay) bytesPerPlay.Remove(h);   // the number may be reused from a stopped stream
                 Native.CLIENT_SetRealDataCallBackEx2(h, dataCb, IntPtr.Zero, 1);
                 plays[h] = todo[k];
             }
