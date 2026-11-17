@@ -443,7 +443,7 @@ class CamForm : Form
         if (addrLabel == null) return;
         addrLabel.Location = new Point(ClientSize.Width - addrLabel.Width - 6, ClientSize.Height - addrLabel.Height - 4);
         addrLabel.BringToFront();
-        if (qrBox != null) { qrBox.Location = new Point(ClientSize.Width - qrBox.Width - 6, addrLabel.Top - qrBox.Height - 4); qrBox.BringToFront(); }
+        if (qrBox != null) { qrBox.Location = new Point(6, ClientSize.Height - qrBox.Height - 4); qrBox.BringToFront(); }   // bottom left corner
     }
 
     PictureBox qrBox;
