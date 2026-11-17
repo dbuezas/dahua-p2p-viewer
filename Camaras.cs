@@ -210,8 +210,16 @@ class CamForm : Form
     {
         Log("reinicio la app: " + why);
         try { single.ReleaseMutex(); } catch { }   // so the new copy can start
-        Application.Restart();
-        Environment.Exit(0);
+        System.Diagnostics.Process.Start(Application.ExecutablePath);
+        HardExit();
+    }
+
+    // Ends this process at once. A normal exit lets the Dahua libraries clean up, and that can hang forever
+    // (seen after the PC woke up: the old copy stayed as a frozen window that could not even be killed).
+    static void HardExit()
+    {
+        Log("fin");
+        System.Diagnostics.Process.GetCurrentProcess().Kill();
     }
 
     void DoLayout()
@@ -484,7 +492,12 @@ class CamForm : Form
             return;
         }
         Log("---- inicio");
+        // This copy owns the lock, so any other running copy is a leftover that hung while closing: end it.
+        var self = System.Diagnostics.Process.GetCurrentProcess();
+        foreach (var pr in System.Diagnostics.Process.GetProcessesByName(self.ProcessName))
+            if (pr.Id != self.Id) { Log("cierro copia vieja colgada " + pr.Id); try { pr.Kill(); } catch (Exception ex) { Log("no pude: " + ex.Message); } }
         if (!EnsurePassword()) return;
         Application.Run(new CamForm());
+        HardExit();
     }
 }
