@@ -19,6 +19,7 @@ This app shows the cameras in about 10 seconds.
   cameras. My recorder sends every PTZ command to its one PTZ camera, whatever channel is asked, so only the listed
   channels get commands. `ptz_invertir_pan=1` turns left/right around, `ptz_velocidad` sets the speed in percent (below the slowest real speed it moves in short pulses).
 - Digital zoom on the full screen camera: hold + or - (keyboard) or the + / − buttons on the phone (1x to 4x).
+- Digital pan on a zoomed camera without PTZ: drag the picture with the mouse, or use the phone joystick.
 - Right click a camera: switch it between low quality (sub stream, fast) and HD (main stream). A red "HD"
   shows on HD cameras. The choice is saved in `hd.txt`. Too many HD cameras at once can hit the NVR's stream limit.
 - Drag a camera onto another one: they swap places. The order is saved in `orden.txt`.

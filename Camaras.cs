@@ -78,7 +78,7 @@ class CamForm : Form
 
     // One square on screen. Half: 0 = whole picture, 1 = top half, 2 = bottom half
     // (for a channel whose picture is two cameras stacked; it is played twice and each square shows one half).
-    class Tile { public Panel Box, Video; public Label Tag; public int Ch, Half; public long Play, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1; }
+    class Tile { public Panel Box, Video; public Label Tag; public int Ch, Half; public long Play, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1, PanX, PanY; }
     List<Tile> tiles = new List<Tile>();
     Tile big = null;
     Panel[] frame = new Panel[4];   // yellow frame around the camera a dragged camera will swap with
@@ -119,7 +119,7 @@ class CamForm : Form
         // So read the mouse button and Esc directly, every 40 ms, while this app is in front.
         try { foreach (var c in File.ReadAllText(HdFile).Split(',')) { int ch; if (int.TryParse(c.Trim(), out ch)) hd.Add(ch); } } catch { }
         bool wasDown = false, rightWas = false, escWas = false, pressOk = false, dragging = false;
-        Tile ptzTile = null;
+        Tile ptzTile = null, panTile = null; double panX0 = 0, panY0 = 0;
         int zoomWas = 0; DateTime zoomStep = DateTime.MinValue;
         Point pressAt = Point.Empty;
         Tile dragFrom = null;
@@ -137,6 +137,20 @@ class CamForm : Form
                 pressAt = pos; dragging = false;
                 dragFrom = pressOk && big == null ? TileAt(pos) : null;
                 ptzTile = pressOk && big != null && TileAt(pos) == big && CanPtz(big.Ch) ? big : null;
+                panTile = pressOk && big != null && TileAt(pos) == big && !CanPtz(big.Ch) && big.Zoom > 1 ? big : null;
+                if (panTile != null) { panX0 = panTile.PanX; panY0 = panTile.PanY; }
+            }
+            else if (down && panTile != null)
+            {
+                // Zoomed camera without PTZ: dragging moves the picture with the mouse.
+                if (!dragging && (Math.Abs(pos.X - pressAt.X) > 20 || Math.Abs(pos.Y - pressAt.Y) > 20)) dragging = true;
+                if (dragging)
+                {
+                    int bw = panTile.Box.ClientSize.Width, bh = panTile.Box.ClientSize.Height; double z = panTile.Zoom;
+                    panTile.PanX = Math.Max(-1, Math.Min(1, panX0 - (pos.X - pressAt.X) / (bw * (z - 1) / 2)));
+                    panTile.PanY = Math.Max(-1, Math.Min(1, panY0 - (pos.Y - pressAt.Y) / (bh * (z - 1) / 2)));
+                    DoLayout();
+                }
             }
             else if (down && ptzTile != null)
             {
@@ -152,10 +166,11 @@ class CamForm : Form
             else if (!down && wasDown)
             {
                 ShowFrame(Rectangle.Empty);
-                if (ptzTile != null && dragging) PtzStop();
+                if (panTile != null && dragging) { }
+                else if (ptzTile != null && dragging) PtzStop();
                 else if (dragging) { var to = TileAt(pos); if (to != null && to != dragFrom) Swap(dragFrom, to); }
                 else if (pressOk) ClickAt(pressAt);
-                dragFrom = null; ptzTile = null; dragging = false;
+                dragFrom = null; ptzTile = null; panTile = null; dragging = false;
             }
             wasDown = down;
             bool right = (Win.GetAsyncKeyState(0x02) & 0x8001) != 0;   // right mouse button
@@ -338,12 +353,15 @@ class CamForm : Form
             // A half square holds a video panel twice as tall, shifted so only its half shows.
             var vr = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
             // Digital zoom (full screen only): the video panel grows around the middle of the square; the square cuts it.
-            if (t != big) t.Zoom = 1;
+            if (t != big) { t.Zoom = 1; t.PanX = t.PanY = 0; }
             if (t.Zoom > 1)
             {
                 double cx = bw / 2.0, cy = bh / 2.0, z = t.Zoom;
-                vr = new Rectangle((int)(cx - (cx - vr.X) * z), (int)(cy - (cy - vr.Y) * z), (int)(vr.Width * z), (int)(vr.Height * z));
+                // Digital pan: PanX/PanY from -1 to 1 move the cut-out to the left/top or right/bottom edge.
+                double sx = -t.PanX * bw * (z - 1) / 2, sy = -t.PanY * bh * (z - 1) / 2;
+                vr = new Rectangle((int)(cx - (cx - vr.X) * z + sx), (int)(cy - (cy - vr.Y) * z + sy), (int)(vr.Width * z), (int)(vr.Height * z));
             }
+            else t.PanX = t.PanY = 0;
             t.Video.Bounds = vr;
         }
     }
@@ -770,6 +788,17 @@ class CamForm : Form
             else if (p[0] == "hd" && t != null && p.Length > 2) SetHd(t, p[2] == "1");
             else if (p[0] == "order" && p.Length > 1) SetOrder(p[1].Split(','));
             // Phone joystick on camera i: "ptz i dx dy" (drag in phone pixels), "ptzstop".
+            else if (p[0] == "ptz" && t != null && !CanPtz(t.Ch) && p.Length > 3)
+            {
+                // Joystick on a camera without PTZ: move the zoomed picture (each command = one small step).
+                int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy);
+                if (t == big && t.Zoom > 1)
+                {
+                    t.PanX = Math.Max(-1, Math.Min(1, t.PanX + dx / 1500.0 / (t.Zoom - 1)));
+                    t.PanY = Math.Max(-1, Math.Min(1, t.PanY + dy / 1500.0 / (t.Zoom - 1)));
+                    DoLayout();
+                }
+            }
             else if (p[0] == "ptz" && t != null && CanPtz(t.Ch) && p.Length > 3) { int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy); PtzDrag(t.Ch, dx * 2, dy * 2); }
             else if (p[0] == "ptzstop") PtzStop();
             // Phone zoom buttons: "zoom i 1" (in) / "zoom i -1" (out): one digital zoom step each.
@@ -907,7 +936,7 @@ function draw(s){st=s;var g=document.getElementById('grid');
   d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd data-hd='+i+'>HD</button></div>';g.appendChild(d)}
  while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
  s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd)});
- var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none';pad.style.display=c&&c.ptz?'block':'none'}
+ var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none'}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
 var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
 function padMove(e){var r=pad.getBoundingClientRect(),dx=e.clientX-r.left-r.width/2,dy=e.clientY-r.top-r.height/2,m=Math.hypot(dx,dy),max=r.width/2-30;
@@ -915,7 +944,10 @@ function padMove(e){var r=pad.getBoundingClientRect(),dx=e.clientX-r.left-r.widt
  if(Date.now()-lastSend>150&&Math.hypot(dx,dy)>8){lastSend=Date.now();cmd('ptz '+st.big+' '+Math.round(dx*2.5)+' '+Math.round(dy*2.5))}}
 pad.addEventListener('pointerdown',function(e){padOn=true;pad.setPointerCapture(e.pointerId);padMove(e);e.preventDefault()});
 pad.addEventListener('pointermove',function(e){if(padOn)padMove(e)});
-function padEnd(){if(!padOn)return;padOn=false;knob.style.left='55px';knob.style.top='55px';cmd('ptzstop')}
+// Keep sending while the finger is held still (the picture of a camera without PTZ moves one step per command).
+var padLast=null;setInterval(function(){if(padOn&&padLast)padMove(padLast)},150);
+pad.addEventListener('pointermove',function(e){padLast=e});pad.addEventListener('pointerdown',function(e){padLast=e});
+function padEnd(){if(!padOn)return;padOn=false;padLast=null;knob.style.left='55px';knob.style.top='55px';cmd('ptzstop')}
 pad.addEventListener('pointerup',padEnd);pad.addEventListener('pointercancel',padEnd);
 // Zoom buttons (digital zoom on the TV): one step per tap, repeats every 250 ms while held.
 [['zin',1],['zout',-1]].forEach(function(z){var b=document.getElementById(z[0]),rep=null;
