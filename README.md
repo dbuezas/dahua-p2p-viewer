@@ -11,7 +11,8 @@ This app shows the cameras in about 10 seconds.
 - Finds the channels that have a camera by itself (and saves the list, so the next start is fast).
   A camera added to the NVR later shows up on the next start.
 - A channel whose picture is two cameras stacked can be split into two squares (`dividir` in `camaras.ini`).
-- Click a camera: it gets big, and the others stay small (10% of the screen width) on the side or below.
+- Click a camera: it gets full screen, and the others float over its bottom edge as small pictures
+  (10% of the screen width each).
   Click a small one to make it big instead. Click the big one or Esc: all cameras. Esc with all cameras: close.
 - Right click a camera: switch it between low quality (sub stream, fast) and HD (main stream). A red "HD"
   shows on HD cameras. The choice is saved in `hd.txt`. Too many HD cameras at once can hit the NVR's stream limit.

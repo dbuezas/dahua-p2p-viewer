@@ -270,39 +270,33 @@ class CamForm : Form
             t.Box.Visible = true;
             var c = cells[i];
             t.Box.Bounds = new Rectangle(c.X + 1, c.Y + 1, c.Width - 2, c.Height - 2);
-            t.Tag.Visible = hd.Contains(t.Ch) && (big == null || big == t);   // no HD tag on the small ones
+            // HD tag on every HD camera; smaller on the small pictures.
+            bool small = big != null && big != t;
+            t.Tag.Visible = hd.Contains(t.Ch);
+            if (t.Tag.Font.Size != (small ? 8f : 18f)) t.Tag.Font = new Font("Segoe UI", small ? 8f : 18f, FontStyle.Bold);
+            t.Tag.Location = small ? new Point(4, 4) : new Point(24, 24);
+            if (small) t.Box.BringToFront();   // small pictures float over the big one
             int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
             // A half square holds a video panel twice as tall, shifted so only its half shows.
             t.Video.Bounds = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
         }
     }
 
-    // One camera big, the others small (thumbnails 10% of the screen width) in a column on the right,
-    // or in a row below if that leaves the big one bigger. The result is centered.
+    // One camera full screen (biggest 16:9 rectangle, centered). The others float over its bottom edge as small
+    // pictures (10% of the screen width each, in a centered row), so the big one keeps its full size.
     static List<Rectangle> ArrangeBig(int n, int bigIdx, int W, int H)
     {
+        double fs = Math.Min((double)W / 16, (double)H / 9);
+        double gw = fs * 16, gh = fs * 9, x0 = (W - gw) / 2, y0 = (H - gh) / 2;
         int m = n - 1;
-        // Side: thumbnails stacked on the right (smaller if they do not fit in the height).
-        double sw = W * 0.10, sh = sw * 9 / 16;
-        if (m * sh > H) { sh = (double)H / m; sw = sh * 16 / 9; }
-        double sideBig = Math.Min((W - sw) / 16, (double)H / 9);
-        // Below: thumbnails in a row under the big one.
-        double bw = W * 0.10, bh = bw * 9 / 16;
-        if (m * bw > W) { bw = (double)W / m; bh = bw * 9 / 16; }
-        double belowBig = Math.Min((double)W / 16, (H - bh) / 9);
+        double tw = Math.Min(W * 0.10, m > 0 ? (gw - 20) / m : 0), th = tw * 9 / 16, gap = 10;
+        double tx = (W - m * tw) / 2, ty = y0 + gh - th - gap;
         var list = new List<Rectangle>();
-        if (m == 0) { sw = 0; sh = 0; }
-        bool side = sideBig >= belowBig;
-        double s = side ? sideBig : belowBig;
-        double gw = s * 16, gh = s * 9;
-        double x0 = side ? (W - gw - sw) / 2 : (W - gw) / 2, y0 = side ? (H - gh) / 2 : (H - gh - bh) / 2;
-        // Thumbnails centered next to (or under) the big one.
-        double tx = side ? x0 + gw : (W - m * bw) / 2, ty = side ? (H - m * sh) / 2 : y0 + gh;
         int k = 0;
         for (int i = 0; i < n; i++)
         {
             if (i == bigIdx) { list.Add(new Rectangle((int)x0, (int)y0, (int)gw, (int)gh)); continue; }
-            list.Add(side ? new Rectangle((int)tx, (int)(ty + k * sh), (int)sw, (int)sh) : new Rectangle((int)(tx + k * bw), (int)ty, (int)bw, (int)bh));
+            list.Add(new Rectangle((int)(tx + k * tw), (int)ty, (int)tw, (int)th));
             k++;
         }
         return list;
