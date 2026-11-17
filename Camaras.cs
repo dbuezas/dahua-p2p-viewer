@@ -474,9 +474,12 @@ class CamForm : Form
     // Drag of (dx, dy) pixels from the press point: 8 directions, speed 1-8 grows with the distance.
     void PtzDrag(int ch, int dx, int dy)
     {
+        // Settings: ptz_invertir_pan=1 turns left/right around; ptz_velocidad=50 = half speed (percent).
+        if (C("ptz_invertir_pan", "0") == "1") dx = -dx;
         double ang = Math.Atan2(-dy, dx) * 180 / Math.PI;   // 0 = right, 90 = up
         int sector = (int)Math.Round(((ang + 360) % 360) / 45) % 8;
         int speed = Math.Max(1, Math.Min(8, (int)(Math.Sqrt(dx * dx + dy * dy) / 40)));
+        speed = Math.Max(1, (int)Math.Round(speed * int.Parse(C("ptz_velocidad", "100")) / 100.0));
         uint[] cmds = { 3, 0x21, 0, 0x20, 2, 0x22, 1, 0x23 };   // right, up-right, up, up-left, left, down-left, down, down-right
         uint cmd = cmds[sector];
         bool diag = cmd >= 0x20;

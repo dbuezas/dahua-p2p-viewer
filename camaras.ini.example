@@ -24,3 +24,6 @@ dividir=
 puerto_web=8080
 ; Channels with a camera that can move (PTZ), e.g. ptz=2. Drag on it (full screen) moves it.
 ptz=
+; PTZ: 1 = left/right turned around; speed in percent.
+ptz_invertir_pan=0
+ptz_velocidad=100

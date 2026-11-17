@@ -17,7 +17,7 @@ This app shows the cameras in about 10 seconds.
 - PTZ cameras (`ptz` in `camaras.ini`): with the camera full screen, drag on it to move it like a joystick
   (direction and speed follow the drag; it stops when you let go). From the phone: the round joystick above the
   cameras. My recorder sends every PTZ command to its one PTZ camera, whatever channel is asked, so only the listed
-  channels get commands.
+  channels get commands. `ptz_invertir_pan=1` turns left/right around, `ptz_velocidad` sets the speed in percent.
 - Digital zoom on the full screen camera: hold + or - (keyboard) or the + / − buttons on the phone (1x to 4x).
 - Right click a camera: switch it between low quality (sub stream, fast) and HD (main stream). A red "HD"
   shows on HD cameras. The choice is saved in `hd.txt`. Too many HD cameras at once can hit the NVR's stream limit.
