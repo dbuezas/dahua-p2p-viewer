@@ -726,6 +726,8 @@ class CamForm : Form
             // Phone joystick on camera i: "ptz i dx dy" (drag in phone pixels), "ptzstop".
             else if (p[0] == "ptz" && t != null && CanPtz(t.Ch) && p.Length > 3) { int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy); PtzDrag(t.Ch, dx * 2, dy * 2); }
             else if (p[0] == "ptzstop") PtzStop();
+            // Phone zoom buttons: "zoom i 1" (in) / "zoom i -1" (out) while held, then "ptzstop".
+            else if (p[0] == "zoom" && t != null && CanPtz(t.Ch) && p.Length > 2) PtzStart(t.Ch, p[2] == "1" ? 4u : 5u, 0, 4);
             // Test: "ptzraw channel cmd speed" moves a recorder channel directly ("ptzstop" stops it).
             else if (p[0] == "ptzraw" && p.Length > 3) { int ch, pc, sp; int.TryParse(p[1], out ch); int.TryParse(p[2], out pc); int.TryParse(p[3], out sp); PtzStart(ch, (uint)pc, pc >= 0x20 ? sp : 0, sp); }
         });
@@ -825,9 +827,14 @@ button{font-size:16px;padding:10px 14px;border:0;border-radius:8px;background:#3
 p.tip{color:#888;font-size:13px;margin:0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px}
 .hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
+#ptz{display:none;align-items:center;justify-content:center;gap:24px;padding:10px}
+#pad{width:170px;height:170px;border-radius:50%;background:#222;border:2px solid #555;position:relative;touch-action:none}
+#knob{width:60px;height:60px;border-radius:50%;background:#fc0;position:absolute;left:55px;top:55px;pointer-events:none}
+#zoom{display:flex;flex-direction:column;gap:14px}#zoom button{width:64px;height:64px;font-size:28px;touch-action:none}
 </style></head><body>
 <header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
 <p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar. Camara movil en grande: arrastrar sobre ella la mueve.</p>
+<div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=grid></div><img id=ghost>
 <script>
 var st={big:-1,cams:[]};
@@ -853,7 +860,21 @@ function draw(s){st=s;var g=document.getElementById('grid');
  while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
   d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd data-hd='+i+'>HD</button></div>';g.appendChild(d)}
  while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
- s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd)})}
+ s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd)});
+ var c=s.cams[s.big];document.getElementById('ptz').style.display=c&&c.ptz?'flex':'none'}
+// Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
+var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
+function padMove(e){var r=pad.getBoundingClientRect(),dx=e.clientX-r.left-r.width/2,dy=e.clientY-r.top-r.height/2,m=Math.hypot(dx,dy),max=r.width/2-30;
+ if(m>max){dx=dx*max/m;dy=dy*max/m}knob.style.left=(55+dx)+'px';knob.style.top=(55+dy)+'px';
+ if(Date.now()-lastSend>150&&Math.hypot(dx,dy)>8){lastSend=Date.now();cmd('ptz '+st.big+' '+Math.round(dx*2.5)+' '+Math.round(dy*2.5))}}
+pad.addEventListener('pointerdown',function(e){padOn=true;pad.setPointerCapture(e.pointerId);padMove(e);e.preventDefault()});
+pad.addEventListener('pointermove',function(e){if(padOn)padMove(e)});
+function padEnd(){if(!padOn)return;padOn=false;knob.style.left='55px';knob.style.top='55px';cmd('ptzstop')}
+pad.addEventListener('pointerup',padEnd);pad.addEventListener('pointercancel',padEnd);
+// Zoom buttons: zoom while held.
+[['zin',1],['zout',-1]].forEach(function(z){var b=document.getElementById(z[0]);
+ b.addEventListener('pointerdown',function(e){e.preventDefault();b.setPointerCapture(e.pointerId);cmd('zoom '+st.big+' '+z[1])});
+ b.addEventListener('pointerup',function(){cmd('ptzstop')});b.addEventListener('pointercancel',function(){cmd('ptzstop')})});
 function setBig(i){st.big=i;draw(st);cmd('big '+i)}
 // Tap = big; drag onto another camera = swap (pointer events work with fingers and mouse).
 var drag=null,ghost=document.getElementById('ghost');
