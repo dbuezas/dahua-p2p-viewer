@@ -482,49 +482,65 @@ class CamForm : Form
         }) { IsBackground = true }.Start();
     }
 
+    // One connection can carry many requests (keep-alive). On the PC's Wi-Fi, opening a new connection often
+    // fails, but an open one works fine, so the phone page keeps reusing the same connections.
     void Serve(System.Net.Sockets.TcpClient c)
     {
         using (c)
         {
             try
             {
-                c.ReceiveTimeout = 5000; c.SendTimeout = 10000;
+                c.ReceiveTimeout = 120000; c.SendTimeout = 10000;   // an idle connection stays open 2 minutes
                 var remote = ((System.Net.IPEndPoint)c.Client.RemoteEndPoint).Address;
                 var st = c.GetStream();
                 var rd = new StreamReader(st, Encoding.ASCII);
-                string req = rd.ReadLine() ?? "";
-                while (!string.IsNullOrEmpty(rd.ReadLine())) { }   // skip the headers
-                if (!IsLocal(remote)) { Send(st, "403 Forbidden", "text/plain", Encoding.ASCII.GetBytes("solo red local")); return; }
-                var parts = req.Split(' ');
-                string path = parts.Length > 1 ? parts[1] : "/";
-                string q = path.Contains("?") ? path.Substring(path.IndexOf('?') + 1) : "";
-                path = path.Split('?')[0];
-                int i = -1, j = -1;
-                foreach (var kv in q.Split('&')) { if (kv.StartsWith("i=")) int.TryParse(kv.Substring(2), out i); if (kv.StartsWith("j=")) int.TryParse(kv.Substring(2), out j); }
-
-                if (path == "/") { Send(st, "200 OK", "text/html; charset=utf-8", Encoding.UTF8.GetBytes(Page)); return; }
-                if (path.StartsWith("/snap")) { var jpg = Snapshot(i); if (jpg == null) Send(st, "404 Not Found", "text/plain", new byte[0]); else Send(st, "200 OK", "image/jpeg", jpg); return; }
-                string json = null;
-                Invoke((MethodInvoker)delegate
+                while (true)
                 {
-                    Tile t = i >= 0 && i < tiles.Count ? tiles[i] : null;
-                    if (path == "/api/big" && t != null) { big = big == t ? null : t; DoLayout(); }
-                    else if (path == "/api/all") { big = null; DoLayout(); }
-                    else if (path == "/api/hd" && t != null) ToggleHd(t);
-                    else if (path == "/api/swap" && t != null && j >= 0 && j < tiles.Count && j != i) Swap(t, tiles[j]);
-                    var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"cams\":[");
-                    for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + "}");
-                    json = sb.Append("]}").ToString();
-                });
-                Send(st, "200 OK", "application/json", Encoding.UTF8.GetBytes(json));
+                    string req = rd.ReadLine();
+                    if (req == null) return;            // the phone closed the connection
+                    if (req == "") continue;
+                    bool close = false;
+                    string h;
+                    while (!string.IsNullOrEmpty(h = rd.ReadLine())) if (h.ToLower().StartsWith("connection:") && h.ToLower().Contains("close")) close = true;
+                    if (!IsLocal(remote)) { Send(st, "403 Forbidden", "text/plain", Encoding.ASCII.GetBytes("solo red local")); return; }
+                    HandleRequest(st, req);
+                    if (close) return;
+                }
             }
+            catch (IOException) { }   // idle timeout or the phone went away
             catch (Exception ex) { Log("web: " + ex.Message); }
         }
     }
 
+    void HandleRequest(Stream st, string req)
+    {
+        var parts = req.Split(' ');
+        string path = parts.Length > 1 ? parts[1] : "/";
+        string q = path.Contains("?") ? path.Substring(path.IndexOf('?') + 1) : "";
+        path = path.Split('?')[0];
+        int i = -1, j = -1;
+        foreach (var kv in q.Split('&')) { if (kv.StartsWith("i=")) int.TryParse(kv.Substring(2), out i); if (kv.StartsWith("j=")) int.TryParse(kv.Substring(2), out j); }
+
+        if (path == "/") { Send(st, "200 OK", "text/html; charset=utf-8", Encoding.UTF8.GetBytes(Page)); return; }
+        if (path.StartsWith("/snap")) { var jpg = Snapshot(i); if (jpg == null) Send(st, "404 Not Found", "text/plain", new byte[0]); else Send(st, "200 OK", "image/jpeg", jpg); return; }
+        string json = null;
+        Invoke((MethodInvoker)delegate
+        {
+            Tile t = i >= 0 && i < tiles.Count ? tiles[i] : null;
+            if (path == "/api/big" && t != null) { big = big == t ? null : t; DoLayout(); }
+            else if (path == "/api/all") { big = null; DoLayout(); }
+            else if (path == "/api/hd" && t != null) ToggleHd(t);
+            else if (path == "/api/swap" && t != null && j >= 0 && j < tiles.Count && j != i) Swap(t, tiles[j]);
+            var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"cams\":[");
+            for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + "}");
+            json = sb.Append("]}").ToString();
+        });
+        Send(st, "200 OK", "application/json", Encoding.UTF8.GetBytes(json));
+    }
+
     static void Send(Stream st, string status, string type, byte[] body)
     {
-        var head = Encoding.ASCII.GetBytes("HTTP/1.1 " + status + "\r\nContent-Type: " + type + "\r\nContent-Length: " + body.Length + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
+        var head = Encoding.ASCII.GetBytes("HTTP/1.1 " + status + "\r\nContent-Type: " + type + "\r\nContent-Length: " + body.Length + "\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n");
         st.Write(head, 0, head.Length);
         st.Write(body, 0, body.Length);
     }
@@ -586,7 +602,10 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 <div id=grid></div><img id=ghost>
 <script>
 var st={big:-1,cams:[]};
-function act(u){fetch(u,{cache:'no-store'}).then(r=>r.json()).then(draw)}
+// The PC's Wi-Fi loses many new connections: every request has a 2.5 s timeout and is tried up to 4 times.
+function get(u,n){n=n||4;var c=new AbortController(),t=setTimeout(function(){c.abort()},2500);
+ return fetch(u,{cache:'no-store',signal:c.signal}).then(function(r){clearTimeout(t);if(!r.ok)throw 0;return r},function(e){clearTimeout(t);if(n>1)return get(u,n-1);throw e})}
+function act(u){get(u).then(function(r){return r.json()}).then(draw).catch(function(){})}
 function draw(s){st=s;var g=document.getElementById('grid');
  while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
   d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd onclick=""act(\'/api/hd?i='+i+'\')"">HD</button></div>';g.appendChild(d)}
@@ -605,7 +624,7 @@ function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='no
  if(!d.moved){act('/api/big?i='+d.i);return}
  if(d.to){var j=[].indexOf.call(d.to.parentNode.children,d.to),a=d.el.querySelector('img'),b=d.to.querySelector('img'),t=a.src;a.src=b.src;b.src=t;act('/api/swap?i='+d.i+'&j='+j)}}
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
-function snaps(){[].forEach.call(document.querySelectorAll('.cam img'),function(im,i){var n=new Image();n.onload=function(){im.src=n.src};n.src='/snap?i='+i+'&t='+Date.now()})}
+function snaps(){[].forEach.call(document.querySelectorAll('.cam img'),function(im,i){get('/snap?i='+i+'&t='+Date.now(),2).then(function(r){return r.blob()}).then(function(b){var old=im.src;im.src=URL.createObjectURL(b);if(old.indexOf('blob:')==0)URL.revokeObjectURL(old)}).catch(function(){})})}
 act('/api/state');setInterval(function(){act('/api/state')},3000);snaps();setInterval(snaps,4000);
 </script></body></html>";
 
