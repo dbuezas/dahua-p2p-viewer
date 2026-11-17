@@ -65,7 +65,7 @@ class CamForm : Form
 
     // One square on screen. Half: 0 = whole picture, 1 = top half, 2 = bottom half
     // (for a channel whose picture is two cameras stacked; it is played twice and each square shows one half).
-    class Tile { public Panel Box, Video; public int Ch, Half; public long Play; }
+    class Tile { public Panel Box, Video; public int Ch, Half; public long Play, LastBytes; public DateTime LastData; }
     List<Tile> tiles = new List<Tile>();
     Tile big = null;
     Label status;
@@ -117,6 +117,15 @@ class CamForm : Form
         };
         poll.Start();
 
+        var watchdog = new System.Windows.Forms.Timer { Interval = 5000 };
+        watchdog.Tick += (s, e) => Watchdog();
+        watchdog.Start();
+        // After the PC wakes up the tunnel and login are gone: start again from zero.
+        Microsoft.Win32.SystemEvents.PowerModeChanged += (s, e) =>
+        {
+            if (e.Mode == Microsoft.Win32.PowerModes.Resume) BeginInvoke((MethodInvoker)delegate { Restart("la PC desperto"); });
+        };
+
         status = new Label { Text = "Conectando...", ForeColor = Color.Gray, AutoSize = true, Location = new Point(20, 20), Font = new Font("Segoe UI", 16) };
         Controls.Add(status);
         Resize += (s, e) => DoLayout();
@@ -150,30 +159,107 @@ class CamForm : Form
             }
         status.Visible = tiles.Count == 0;
         DoLayout();
-        int stream = int.Parse(C("flujo", "3"));
+        foreach (var t in tiles) PlayTile(t);
+    }
+
+    // (Re)starts the video of one square and counts its bytes, so the watchdog can see if it stops.
+    void PlayTile(Tile t)
+    {
+        if (t.Play != 0) Native.CLIENT_StopRealPlayEx(t.Play);
+        t.Play = Native.CLIENT_RealPlayEx(login, t.Ch, t.Video.Handle, int.Parse(C("flujo", "3")));
+        if (t.Play != 0) Native.CLIENT_SetRealDataCallBackEx2(t.Play, dataCb, IntPtr.Zero, 1);
+        t.LastBytes = 0;
+        t.LastData = DateTime.Now;
+        Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : " (abajo)") : "") + " -> " + t.Play + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
+    }
+
+    static long BytesOf(long play) { long b = 0; if (play != 0) lock (bytesPerPlay) bytesPerPlay.TryGetValue(play, out b); return b; }
+
+    // Watchdog, every 5 s: a square without new video for 20 s gets its video restarted.
+    // If no square got video for 90 s (tunnel or login lost), the whole app starts again.
+    DateTime lastAnyData = DateTime.Now;
+    void Watchdog()
+    {
+        if (login == 0 || tiles.Count == 0) return;
         foreach (var t in tiles)
         {
-            t.Play = Native.CLIENT_RealPlayEx(login, t.Ch, t.Video.Handle, stream);
-            Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : " (abajo)") : "") + " -> " + t.Play + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
+            long b = BytesOf(t.Play);
+            if (b > t.LastBytes) { t.LastBytes = b; t.LastData = DateTime.Now; lastAnyData = DateTime.Now; }
+            else if ((DateTime.Now - t.LastData).TotalSeconds > 20) { Log("sin video 20 s, reinicio canal " + t.Ch); PlayTile(t); }
         }
+        if ((DateTime.Now - lastAnyData).TotalSeconds > 90) Restart("ninguna camara con video por 90 s");
+    }
+
+    // Starts the app again from zero (new P2P tunnel, new login).
+    void Restart(string why)
+    {
+        Log("reinicio la app: " + why);
+        Application.Restart();
+        Environment.Exit(0);
     }
 
     void DoLayout()
     {
         int n = tiles.Count;
         if (n == 0) return;
-        int cols = (int)Math.Ceiling(Math.Sqrt(n)), rows = (n + cols - 1) / cols;
-        int w = ClientSize.Width / cols, h = ClientSize.Height / rows;
+        var cells = Arrange(n, ClientSize.Width, ClientSize.Height);
+        int W = ClientSize.Width, H = ClientSize.Height;
+        // Full screen camera: biggest 16:9 rectangle, centered.
+        double fs = Math.Min((double)W / 16, (double)H / 9);
+        var full = new Rectangle((W - (int)(fs * 16)) / 2, (H - (int)(fs * 9)) / 2, (int)(fs * 16), (int)(fs * 9));
         for (int i = 0; i < n; i++)
         {
             var t = tiles[i];
             if (big != null && t != big) { t.Box.Visible = false; continue; }
             t.Box.Visible = true;
-            t.Box.Bounds = big == t ? ClientRectangle : new Rectangle((i % cols) * w + 1, (i / cols) * h + 1, w - 2, h - 2);
+            var c = cells[i];
+            t.Box.Bounds = big == t ? full : new Rectangle(c.X + 1, c.Y + 1, c.Width - 2, c.Height - 2);
             int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
             // A half square holds a video panel twice as tall, shifted so only its half shows.
             t.Video.Bounds = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
         }
+    }
+
+    // Places n 16:9 pictures (no stretching) so that together they cover as much of the screen as possible.
+    // Two kinds of layouts are tried and the bigger one wins:
+    //  - a normal grid (all pictures the same size, the last row may have empty cells),
+    //  - rows with different counts (e.g. 5 = 2 big on top + 3 smaller below), each row as wide as the screen.
+    // The result is centered.
+    static List<Rectangle> Arrange(int n, int W, int H)
+    {
+        List<Rectangle> best = null; double bestArea = -1;
+        Action<List<Rectangle>> consider = list =>
+        {
+            double a = 0; foreach (var r in list) a += (double)r.Width * r.Height;
+            if (a > bestArea + 1) { bestArea = a; best = list; }
+        };
+        for (int c = 1; c <= n; c++)
+        {
+            int rows = (n + c - 1) / c;
+            double sc = Math.Min((double)W / c / 16, (double)H / rows / 9);
+            int w = (int)(sc * 16), h = (int)(sc * 9), x0 = (W - c * w) / 2, y0 = (H - rows * h) / 2;
+            var list = new List<Rectangle>();
+            for (int i = 0; i < n; i++) list.Add(new Rectangle(x0 + (i % c) * w, y0 + (i / c) * h, w, h));
+            consider(list);
+        }
+        for (int r = 1; r <= n; r++)
+        {
+            int baseK = n / r, extra = n % r;
+            var counts = new int[r];
+            for (int i = 0; i < r; i++) counts[i] = baseK + (i >= r - extra ? 1 : 0);   // fewer (bigger) on top
+            double sum = 0; foreach (var k in counts) sum += (double)W / k * 9 / 16;
+            double f = Math.Min(1, H / sum);
+            double y = (H - sum * f) / 2;
+            var list = new List<Rectangle>();
+            foreach (var k in counts)
+            {
+                double w = f * W / k, h = w * 9 / 16, x = (W - k * w) / 2;
+                for (int j = 0; j < k; j++) list.Add(new Rectangle((int)(x + j * w), (int)y, (int)w, (int)h));
+                y += h;
+            }
+            consider(list);
+        }
+        return best;
     }
 
     // Click on a camera: show it alone, full screen. Click again: back to all cameras.
@@ -190,28 +276,36 @@ class CamForm : Form
     }
 
     // Plays every channel for a few seconds without showing it and keeps the ones that send video.
-    List<int> DiscoverCameras(int nChan)
+    // Channels in `skip` are already on screen and are not opened again (the NVR limits how many streams it sends).
+    // The others are opened 8 at a time, so the NVR never sends too many streams at once.
+    List<int> DiscoverCameras(int nChan, HashSet<int> skip)
     {
-        var plays = new Dictionary<long, int>();
-        lock (bytesPerPlay) bytesPerPlay.Clear();
-        for (int ch = 0; ch < Math.Min(nChan, 64); ch++)
-        {
-            long h = Native.CLIENT_RealPlayEx(login, ch, IntPtr.Zero, 3);
-            if (h == 0) continue;
-            Native.CLIENT_SetRealDataCallBackEx2(h, dataCb, IntPtr.Zero, 1);
-            plays[h] = ch;
-        }
-        Thread.Sleep(int.Parse(C("busqueda_segundos", "8")) * 1000);
         var found = new List<int>();
-        foreach (var kv in plays)
+        int tried = 0;
+        var todo = new List<int>();
+        for (int ch = 0; ch < Math.Min(nChan, 64); ch++) if (!skip.Contains(ch)) todo.Add(ch);
+        for (int i = 0; i < todo.Count; i += 8)
         {
-            long b;
-            lock (bytesPerPlay) bytesPerPlay.TryGetValue(kv.Key, out b);
-            Native.CLIENT_StopRealPlayEx(kv.Key);
-            if (b > 20000) found.Add(kv.Value);
+            var plays = new Dictionary<long, int>();
+            for (int k = i; k < Math.Min(i + 8, todo.Count); k++)
+            {
+                long h = Native.CLIENT_RealPlayEx(login, todo[k], IntPtr.Zero, 3);
+                if (h == 0) continue;
+                Native.CLIENT_SetRealDataCallBackEx2(h, dataCb, IntPtr.Zero, 1);
+                plays[h] = todo[k];
+            }
+            Thread.Sleep(int.Parse(C("busqueda_segundos", "6")) * 1000);
+            foreach (var kv in plays)
+            {
+                long b = BytesOf(kv.Key);
+                Native.CLIENT_StopRealPlayEx(kv.Key);
+                lock (bytesPerPlay) bytesPerPlay.Remove(kv.Key);
+                if (b > 20000) found.Add(kv.Value);
+            }
+            tried += plays.Count;
         }
         found.Sort();
-        Log("busqueda: " + plays.Count + " canales probados, con video: " + string.Join(",", found));
+        Log("busqueda: " + tried + " canales probados, con video nuevo: " + string.Join(",", found));
         return found;
     }
 
@@ -251,7 +345,7 @@ class CamForm : Form
                 int lp = localPort;
                 if (WaitFor("tunel", 15, () => Native.P2P_QueryChannelStatus(0, h, lp))) { ok = true; break; }
             }
-            if (!ok) { Status("No pude abrir el tunel P2P (ver camaras.log)"); return; }
+            if (!ok) { Status("No pude abrir el tunel P2P, reintento en 15 s"); Thread.Sleep(15000); BeginInvoke((MethodInvoker)delegate { Restart("tunel fallo"); }); return; }
 
             // 2. Login through the tunnel.
             Native.CLIENT_Init(keepCb, IntPtr.Zero);
@@ -281,7 +375,8 @@ class CamForm : Form
             for (int i = 0; i < 1024; i++) Marshal.WriteByte(pin, i, 0);
             Marshal.FreeHGlobal(pin); Marshal.FreeHGlobal(pout);
             Log("Login -> " + login + " nError " + nErr + " canales " + nChan + " lastErr 0x" + Native.CLIENT_GetLastError().ToString("X"));
-            if (login == 0) { Status(nErr == 1 ? "Clave del NVR incorrecta. Borra " + PassFile + " y abri de nuevo." : "No pude entrar al NVR (error " + nErr + ")"); return; }
+            if (login == 0 && nErr == 1) { Status("Clave del NVR incorrecta. Borra " + PassFile + " y abri de nuevo."); return; }
+            if (login == 0) { Status("No pude entrar al NVR (error " + nErr + "), reintento en 15 s"); Thread.Sleep(15000); BeginInvoke((MethodInvoker)delegate { Restart("login fallo"); }); return; }
 
             // 3. Show the cameras found last time right away, then look for cameras again
             //    (a camera added to the NVR appears; the list is saved for the next start).
@@ -289,7 +384,10 @@ class CamForm : Form
             try { foreach (var c in File.ReadAllText(CacheFile).Split(',')) { int ch; if (int.TryParse(c.Trim(), out ch)) cached.Add(ch); } } catch { }
             if (cached.Count > 0) Invoke((MethodInvoker)delegate { BuildTiles(cached); });
             else Status("Buscando camaras...");
-            var found = DiscoverCameras(nChan);
+            var found = DiscoverCameras(nChan, new HashSet<int>(cached));
+            // Cameras already on screen count as found if their square got video meanwhile.
+            Invoke((MethodInvoker)delegate { foreach (var t in tiles) if (BytesOf(t.Play) > 20000 && !found.Contains(t.Ch)) found.Add(t.Ch); });
+            found.Sort();
             if (found.Count == 0) { if (cached.Count == 0) Status("No encontre camaras con video (ver camaras.log)"); return; }
             if (string.Join(",", found) != string.Join(",", cached))
             {
