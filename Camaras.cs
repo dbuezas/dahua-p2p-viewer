@@ -602,9 +602,10 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 <div id=grid></div><img id=ghost>
 <script>
 var st={big:-1,cams:[]};
-// The PC's Wi-Fi loses many new connections: every request has a 2.5 s timeout and is tried up to 4 times.
-function get(u,n){n=n||4;var c=new AbortController(),t=setTimeout(function(){c.abort()},2500);
- return fetch(u,{cache:'no-store',signal:c.signal}).then(function(r){clearTimeout(t);if(!r.ok)throw 0;return r},function(e){clearTimeout(t);if(n>1)return get(u,n-1);throw e})}
+// The PC's Wi-Fi loses many new connections. A good answer takes a few ms, so wait little and try again often:
+// buttons 400 ms x 10 tries, pictures (slower to make) 2 s x 3 tries.
+function get(u,n,ms){n=n||10;ms=ms||400;var c=new AbortController(),t=setTimeout(function(){c.abort()},ms);
+ return fetch(u,{cache:'no-store',signal:c.signal}).then(function(r){clearTimeout(t);if(!r.ok)throw 0;return r},function(e){clearTimeout(t);if(n>1)return get(u,n-1,ms);throw e})}
 function act(u){get(u).then(function(r){return r.json()}).then(draw).catch(function(){})}
 function draw(s){st=s;var g=document.getElementById('grid');
  while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
@@ -624,7 +625,7 @@ function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='no
  if(!d.moved){act('/api/big?i='+d.i);return}
  if(d.to){var j=[].indexOf.call(d.to.parentNode.children,d.to),a=d.el.querySelector('img'),b=d.to.querySelector('img'),t=a.src;a.src=b.src;b.src=t;act('/api/swap?i='+d.i+'&j='+j)}}
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
-function snaps(){[].forEach.call(document.querySelectorAll('.cam img'),function(im,i){get('/snap?i='+i+'&t='+Date.now(),2).then(function(r){return r.blob()}).then(function(b){var old=im.src;im.src=URL.createObjectURL(b);if(old.indexOf('blob:')==0)URL.revokeObjectURL(old)}).catch(function(){})})}
+function snaps(){[].forEach.call(document.querySelectorAll('.cam img'),function(im,i){get('/snap?i='+i+'&t='+Date.now(),3,2000).then(function(r){return r.blob()}).then(function(b){var old=im.src;im.src=URL.createObjectURL(b);if(old.indexOf('blob:')==0)URL.revokeObjectURL(old)}).catch(function(){})})}
 act('/api/state');setInterval(function(){act('/api/state')},3000);snaps();setInterval(snaps,4000);
 </script></body></html>";
 
