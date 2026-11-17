@@ -2,7 +2,9 @@
 // Uses the Dahua libraries that SmartPSS Lite installed:
 //   P2PDll.dll  -> opens a local tunnel to the NVR by serial number (P2P)
 //   dhnetsdk.dll -> logs in through that tunnel and plays live video into windows
-// Esc closes. Double click on a camera makes it big / small again.
+// Click a camera: full screen; click again or Esc: all cameras. Esc with all cameras: close.
+// Right click a camera: switch it between low quality (fast) and HD. The choice is saved.
+// Only one copy runs: opening it again brings the running one to the front.
 // Settings in camaras.ini next to the exe. The NVR password is asked once and saved encrypted (Windows DPAPI).
 using System;
 using System.Collections.Generic;
@@ -52,6 +54,8 @@ static class Win
     [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point p);
     [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int cmd);   // async: does not hang on a frozen window
 }
 
 class CamForm : Form
@@ -65,12 +69,16 @@ class CamForm : Form
 
     // One square on screen. Half: 0 = whole picture, 1 = top half, 2 = bottom half
     // (for a channel whose picture is two cameras stacked; it is played twice and each square shows one half).
-    class Tile { public Panel Box, Video; public int Ch, Half; public long Play, LastBytes; public DateTime LastData; }
+    class Tile { public Panel Box, Video; public Label Tag; public int Ch, Half; public long Play, LastBytes; public DateTime LastData; }
     List<Tile> tiles = new List<Tile>();
     Tile big = null;
     Label status;
     long login = 0;
     static string CacheFile = Path.Combine(Dir, "canales.txt");
+    // Channels shown in HD (main stream). The others use the low quality stream (sub stream), which is faster.
+    static string HdFile = Path.Combine(Dir, "hd.txt");
+    HashSet<int> hd = new HashSet<int>();
+    static Mutex single;
 
     // Discovery: count the bytes each channel sends; channels that send video have a camera.
     static Dictionary<long, long> bytesPerPlay = new Dictionary<long, long>();
@@ -97,7 +105,8 @@ class CamForm : Form
         KeyPreview = true;
         // Dahua's video library puts its own window over each square and that window takes the clicks and keys.
         // So read the mouse button and Esc directly, every 40 ms, while this app is in front.
-        bool wasDown = false, escWas = false;
+        try { foreach (var c in File.ReadAllText(HdFile).Split(',')) { int ch; if (int.TryParse(c.Trim(), out ch)) hd.Add(ch); } } catch { }
+        bool wasDown = false, rightWas = false, escWas = false;
         var poll = new System.Windows.Forms.Timer { Interval = 40 };
         poll.Tick += (s, e) =>
         {
@@ -109,6 +118,9 @@ class CamForm : Form
                 if (over == Handle) ClickAt(PointToClient(Cursor.Position));
             }
             wasDown = down;
+            bool right = (Win.GetAsyncKeyState(0x02) & 0x8001) != 0;   // right mouse button
+            if (right && !rightWas && Win.GetAncestor(Win.WindowFromPoint(Cursor.Position), 2) == Handle) RightClickAt(PointToClient(Cursor.Position));
+            rightWas = right;
             // Esc: only when this app is in front.
             if (Win.GetForegroundWindow() != Handle) { escWas = false; return; }
             bool esc = (Win.GetAsyncKeyState(0x1B) & 0x8000) != 0;
@@ -154,6 +166,9 @@ class CamForm : Form
                 t.Box = new Panel { BackColor = Color.Black };
                 t.Video = new Panel { BackColor = Color.Black };
                 t.Box.Controls.Add(t.Video);
+                t.Tag = new Label { Text = "HD", ForeColor = Color.White, BackColor = Color.FromArgb(200, 0, 0), AutoSize = true, Font = new Font("Segoe UI", 9, FontStyle.Bold), Location = new Point(4, 4), Visible = hd.Contains(ch) };
+                t.Box.Controls.Add(t.Tag);
+                t.Tag.BringToFront();
                 tiles.Add(t);
                 Controls.Add(t.Box);
             }
@@ -166,11 +181,11 @@ class CamForm : Form
     void PlayTile(Tile t)
     {
         if (t.Play != 0) Native.CLIENT_StopRealPlayEx(t.Play);
-        t.Play = Native.CLIENT_RealPlayEx(login, t.Ch, t.Video.Handle, int.Parse(C("flujo", "3")));
+        t.Play = Native.CLIENT_RealPlayEx(login, t.Ch, t.Video.Handle, hd.Contains(t.Ch) ? 0 : int.Parse(C("flujo", "3")));   // 0 = main stream (HD)
         if (t.Play != 0) Native.CLIENT_SetRealDataCallBackEx2(t.Play, dataCb, IntPtr.Zero, 1);
         t.LastBytes = 0;
         t.LastData = DateTime.Now;
-        Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : " (abajo)") : "") + " -> " + t.Play + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
+        Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : " (abajo)") : "") + (hd.Contains(t.Ch) ? " HD" : "") + " -> " + t.Play + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
     }
 
     static long BytesOf(long play) { long b = 0; if (play != 0) lock (bytesPerPlay) bytesPerPlay.TryGetValue(play, out b); return b; }
@@ -194,6 +209,7 @@ class CamForm : Form
     void Restart(string why)
     {
         Log("reinicio la app: " + why);
+        try { single.ReleaseMutex(); } catch { }   // so the new copy can start
         Application.Restart();
         Environment.Exit(0);
     }
@@ -267,6 +283,20 @@ class CamForm : Form
     {
         if (big != null) { big = null; DoLayout(); return; }
         foreach (var t in tiles) if (t.Box.Visible && t.Box.Bounds.Contains(p)) { big = t; DoLayout(); return; }
+    }
+
+    // Right click on a camera: switch its channel between low quality and HD (both halves of a split channel).
+    void RightClickAt(Point p)
+    {
+        foreach (var t in tiles)
+        {
+            if (!t.Box.Visible || !t.Box.Bounds.Contains(p)) continue;
+            int ch = t.Ch;
+            if (!hd.Remove(ch)) hd.Add(ch);
+            try { File.WriteAllText(HdFile, string.Join(",", hd)); } catch { }
+            foreach (var u in tiles) if (u.Ch == ch) { u.Tag.Visible = hd.Contains(ch); PlayTile(u); }
+            return;
+        }
     }
 
     void Status(string s)
@@ -442,6 +472,17 @@ class CamForm : Form
     static void Main()
     {
         Application.EnableVisualStyles();
+        // Only one copy: if one already runs, bring it to the front and quit.
+        bool mine;
+        single = new Mutex(false, "DahuaP2PViewer");
+        try { mine = single.WaitOne(3000); } catch (AbandonedMutexException) { mine = true; }   // abandoned = the old copy crashed
+        if (!mine)
+        {
+            var me = System.Diagnostics.Process.GetCurrentProcess();
+            foreach (var pr in System.Diagnostics.Process.GetProcessesByName(me.ProcessName))
+                if (pr.Id != me.Id && pr.MainWindowHandle != IntPtr.Zero) { Win.ShowWindowAsync(pr.MainWindowHandle, 3); Win.SetForegroundWindow(pr.MainWindowHandle); }
+            return;
+        }
         Log("---- inicio");
         if (!EnsurePassword()) return;
         Application.Run(new CamForm());
