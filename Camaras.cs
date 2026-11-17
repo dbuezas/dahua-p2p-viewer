@@ -242,6 +242,7 @@ class CamForm : Form
         if (t.Play != 0) { Native.CLIENT_StopRealPlayEx(t.Play); lock (bytesPerPlay) bytesPerPlay.Remove(t.Play); }
         t.PlayingHd = WantHd(t);
         t.Play = Native.CLIENT_RealPlayEx(login, t.Ch, t.Video.Handle, t.PlayingHd ? 0 : int.Parse(C("flujo", "3")));   // 0 = main stream (HD)
+        UpdateState();   // new stream number for the phone pictures
         // The SDK reuses the numbers of stopped streams: start counting this one from zero.
         lock (bytesPerPlay) bytesPerPlay.Remove(t.Play);
         if (t.Play != 0) Native.CLIENT_SetRealDataCallBackEx2(t.Play, dataCb, IntPtr.Zero, 1);
@@ -286,6 +287,7 @@ class CamForm : Form
 
     void DoLayout()
     {
+        UpdateState();
         int n = tiles.Count;
         if (n == 0) return;
         int W = ClientSize.Width, H = ClientSize.Height;
@@ -438,13 +440,48 @@ class CamForm : Form
         addrLabel.BringToFront();
     }
 
-    void ToggleHd(Tile t)
+    void ToggleHd(Tile t) { SetHd(t, !hd.Contains(t.Ch)); }
+
+    // What the phone page shows, kept ready so a request never has to wait for the screen thread.
+    volatile string stateJson = "{\"big\":-1,\"cams\":[]}";
+    volatile long[] playHandles = new long[0];
+    volatile int[] halves = new int[0];
+    void UpdateState()
+    {
+        var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"cams\":[");
+        for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"k\":\"" + Key(tiles[k]) + "\",\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + "}");
+        stateJson = sb.Append("]}").ToString();
+        var ph = new long[tiles.Count]; var hv = new int[tiles.Count];
+        for (int k = 0; k < tiles.Count; k++) { ph[k] = tiles[k].Play; hv[k] = tiles[k].Half; }
+        playHandles = ph; halves = hv;
+    }
+
+    // Sets HD on or off for the channel of a camera. Doing it twice does nothing more (the phone may repeat a request).
+    // The tag and the answer change at once; the video restarts right after (that takes 1-2 s).
+    void SetHd(Tile t, bool on)
     {
         int ch = t.Ch;
-        if (!hd.Remove(ch)) hd.Add(ch);
+        if (hd.Contains(ch) == on) return;
+        if (on) hd.Add(ch); else hd.Remove(ch);
         try { File.WriteAllText(HdFile, string.Join(",", hd)); } catch { }
-        foreach (var u in tiles) if (u.Ch == ch) PlayTile(u);
         DoLayout();   // shows or hides the HD tag
+        BeginInvoke((MethodInvoker)delegate { foreach (var u in tiles) if (u.Ch == ch && u.PlayingHd != hd.Contains(ch)) PlayTile(u); });
+    }
+
+    // Puts the cameras in the given order (keys like "0", "2.1"). Unknown keys are ignored, missing cameras go last.
+    void SetOrder(string[] keys)
+    {
+        var old = new List<Tile>(tiles);
+        tiles.Sort((a, b) =>
+        {
+            int ia = Array.IndexOf(keys, Key(a)), ib = Array.IndexOf(keys, Key(b));
+            if (ia < 0) ia = 1000 + old.IndexOf(a);
+            if (ib < 0) ib = 1000 + old.IndexOf(b);
+            return ia.CompareTo(ib);
+        });
+        DoLayout();
+        var k2 = new List<string>(); foreach (var t in tiles) k2.Add(Key(t));
+        try { File.WriteAllText(OrderFile, string.Join(",", k2)); } catch { }
     }
 
     static bool IsLocal(System.Net.IPAddress a)
@@ -518,24 +555,33 @@ class CamForm : Form
         string path = parts.Length > 1 ? parts[1] : "/";
         string q = path.Contains("?") ? path.Substring(path.IndexOf('?') + 1) : "";
         path = path.Split('?')[0];
-        int i = -1, j = -1;
-        foreach (var kv in q.Split('&')) { if (kv.StartsWith("i=")) int.TryParse(kv.Substring(2), out i); if (kv.StartsWith("j=")) int.TryParse(kv.Substring(2), out j); }
+        int i = -1, j = -1; string on = null, order = null;
+        foreach (var kv in q.Split('&'))
+        {
+            if (kv.StartsWith("i=")) int.TryParse(kv.Substring(2), out i);
+            if (kv.StartsWith("j=")) int.TryParse(kv.Substring(2), out j);
+            if (kv.StartsWith("on=")) on = kv.Substring(3);
+            if (kv.StartsWith("o=")) order = Uri.UnescapeDataString(kv.Substring(2));
+        }
 
         if (path == "/") { Send(st, "200 OK", "text/html; charset=utf-8", Encoding.UTF8.GetBytes(Page)); return; }
         if (path.StartsWith("/snap")) { var jpg = Snapshot(i); if (jpg == null) Send(st, "404 Not Found", "text/plain", new byte[0]); else Send(st, "200 OK", "image/jpeg", jpg); return; }
-        string json = null;
-        Invoke((MethodInvoker)delegate
+        // The phone never waits for the screen: the action runs on the screen thread when it is free
+        // (restarting a video can keep it busy 1-2 s). The answer waits at most 300 ms for it, then sends what is known.
+        var done = new ManualResetEvent(false);
+        BeginInvoke((MethodInvoker)delegate
         {
             Tile t = i >= 0 && i < tiles.Count ? tiles[i] : null;
-            if (path == "/api/big" && t != null) { big = big == t ? null : t; DoLayout(); }
-            else if (path == "/api/all") { big = null; DoLayout(); }
-            else if (path == "/api/hd" && t != null) ToggleHd(t);
-            else if (path == "/api/swap" && t != null && j >= 0 && j < tiles.Count && j != i) Swap(t, tiles[j]);
-            var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"cams\":[");
-            for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + "}");
-            json = sb.Append("]}").ToString();
+            // Every action says the wanted result (not "switch"), so a repeated request changes nothing more.
+            if (path == "/api/big") { if (big != t) { big = t; DoLayout(); } }          // i=-1: all cameras
+            else if (path == "/api/all") { if (big != null) { big = null; DoLayout(); } }
+            else if (path == "/api/hd" && t != null && on != null) SetHd(t, on == "1");
+            else if (path == "/api/order" && order != null) SetOrder(order.Split(','));
+            UpdateState();
+            done.Set();
         });
-        Send(st, "200 OK", "application/json", Encoding.UTF8.GetBytes(json));
+        done.WaitOne(300);
+        Send(st, "200 OK", "application/json", Encoding.UTF8.GetBytes(stateJson));
     }
 
     static void Send(Stream st, string status, string type, byte[] body)
@@ -549,7 +595,8 @@ class CamForm : Form
     byte[] Snapshot(int i)
     {
         long play = 0; int half = 0;
-        Invoke((MethodInvoker)delegate { if (i >= 0 && i < tiles.Count) { play = tiles[i].Play; half = tiles[i].Half; } });
+        var ph = playHandles; var hv = halves;   // ready copies: no waiting for the screen thread
+        if (i >= 0 && i < ph.Length) { play = ph[i]; half = hv[i]; }
         if (play == 0) return null;
         string f = Path.Combine(Path.GetTempPath(), "camaras_snap_" + i + ".jpg");
         lock (snapLock)
@@ -602,14 +649,14 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 <div id=grid></div><img id=ghost>
 <script>
 var st={big:-1,cams:[]};
-// The PC's Wi-Fi loses many new connections. A good answer takes a few ms, so wait little and try again often:
-// buttons 400 ms x 10 tries, pictures (slower to make) 2 s x 3 tries.
-function get(u,n,ms){n=n||10;ms=ms||400;var c=new AbortController(),t=setTimeout(function(){c.abort()},ms);
+// The PC's Wi-Fi still loses some new connections while the cameras stream. The app answers at once,
+// so: buttons wait 1.5 s and try at most 3 times; pictures try once (the next one comes 4 s later).
+function get(u,n,ms){n=n||3;ms=ms||1500;var c=new AbortController(),t=setTimeout(function(){c.abort()},ms);
  return fetch(u,{cache:'no-store',signal:c.signal}).then(function(r){clearTimeout(t);if(!r.ok)throw 0;return r},function(e){clearTimeout(t);if(n>1)return get(u,n-1,ms);throw e})}
 function act(u){get(u).then(function(r){return r.json()}).then(draw).catch(function(){})}
 function draw(s){st=s;var g=document.getElementById('grid');
  while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
-  d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd onclick=""act(\'/api/hd?i='+i+'\')"">HD</button></div>';g.appendChild(d)}
+  d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd data-hd='+i+'>HD</button></div>';g.appendChild(d)}
  while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
  s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd)})}
 // Tap = big; drag onto another camera = swap (pointer events work with fingers and mouse).
@@ -622,10 +669,14 @@ document.addEventListener('pointermove',function(e){if(!drag)return;
  if(!drag.moved)return;ghost.style.left=(e.clientX-70)+'px';ghost.style.top=(e.clientY-40)+'px';
  var c=camAt(e.clientX,e.clientY);if(drag.to&&drag.to!=c)drag.to.classList.remove('target');drag.to=c&&c!=drag.el?c:null;if(drag.to)drag.to.classList.add('target')});
 function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='none';d.el.classList.remove('drag');if(d.to)d.to.classList.remove('target');
- if(!d.moved){act('/api/big?i='+d.i);return}
- if(d.to){var j=[].indexOf.call(d.to.parentNode.children,d.to),a=d.el.querySelector('img'),b=d.to.querySelector('img'),t=a.src;a.src=b.src;b.src=t;act('/api/swap?i='+d.i+'&j='+j)}}
+ if(!d.moved){act('/api/big?i='+(st.big==d.i?-1:d.i));return}
+ if(d.to){var j=[].indexOf.call(d.to.parentNode.children,d.to),a=d.el.querySelector('img'),b=d.to.querySelector('img'),t=a.src;a.src=b.src;b.src=t;
+  var o=st.cams.map(function(c){return c.k}),x=o[d.i];o[d.i]=o[j];o[j]=x;act('/api/order?o='+encodeURIComponent(o.join(',')))}}
+// HD button: says the wanted state; the button changes at once.
+document.addEventListener('click',function(e){var b=e.target;if(!b.dataset||b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;
+ st.cams[i].hd=on;b.classList.toggle('on',on);act('/api/hd?i='+i+'&on='+(on?1:0))});
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
-function snaps(){[].forEach.call(document.querySelectorAll('.cam img'),function(im,i){get('/snap?i='+i+'&t='+Date.now(),3,2000).then(function(r){return r.blob()}).then(function(b){var old=im.src;im.src=URL.createObjectURL(b);if(old.indexOf('blob:')==0)URL.revokeObjectURL(old)}).catch(function(){})})}
+function snaps(){[].forEach.call(document.querySelectorAll('.cam img'),function(im,i){get('/snap?i='+i+'&t='+Date.now(),1,3000).then(function(r){return r.blob()}).then(function(b){var old=im.src;im.src=URL.createObjectURL(b);if(old.indexOf('blob:')==0)URL.revokeObjectURL(old)}).catch(function(){})})}
 act('/api/state');setInterval(function(){act('/api/state')},3000);snaps();setInterval(snaps,4000);
 </script></body></html>";
 
