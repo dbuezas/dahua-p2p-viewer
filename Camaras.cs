@@ -59,6 +59,7 @@ static class Win
     [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint flags);
     [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int cmd);   // async: does not hang on a frozen window
 }
 
@@ -153,6 +154,12 @@ class CamForm : Form
             escWas = esc;
         };
         poll.Start();
+
+        // While the app is in front: no sleep and no screen off. In the background: Windows decides as usual.
+        var awake = new System.Windows.Forms.Timer { Interval = 10000 };
+        awake.Tick += (s, e) => KeepAwake();
+        awake.Start();
+        Shown += (s, e) => KeepAwake();
 
         var watchdog = new System.Windows.Forms.Timer { Interval = 5000 };
         watchdog.Tick += (s, e) => Watchdog();
@@ -413,6 +420,15 @@ class CamForm : Form
 
     // ---- Remote control for a phone on the same network: a tiny web page (port `puerto_web`, default 8080). ----
     // Only answers addresses of the local network. Tap a camera to make it big, tap again for all; HD button per camera.
+    bool awakeOn;
+    void KeepAwake()
+    {
+        bool front = Win.GetForegroundWindow() == Handle;
+        // 0x80000000 = continuous, 0x1 = system needed, 0x2 = display needed. Only "continuous" = normal again.
+        Win.SetThreadExecutionState(front ? 0x80000003u : 0x80000000u);   // timer runs on the UI thread, so the state stays with it
+        if (front != awakeOn) { awakeOn = front; Log(front ? "pantalla siempre encendida (app al frente)" : "pantalla normal (app atras)"); }
+    }
+
     Label addrLabel;
     // The phone remote address stays on screen, small, in the bottom right corner, over the video.
     void PlaceAddr()
