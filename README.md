@@ -58,7 +58,10 @@ This app shows the cameras in about 10 seconds.
     down a little per row: straight lines stay straight).
   - Then a small bending near the seam only (+-32 px): what is still off between both lenses there is measured
     (patches), cleaned, smoothed and kept gentle, and each lens bends half of it toward the other, fully in the
-    middle and fading to nothing at the band's edges; the seam blends softly over 32 px with no doubles.
+    middle and fading to nothing at the band's edges.
+  - The PC blends the seam in two bands: each lens's picture is split into a blurred part (colours, light) and the
+    rest (details); the blurred parts blend over a wide width (hides a lighter or darker lens) and the details over a
+    narrow one (no doubles). Only the columns around the seam are worked, row by row.
   - The result is shown zoomed on the seam, cut to only picture. "Ver superpuestas" shows both lenses half and half at the end (the seam hides errors; this does not). If the
     per-row distances do not make the shared part match better than none, none are used.
   - The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels, the seam per row) as one binary
