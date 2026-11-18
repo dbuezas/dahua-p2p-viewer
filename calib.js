@@ -219,9 +219,10 @@ var Calib = (function () {
     // -- 4. distances --
     cylinder(st);
     measure(st, show);
-    framing(st);
+    show({ stage: 5, text: 'Buscando la costura', frac: 0.9, rig: g, W: true });
     seam(st, show);
-    show({ stage: 7, text: 'Listo', frac: 1, rig: g, W: st.W, frame: st.fr, seam: st.seamX });
+    framing(st);
+    show({ stage: 7, text: 'Listo', frac: 1, rig: g, W: true, frame: st.fr, seam: true });
     return st;
   }
 
@@ -310,25 +311,72 @@ var Calib = (function () {
     var x0 = gx | 0, y0 = gy | 0, fx = gx - x0, fy = gy - y0, k = y0 * gr.NX + x0, W = gr.W;
     return (W[k] * (1 - fx) + W[k + 1] * fx) * (1 - fy) + (W[k + gr.NX] * (1 - fx) + W[k + gr.NX + 1] * fx) * fy;
   }
-  // Inverse distance along output ray r: where the ray meets the distance surface (the farthest crossing: the
-  // smooth fill can make false near ones). The surface is over A's cylinder: A sees the point at r + h*w.
-  function meet(c, gr, g, r) {
-    if (!gr) return 0;
-    var v = [0, 0, 0], h = g.h, steps = 60;
-    function d(w) { v[0] = r[0] + h[0] * w; v[1] = r[1] + h[1] * w; v[2] = r[2] + h[2] * w; var p = cylOf(c, v); return wAt(gr, p[0], p[1]) - w; }
-    for (var k = 1; k <= steps; k++) {
-      var w = WMAX * k / steps;
-      if (d(w) < 0) { var lo = WMAX * (k - 1) / steps, hi = w; for (var i = 0; i < 14; i++) { var m = (lo + hi) / 2; if (d(m) >= 0) lo = m; else hi = m; } return lo; }
+  // -- 5. seam, on the cylinder (half size) --
+  // Each lens is shown from its own place, unbent: lens A as it is, lens B as it is from 9 cm lower. They only
+  // have to agree ON the seam. So the seam is a path from top to bottom where, with B taken at the distance
+  // measured there, both lenses look alike; and each row of B is taken at the distance of its seam point (B only
+  // moves up or down a bit per row, never bends sideways). Near things away from the seam keep their straight lines.
+  function seam(st, show) {
+    var c = st.cyl, g = st.rig, gr = st.grid, S = 2, w = Math.floor(c.CW / S), h = Math.floor(c.CH / S);
+    var la = new Float32Array(w * h), lb = new Float32Array(w * h), ok = new Uint8Array(w * h), wm = new Float32Array(w * h);
+    var r = [0, 0, 0], qa = [0, 0], qb = [0, 0], x, y;
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+      var k = y * w + x, cx = x * S + S / 2, cy = y * S + S / 2; cylRay(c, cx, cy, r);
+      var wv = wAt(gr, cx, cy); wm[k] = wv;
+      if (toA(g, r, 0, qa) && toB(g, r, 2 * wv, qb)) { ok[k] = 1; la[k] = bil(st.inp.A, LW, LH, qa[0], qa[1]); lb[k] = bil(st.inp.B, LW, LH, qb[0], qb[1]); }
     }
-    return WMAX;
+    // pixels of shift per unit of w on this half size canvas (B moves by the whole lens distance)
+    var KW = c.Fc / S * Math.sqrt(4 * (g.h[0] * g.h[0] + g.h[1] * g.h[1] + g.h[2] * g.h[2]));
+    var ea = gradMag(la, w, h), eb = gradMag(lb, w, h), INF = 1e18, prev = new Float64Array(w).fill(INF), from = new Int32Array(w * h), rowOk = new Uint8Array(h);
+    for (y = 0; y < h; y++) {
+      var cur = new Float64Array(w).fill(INF);
+      for (x = 1; x < w - 1; x++) {
+        var k2 = y * w + x; if (!ok[k2] || !ok[k2 - 1] || !ok[k2 + 1]) continue;
+        var D = Math.abs(ea[k2] - eb[k2]) + 0.5;
+        if (y === 0 || !rowOk[y - 1]) { cur[x] = D + (y > 0 && prev[x] < INF ? prev[x] : 0); from[k2] = x; continue; }
+        var bv = INF, bx = -1;
+        // going on from the row above: the distance along the path should change little (B moves per row)
+        for (var d = -1; d <= 1; d++) { var xx = x + d, pv = prev[xx] + KW * Math.abs(wm[k2] - wm[(y - 1) * w + xx]); if (pv < bv) { bv = pv; bx = xx; } }
+        if (bx >= 0 && bv < INF) { cur[x] = bv + D; from[k2] = bx; }
+      }
+      for (x = 0; x < w; x++) if (cur[x] < INF) { rowOk[y] = 1; break; }
+      // a row where the lenses do not overlap: the path goes straight on
+      if (!rowOk[y]) for (x = 0; x < w; x++) { cur[x] = prev[x]; from[y * w + x] = x; }
+      prev = cur;
+    }
+    var bx2 = -1, bvv = INF; for (x = 0; x < w; x++) if (prev[x] < bvv) { bvv = prev[x]; bx2 = x; }
+    var seamC = new Float32Array(c.CH), Ws = new Float32Array(c.CH);
+    if (bx2 < 0) { seamC.fill(-1); st.ws = { seam: seamC, W: Ws }; st.aLeft = true; return; }
+    var hx = new Float32Array(h), hw = [], hy = [];
+    for (y = h - 1; y >= 0; y--) { hx[y] = bx2; if (rowOk[y]) { hy.push(y); hw.push(wm[y * w + bx2]); } bx2 = from[y * w + bx2]; }
+    hy.reverse(); hw.reverse();
+    // distance per row: the seam's, a middle value over nearby rows (one odd point must not jerk B), then averaged,
+    // then limited so B never shifts more than 0.08 px per row (at most 8% taller or shorter somewhere)
+    var hwS = new Float32Array(h), i, j;
+    for (y = 0; y < h; y++) {
+      // nearest rows with a seam point
+      var near = []; for (i = 0; i < hy.length; i++) if (Math.abs(hy[i] - y) <= 10) near.push(hw[i]);
+      if (!near.length) { var bi = 0; for (i = 1; i < hy.length; i++) if (Math.abs(hy[i] - y) < Math.abs(hy[bi] - y)) bi = i; near.push(hy.length ? hw[bi] : 0); }
+      near.sort(function (a2, b2) { return a2 - b2; }); hwS[y] = near[near.length >> 1];
+    }
+    var hwA = new Float32Array(h); for (y = 0; y < h; y++) { var sm = 0, n = 0; for (j = Math.max(0, y - 25); j <= Math.min(h - 1, y + 25); j++) { sm += hwS[j]; n++; } hwA[y] = sm / n; }
+    var lim = 0.08 / KW;   // w change per row for 0.08 px of shift per row (same ratio at any size)
+    for (var pass = 0; pass < 2000; pass++) { var ch = false; for (y = 1; y < h; y++) { var df = hwA[y] - hwA[y - 1]; if (Math.abs(df) > lim) { var fx = (Math.abs(df) - lim) / 2 * Math.sign(df); hwA[y - 1] += fx; hwA[y] -= fx; ch = true; } } if (!ch) break; }
+    for (y = 0; y < c.CH; y++) { var yy = Math.min(h - 1, Math.floor(y / S)); seamC[y] = hx[yy] * S + S / 2; Ws[y] = hwA[yy]; }
+    st.ws = { seam: seamC, W: Ws };
+    // which lens is left: where only A shows, on average
+    var sA = 0, nA = 0; for (y = 0; y < c.CH; y += 8) for (x = 0; x < c.CW; x += 8) { cylRay(c, x, y, r); if (toA(g, r, 0, qa) && !toB(g, r, 0, qb)) { sA += x; nA++; } }
+    st.aLeft = nA === 0 || sA / nA < c.CW / 2;
   }
+  // B's pixel for cylinder point (cx, cy): at the distance of that row's seam point
+  function toBrow(st, r, cy, q) { var ws = st.ws, w = ws ? ws.W[Math.max(0, Math.min(ws.W.length - 1, Math.round(cy)))] : 0; return toB(st.rig, r, 2 * w, q); }
 
-  // -- 5. frame: which part of the cylinder the output shows (a straight rectangle) --
+  // -- 6. frame: which part of the cylinder the output shows (a straight rectangle) --
   function framing(st) {
     var c = st.cyl, g = st.rig, CW = c.CW, CH = c.CH, top = new Float64Array(CW), bot = new Float64Array(CW), r = [0, 0, 0], q = [0, 0];
     for (var x = 0; x < CW; x++) {
       var t = -1, b = -1;
-      for (var y = 0; y < CH; y++) { cylRay(c, x, y, r); if (toA(g, r, 0, q) || toB(g, r, 0, q)) { if (t < 0) t = y; b = y; } }
+      for (var y = 0; y < CH; y++) { cylRay(c, x, y, r); if (toA(g, r, 0, q) || toBrow(st, r, y, q)) { if (t < 0) t = y; b = y; } }
       top[x] = t; bot[x] = b;
     }
     // clip 0: everything any lens sees (black where nothing is); clip 1: a straight cut with picture everywhere
@@ -345,61 +393,27 @@ var Calib = (function () {
   }
   function setClip(st, clip) {
     var e = st.edges, X0 = Math.round(e.xa0 + clip * (e.x0 - e.xa0)), X1 = Math.round(e.xa1 + clip * (e.x1 - e.xa1));
-    var t = e.oT + clip * (e.iT - e.oT), b = e.oB + clip * (e.iB - e.oB), T = new Float64Array(st.cyl.CW), Bt = new Float64Array(st.cyl.CW);
-    T.fill(t); Bt.fill(b);
-    st.fr = { x0: X0, OW: X1 - X0 + 1, OH: Math.max(2, Math.round(b - t)), T: T, B: Bt, clip: clip };
+    var t = e.oT + clip * (e.iT - e.oT), b = e.oB + clip * (e.iB - e.oB);
+    st.fr = { x0: X0, y0: t, OW: X1 - X0 + 1, OH: Math.max(2, Math.round(b - t)), clip: clip };
   }
   // output pixel -> cylinder point
-  function outToCyl(fr, ox, oy, p) { var x = fr.x0 + ox, xi = Math.max(fr.x0, Math.min(fr.x0 + fr.OW - 1, Math.round(x))); p[0] = x; p[1] = fr.T[xi] + (fr.B[xi] - fr.T[xi]) * (oy + 0.5) / fr.OH - 0.5; }
-
-  // -- 6. seam (on a half size output) --
-  function seam(st, show) {
-    var fr = st.fr, c = st.cyl, g = st.rig, gr = st.grid, S = 2, w = Math.floor(fr.OW / S), h = Math.floor(fr.OH / S);
-    var la = new Float32Array(w * h), lb = new Float32Array(w * h), ok = new Uint8Array(w * h), wmap = new Float32Array(w * h), p = [0, 0], r = [0, 0, 0], qa = [0, 0], qb = [0, 0];
-    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
-      outToCyl(fr, x * S + S / 2, y * S + S / 2, p); cylRay(c, p[0], p[1], r); var wv = meet(c, gr, g, r), k = y * w + x; wmap[k] = wv;
-      var inA = toA(g, r, wv, qa), inB = toB(g, r, wv, qb);
-      if (inA && inB) { ok[k] = 1; la[k] = bil(st.inp.A, LW, LH, qa[0], qa[1]); lb[k] = bil(st.inp.B, LW, LH, qb[0], qb[1]); }
-    }
-    var ea = gradMag(la, w, h), eb = gradMag(lb, w, h), INF = 1e18, prev = new Float64Array(w).fill(INF), from = new Int32Array(w * h);
-    for (y = 0; y < h; y++) {
-      var cur = new Float64Array(w).fill(INF);
-      for (x = 1; x < w - 1; x++) {
-        var k2 = y * w + x; if (!ok[k2] || !ok[k2 - 1] || !ok[k2 + 1]) continue;
-        // cost: edges that differ, plus places where the distance jumps (a near thing's border stretches there)
-        var D = Math.abs(ea[k2] - eb[k2]) + 0.5 + 40 * Math.abs(wmap[k2 + 1] - wmap[k2 - 1]);
-        if (y === 0) { cur[x] = D; continue; }
-        var bv = INF, bx = -1; for (var d = -1; d <= 1; d++) { var xx = x + d; if (prev[xx] < bv) { bv = prev[xx]; bx = xx; } }
-        if (bx >= 0) { cur[x] = bv + D; from[k2] = bx; }
-      }
-      // a row where the lenses do not overlap (top or bottom with black corners): the path just goes straight on
-      var anyOk = false; for (x = 0; x < w; x++) if (cur[x] < INF) { anyOk = true; break; }
-      if (!anyOk && y > 0) { for (x = 0; x < w; x++) { cur[x] = prev[x]; from[y * w + x] = x; } }
-      prev = cur;
-    }
-    var bx2 = -1, bvv = INF; for (x = 0; x < w; x++) if (prev[x] < bvv) { bvv = prev[x]; bx2 = x; }
-    var sA = 0, nA = 0; for (y = 0; y < fr.OH; y += 4) for (x = 0; x < fr.OW; x += 4) { outToCyl(fr, x, y, p); cylRay(c, p[0], p[1], r); if (toA(g, r, 0, qa) && !toB(g, r, 0, qb)) { sA += x; nA++; } }
-    st.aLeft = nA === 0 || sA / nA < fr.OW / 2;   // which lens is left: where only A shows, on average
-    var sx = new Float32Array(fr.OH);
-    if (bx2 < 0) { sx.fill(-1); st.seamX = sx; return; }
-    var half = new Float32Array(h); for (y = h - 1; y >= 0; y--) { half[y] = bx2; bx2 = from[y * w + bx2]; }
-    for (y = 0; y < fr.OH; y++) { var yy = Math.min(h - 1, Math.floor(y / S)); sx[y] = half[yy] * S + S / 2; }
-    st.seamX = sx;
-  }
+  function outToCyl(fr, ox, oy, p) { p[0] = fr.x0 + ox; p[1] = fr.y0 + oy; }
 
   // -- 7. mesh for the PC --
   function mesh(st) {
-    var fr = st.fr, c = st.cyl, g = st.rig, gr = st.grid, step = 8, NXm = Math.ceil((fr.OW - 1) / step) + 1, NYm = Math.ceil((fr.OH - 1) / step) + 1;
-    var m = new Float32Array(NXm * NYm * 4), p = [0, 0], r = [0, 0, 0], qa = [0, 0], qb = [0, 0], v = [0, 0, 0];
+    var fr = st.fr, c = st.cyl, g = st.rig, step = 8, NXm = Math.ceil((fr.OW - 1) / step) + 1, NYm = Math.ceil((fr.OH - 1) / step) + 1;
+    var m = new Float32Array(NXm * NYm * 4), p = [0, 0], r = [0, 0, 0], qa = [0, 0], qb = [0, 0], ws = st.ws;
     for (var j = 0; j < NYm; j++) for (var i = 0; i < NXm; i++) {
       var ox = Math.min(fr.OW - 1, i * step), oy = Math.min(fr.OH - 1, j * step), k = (j * NXm + i) * 4;
-      outToCyl(fr, ox, oy, p); cylRay(c, p[0], p[1], r); var w = meet(c, gr, g, r);
+      outToCyl(fr, ox, oy, p); cylRay(c, p[0], p[1], r);
+      var w = ws ? ws.W[Math.max(0, Math.min(ws.W.length - 1, Math.round(p[1])))] : 0;
       // raw lens coordinates (may fall outside the picture: the PC checks each pixel)
-      if (project(g.L, r[0] + g.h[0] * w, r[1] + g.h[1] * w, r[2] + g.h[2] * w, qa)) { m[k] = qa[0] / LW; m[k + 1] = qa[1] / LH; } else { m[k] = NaN; m[k + 1] = NaN; }
-      var x = r[0] - g.h[0] * w, y = r[1] - g.h[1] * w, z = r[2] - g.h[2] * w, R = g.R;
+      if (project(g.L, r[0], r[1], r[2], qa)) { m[k] = qa[0] / LW; m[k + 1] = qa[1] / LH; } else { m[k] = NaN; m[k + 1] = NaN; }
+      var x = r[0] - 2 * g.h[0] * w, y = r[1] - 2 * g.h[1] * w, z = r[2] - 2 * g.h[2] * w, R = g.R;
       if (project(g.L, R[0] * x + R[1] * y + R[2] * z, R[3] * x + R[4] * y + R[5] * z, R[6] * x + R[7] * y + R[8] * z, qb)) { m[k + 2] = qb[0] / LW; m[k + 3] = qb[1] / LH; } else { m[k + 2] = NaN; m[k + 3] = NaN; }
     }
-    var seamU = new Float32Array(fr.OH); for (var y2 = 0; y2 < fr.OH; y2++) seamU[y2] = st.seamX[y2] < 0 ? -1 : (st.seamX[y2] + 0.5) / fr.OW;
+    var seamU = new Float32Array(fr.OH);
+    for (var y2 = 0; y2 < fr.OH; y2++) { var sc = ws ? ws.seam[Math.max(0, Math.min(c.CH - 1, Math.round(fr.y0 + y2)))] : -1; seamU[y2] = sc < 0 ? -1 : (sc - fr.x0 + 0.5) / fr.OW; }
     return { head: { OW: fr.OW, OH: fr.OH, NX: NXm, NY: NYm, step: step, aLeft: st.aLeft, pan: g.pan, tilt: g.tilt, clip: fr.clip }, mesh: m, seam: seamU };
   }
   // Binary message for the PC: "P3", header length (uint32), header JSON, padding to 4, mesh floats, seam floats.
@@ -415,17 +429,17 @@ var Calib = (function () {
   // Panorama preview, PW wide. mix: both lenses half and half where both see (ghosts show what does not fit yet).
   // Before the frame exists: the whole cylinder of the rough/fine rig at infinity.
   function preview(st, PW, opt) {
-    var g = opt.rig, inp = st.inp, c = st.cyl, fr = opt.frame || null, gr = opt.W ? st.grid : null;
+    var g = opt.rig, inp = st.inp, c = st.cyl, fr = opt.frame || null;
     if (!c || opt.stage < 4) { var keep = st.rig; st.rig = g; cylinder(st); c = st.cyl; st.rig = keep || g; }
     var OW = fr ? fr.OW : c.CW, OH = fr ? fr.OH : c.CH, s = OW / PW, PH = Math.max(1, Math.round(OH / s));
     var img = new Uint8ClampedArray(PW * PH * 4), p = [0, 0], r = [0, 0, 0], qa = [0, 0], qb = [0, 0];
     for (var y = 0; y < PH; y++) for (var x = 0; x < PW; x++) {
       var ox = (x + 0.5) * s, oy = (y + 0.5) * s;
       if (fr) outToCyl(fr, ox, oy, p); else { p[0] = ox; p[1] = oy; }
-      cylRay(c, p[0], p[1], r); var w = gr ? meet(c, gr, g, r) : 0;
-      var inA = toA(g, r, w, qa), inB = toB(g, r, w, qb), k = (y * PW + x) * 4, t;
+      cylRay(c, p[0], p[1], r);
+      var inA = toA(g, r, 0, qa), inB = opt.W && st.ws ? toBrow(st, r, p[1], qb) : toB(g, r, 0, qb), k = (y * PW + x) * 4, t;
       if (!inA && !inB) { img[k + 3] = 255; continue; }
-      if (opt.seam && inA && inB) { var sxx = opt.seam[Math.min(opt.seam.length - 1, Math.floor(oy))]; t = st.aLeft ? (ox > sxx ? 1 : 0) : (ox < sxx ? 1 : 0); }
+      if (opt.seam && st.ws && inA && inB) { var sxx = st.ws.seam[Math.max(0, Math.min(c.CH - 1, Math.round(p[1])))]; t = st.aLeft ? (p[0] > sxx ? 1 : 0) : (p[0] < sxx ? 1 : 0); }
       else t = inA && inB ? 0.5 : inB ? 1 : 0;
       for (var ch = 0; ch < 3; ch++) {
         var a = inA ? colAt(inp.Ac, qa[0], qa[1], ch) : 0, b = inB ? colAt(inp.Bc, qb[0], qb[1], ch) : 0;
@@ -472,13 +486,13 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
         Calib.run(state, function (opt) { post(opt, opt.frac === 1); });
         finish();
       } else if (m.t === 'clip' && state) {
-        Calib.setClip(state, m.clip); Calib.seam(state, function () {}); finish();
+        Calib.setClip(state, m.clip); finish();
       }
     } catch (ex) { self.postMessage({ t: 'error', text: String(ex.message || ex) }); }
   };
   var finish = function () {
     var ms = Calib.mesh(state), buf = Calib.pack(ms);
-    post({ stage: 7, text: 'Listo: paneo ' + (state.rig.pan * 180 / Math.PI).toFixed(1) + '°, inclinacion ' + (state.rig.tilt * 180 / Math.PI).toFixed(1) + '°, error tipico ' + state.matchErr.toFixed(1) + ' px, ' + state.matches.length + ' puntos, ' + state.measured + ' distancias', frac: 1, rig: state.rig, W: true, frame: state.fr, seam: state.seamX }, true);
+    post({ stage: 7, text: 'Listo: paneo ' + (state.rig.pan * 180 / Math.PI).toFixed(1) + '°, inclinacion ' + (state.rig.tilt * 180 / Math.PI).toFixed(1) + '°, error tipico ' + state.matchErr.toFixed(1) + ' px, ' + state.matches.length + ' puntos, ' + state.measured + ' distancias', frac: 1, rig: state.rig, W: true, frame: state.fr, seam: true }, true);
     self.postMessage({ t: 'done', mesh: buf, OW: ms.head.OW, OH: ms.head.OH }, [buf]);
   };
 }

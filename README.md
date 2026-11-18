@@ -49,7 +49,9 @@ This app shows the cameras in about 10 seconds.
     of lens B, and one number per grid point: the distance of what is there; a point can only slide along its line
     between the lenses, so the picture cannot bend in ways no real scene does. Steps, each shown on the phone as it
     runs: rough pan/tilt (edge pictures, wide search, so moving the PTZ is fine), shared corners, fine pan/tilt,
-    distances (A's patch fixed, B's slid along its line), seam, frame. A slider sets how much to cut: from everything
+    distances (A's patch fixed, B's slid along its line), seam, frame. Each lens is shown unbent from its own place;
+    they only have to agree on the seam, so the seam follows a path where they look alike, and each row of lens B is
+    taken at the distance of its seam point (B moves only up or down a little per row: straight lines stay straight). A slider sets how much to cut: from everything
     (black corners) to only picture. The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels,
     the seam per row) as one binary WebSocket message; the PC keeps it in `panoramica3_<ch>.bin` and only draws it.
   If the lenses no longer see a shared strip, the phone says so.
