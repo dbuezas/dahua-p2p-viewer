@@ -233,7 +233,7 @@ class CamForm : Form
         var ips = LocalIps();
         if (ips.Count > 0 && C("puerto_web", "8080") != "0")
         {
-            var addr = new Label { Text = "Control desde el telefono: http://" + ips[0] + ":" + C("puerto_web", "8080"), ForeColor = Color.White, BackColor = Color.FromArgb(40, 40, 40), AutoSize = true, Font = new Font("Segoe UI", 12) };
+            var addr = new Label { Text = "http://" + ips[0] + ":" + C("puerto_web", "8080"), ForeColor = Color.White, BackColor = Color.FromArgb(40, 40, 40), AutoSize = true, Font = new Font("Segoe UI", 12) };
             addr.Font = new Font("Segoe UI", 9); addr.ForeColor = Color.Silver;
             Controls.Add(addr);
             addrLabel = addr;
@@ -245,7 +245,7 @@ class CamForm : Form
             Resize += (s, e) => PlaceAddr();
             // The PC's address can change (DHCP): check it every 30 s.
             var refresh = new System.Windows.Forms.Timer { Interval = 30000 };
-            refresh.Tick += (s, e) => { var l = LocalIps(); if (l.Count > 0) { addr.Text = "Control desde el telefono: http://" + l[0] + ":" + C("puerto_web", "8080"); SetQr("http://" + l[0] + ":" + C("puerto_web", "8080")); PlaceAddr(); } };
+            refresh.Tick += (s, e) => { var l = LocalIps(); if (l.Count > 0) { addr.Text = "http://" + l[0] + ":" + C("puerto_web", "8080"); SetQr("http://" + l[0] + ":" + C("puerto_web", "8080")); PlaceAddr(); } };
             refresh.Start();
         }
     }
@@ -389,7 +389,8 @@ class CamForm : Form
         int n = tiles.Count;
         if (n == 0) return;
         int W = ClientSize.Width, H = ClientSize.Height;
-        var cells = big == null ? Arrange(n, W, H) : ArrangeBig(n, tiles.IndexOf(big), W, H);
+        var units = new int[n]; for (int i = 0; i < n; i++) units[i] = tiles[i].Half == 3 ? 2 : 1;   // a panorama is 2 cells wide
+        var cells = big == null ? Arrange(units, W, H) : ArrangeBig(n, tiles.IndexOf(big), W, H);
         for (int i = 0; i < n; i++)
         {
             var t = tiles[i];
@@ -473,26 +474,31 @@ class CamForm : Form
         return list;
     }
 
-    // Places n 16:9 pictures (no stretching) so that together they cover as much of the screen as possible.
+    // Places the pictures (no stretching) so that together they cover as much of the screen as possible.
+    // u[i] = how many 16:9 cells wide picture i is (1, or 2 for a panorama).
     // Two kinds of layouts are tried and the bigger one wins:
-    //  - a normal grid (all pictures the same size, the last row may have empty cells),
+    //  - a grid of equal cells, c cells wide; a 2-cell picture that does not fit at the end of a row starts the next row,
     //  - rows with different counts (e.g. 5 = 2 big on top + 3 smaller below), each row as wide as the screen.
     // The result is centered.
-    static List<Rectangle> Arrange(int n, int W, int H)
+    static List<Rectangle> Arrange(int[] u, int W, int H)
     {
+        int n = u.Length, total = 0, widest = 1;
+        foreach (var x in u) { total += x; widest = Math.Max(widest, x); }
         List<Rectangle> best = null; double bestArea = -1;
         Action<List<Rectangle>> consider = list =>
         {
             double a = 0; foreach (var r in list) a += (double)r.Width * r.Height;
             if (a > bestArea + 1) { bestArea = a; best = list; }
         };
-        for (int c = 1; c <= n; c++)
+        for (int c = widest; c <= total; c++)
         {
-            int rows = (n + c - 1) / c;
+            var row = new int[n]; var col = new int[n]; int rr = 0, used = 0;
+            for (int i = 0; i < n; i++) { if (used + u[i] > c) { rr++; used = 0; } row[i] = rr; col[i] = used; used += u[i]; }
+            int rows = rr + 1;
             double sc = Math.Min((double)W / c / 16, (double)H / rows / 9);
             int w = (int)(sc * 16), h = (int)(sc * 9), x0 = (W - c * w) / 2, y0 = (H - rows * h) / 2;
             var list = new List<Rectangle>();
-            for (int i = 0; i < n; i++) list.Add(new Rectangle(x0 + (i % c) * w, y0 + (i / c) * h, w, h));
+            for (int i = 0; i < n; i++) list.Add(new Rectangle(x0 + col[i] * w, y0 + row[i] * h, u[i] * w, h));
             consider(list);
         }
         for (int r = 1; r <= n; r++)
@@ -500,15 +506,17 @@ class CamForm : Form
             int baseK = n / r, extra = n % r;
             var counts = new int[r];
             for (int i = 0; i < r; i++) counts[i] = baseK + (i >= r - extra ? 1 : 0);   // fewer (bigger) on top
-            double sum = 0; foreach (var k in counts) sum += (double)W / k * 9 / 16;
+            var rowUnits = new int[r]; int k0 = 0;
+            for (int i = 0; i < r; i++) { for (int j = 0; j < counts[i]; j++) rowUnits[i] += u[k0 + j]; k0 += counts[i]; }
+            double sum = 0; foreach (var ru in rowUnits) sum += (double)W / ru * 9 / 16;
             double f = Math.Min(1, H / sum);
             double y = (H - sum * f) / 2;
-            var list = new List<Rectangle>();
-            foreach (var k in counts)
+            var list = new List<Rectangle>(); k0 = 0;
+            for (int i = 0; i < r; i++)
             {
-                double w = f * W / k, h = w * 9 / 16, x = (W - k * w) / 2;
-                for (int j = 0; j < k; j++) list.Add(new Rectangle((int)(x + j * w), (int)y, (int)w, (int)h));
-                y += h;
+                double cw = f * W / rowUnits[i], h = cw * 9 / 16, x = (W - rowUnits[i] * cw) / 2;
+                for (int j = 0; j < counts[i]; j++) { int k = k0 + j; list.Add(new Rectangle((int)x, (int)y, (int)(u[k] * cw), (int)h)); x += u[k] * cw; }
+                k0 += counts[i]; y += h;
             }
             consider(list);
         }
@@ -1300,13 +1308,20 @@ connect();
                 int r = Native.P2P_Init(0, ip, int.Parse(C("puerto_p2p", "8800")), key, cuser, out h);
                 Log("P2P_Init " + srv + " (" + ip + ") -> " + r + " handle " + h);
                 if (r != 0 || h == 0) continue;
-                WaitFor("NVR online", 10, () => Native.P2P_DeviceStatus(0, h, sn));
-                localPort = 0;
-                r = Native.P2P_Connect(0, h, sn, 37777, ref localPort, user, pass, "", "");
-                Log("P2P_Connect -> " + r + " localPort " + localPort);
-                if (r != 0 || localPort <= 0) continue;
-                int lp = localPort;
-                if (WaitFor("tunel", 15, () => Native.P2P_QueryChannelStatus(0, h, lp))) { ok = true; break; }
+                // The NVR is registered on one server only: on the others it never gets online, so skip them at once.
+                if (!WaitFor("NVR online", 10, () => Native.P2P_DeviceStatus(0, h, sn))) continue;
+                // A tunnel opens in about 1 s (sometimes up to 9 s). When it fails, the library says so (state 1)
+                // after about 10 s: then try again right away on the same server, instead of restarting everything.
+                for (int attempt = 1; attempt <= 3 && !ok; attempt++)
+                {
+                    localPort = 0;
+                    r = Native.P2P_Connect(0, h, sn, 37777, ref localPort, user, pass, "", "");
+                    Log("P2P_Connect intento " + attempt + " -> " + r + " localPort " + localPort);
+                    if (r != 0 || localPort <= 0) break;
+                    int lp = localPort;
+                    if (WaitFor("tunel" + (attempt > 1 ? " (intento " + attempt + ")" : ""), 12, () => Native.P2P_QueryChannelStatus(0, h, lp), 1)) ok = true;
+                }
+                if (ok) break;
             }
             if (!ok) { RetryLater("No pude abrir el tunel P2P", "tunel fallo"); return; }
 
@@ -1366,7 +1381,8 @@ connect();
     }
 
     // Polls a P2P status function until it returns 0 (ok), max `secs` seconds.
-    bool WaitFor(string what, int secs, Func<int> check)
+    // Waits until check() gives 0 (ready). Gives up after secs, or at once when it gives failState.
+    bool WaitFor(string what, int secs, Func<int> check, int failState = -99)
     {
         var end = DateTime.Now.AddSeconds(secs);
         int last = -99;
@@ -1375,6 +1391,7 @@ connect();
             int s = check();
             if (s != last) { Log(what + ": estado " + s); last = s; }
             if (s == 0) return true;
+            if (s == failState) { Log(what + ": fallo"); return false; }
             Status("Conectando: " + what + "...");
             Thread.Sleep(300);
         }
