@@ -78,8 +78,9 @@ class CamForm : Form
 
     // One square on screen. Half: 0 = whole picture, 1 = top half, 2 = bottom half
     // (for a channel whose picture is two cameras stacked; it is played twice and each square shows one half),
-    // 3 = panorama: both halves pasted into one wide picture that I draw myself into Video (see PanoView);
-    //     the SDK decodes into Video2, a tiny panel nobody sees.
+    // 3 = panorama: both halves pasted into one wide picture.
+    // A split channel is played ONCE: the SDK decodes into Video2 (a tiny panel nobody sees) and I draw each half,
+    // or the panorama, into Video myself (see PanoView), so both halves always show the same moment.
     class Tile { public Panel Box, Video, Video2; public Label Tag; public int Ch, Half; public long Play, Play2, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1, PanX, PanY; public PanoView View; }
 
     // Panorama of a split channel, found when it is turned on (kept in panoramica.txt). Two modes:
@@ -289,12 +290,12 @@ class CamForm : Form
                 t.Box = new Panel { BackColor = Color.Black };
                 t.Video = new Panel { BackColor = Color.Black };
                 t.Box.Controls.Add(t.Video);
-                if (half == 3)
+                if (half != 0)
                 {
                     t.Video2 = new Panel { BackColor = Color.Black, Bounds = new Rectangle(0, 0, 2, 2) };
                     t.Box.Controls.Add(t.Video2);
                     t.Video.BringToFront();
-                    t.View = new PanoView { Cal = pano[ch], Target = t.Video.Handle };
+                    t.View = new PanoView { Half = half == 3 ? 0 : half, Cal = half == 3 ? pano[ch] : null, Target = t.Video.Handle };
                 }
                 t.Tag = new Label { Text = "HD", ForeColor = Color.White, BackColor = Color.FromArgb(200, 0, 0), AutoSize = true, Font = new Font("Segoe UI", 18, FontStyle.Bold), Location = new Point(24, 24), Visible = hd.Contains(ch) };
                 t.Box.Controls.Add(t.Tag);
@@ -323,33 +324,46 @@ class CamForm : Form
         });
         status.Visible = tiles.Count == 0;
         DoLayout();
-        foreach (var t in tiles) PlayTile(t);
+        foreach (var t in tiles) if (t.Play == 0) PlayTile(t);   // the second half of a split channel already got its stream
     }
 
     // (Re)starts the video of one square and counts its bytes, so the watchdog can see if it stops.
     void PlayTile(Tile t)
     {
-        StopPlay(t);
-        t.PlayingHd = WantHd(t);
-        t.Play = Native.CLIENT_RealPlayEx(login, t.Ch, (t.View != null ? t.Video2 : t.Video).Handle, t.PlayingHd ? 0 : int.Parse(C("flujo", "3")));   // 0 = main stream (HD)
+        // A split channel: one stream for all its squares (both halves, or the panorama).
+        var group = new List<Tile>();
+        if (t.View != null) { foreach (var u in tiles) if (u.Ch == t.Ch && u.View != null) group.Add(u); }
+        else group.Add(t);
+        foreach (var u in group) StopPlay(u);
+        bool wantHd = WantHd(t);
+        long h = Native.CLIENT_RealPlayEx(login, t.Ch, (t.View != null ? t.Video2 : t.Video).Handle, wantHd ? 0 : int.Parse(C("flujo", "3")));   // 0 = main stream (HD)
+        foreach (var u in group) { u.Play = h; u.PlayingHd = wantHd; u.LastBytes = 0; u.LastData = DateTime.Now; }
         UpdateState();   // new stream number for the phone pictures
         // The SDK reuses the numbers of stopped streams: start counting this one from zero.
-        lock (bytesPerPlay) bytesPerPlay.Remove(t.Play);
-        if (t.Play != 0 && t.View != null)
+        lock (bytesPerPlay) bytesPerPlay.Remove(h);
+        if (h != 0 && t.View != null)
         {
-            // Panorama: also ask for the decoded frames (flag 4) and paste them myself.
-            lock (views) views[t.Play] = t.View;
-            Native.CLIENT_SetRealDataCallBackEx2(t.Play, panoCb, IntPtr.Zero, 1 | 4);
+            // Also ask for the decoded frames (flag 4): I draw them myself.
+            var vs = new List<PanoView>(); foreach (var u in group) vs.Add(u.View);
+            lock (views) views[h] = vs.ToArray();
+            Native.CLIENT_SetRealDataCallBackEx2(h, panoCb, IntPtr.Zero, 1 | 4);
         }
-        else if (t.Play != 0) Native.CLIENT_SetRealDataCallBackEx2(t.Play, dataCb, IntPtr.Zero, 1);
-        t.LastBytes = 0;
-        t.LastData = DateTime.Now;
-        Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : t.Half == 2 ? " (abajo)" : " (panoramica " + (t.View != null ? t.View.Cal.Mode : 0) + ")") : "") + (t.PlayingHd ? " HD" : "") + " -> " + t.Play + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
+        else if (h != 0) Native.CLIENT_SetRealDataCallBackEx2(h, dataCb, IntPtr.Zero, 1);
+        string what = t.Half == 0 ? "" : t.Half == 3 ? " (panoramica " + t.View.Cal.Mode + ")" : group.Count > 1 ? " (las dos mitades)" : t.Half == 1 ? " (arriba)" : " (abajo)";
+        Log("RealPlay canal " + t.Ch + what + (wantHd ? " HD" : "") + " -> " + h + (h == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
     }
 
-    static void StopPlay(Tile t)
+    // Stops a square's stream (squares sharing it lose it too).
+    void StopPlay(Tile t)
     {
-        foreach (var h in new[] { t.Play, t.Play2 }) if (h != 0) { Native.CLIENT_StopRealPlayEx(h); lock (bytesPerPlay) bytesPerPlay.Remove(h); lock (views) views.Remove(h); }
+        foreach (var h in new[] { t.Play, t.Play2 })
+            if (h != 0)
+            {
+                Native.CLIENT_StopRealPlayEx(h);
+                lock (bytesPerPlay) bytesPerPlay.Remove(h);
+                lock (views) views.Remove(h);
+                foreach (var u in tiles) if (u.Play == h) u.Play = 0;
+            }
         t.Play = t.Play2 = 0;
     }
 
@@ -418,7 +432,7 @@ class CamForm : Form
             if (qrBox != null) qrBox.BringToFront();
             int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
             if (t != big) { t.Zoom = 1; t.PanX = t.PanY = 0; }
-            if (t.Half == 3) { LayoutPano(t, bw, bh); continue; }
+            if (t.View != null) { LayoutPano(t, bw, bh); continue; }
             // A half square holds a video panel twice as tall, shifted so only its half shows.
             var vr = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
             t.Video.Bounds = Zoomed(t, vr, bw, bh);
@@ -445,7 +459,7 @@ class CamForm : Form
         seam = (Math.Max(0, dx) + Math.Min(1, dx + s)) / 2;
     }
 
-    // Panorama square: the picture I draw keeps its shape, fills the square as much as it can, and zooms like the others.
+    // Square drawn by me (half or panorama): the picture keeps its shape, fills the square as much as it can, and zooms like the others.
     void LayoutPano(Tile t, int bw, int bh)
     {
         if (t.View == null) return;
@@ -684,6 +698,7 @@ class CamForm : Form
     volatile string stateJson = "{\"big\":-1,\"cams\":[]}";
     volatile long[] playHandles = new long[0];
     volatile int[] halves = new int[0];
+    volatile PanoView[] viewOf = new PanoView[0];
     int PanoMode() { int m = 0; foreach (var c in pano.Values) m = Math.Max(m, c.Mode); return m; }
     void UpdateState()
     {
@@ -691,9 +706,9 @@ class CamForm : Form
             + ",\"pano\":" + PanoMode() + ",\"msg\":\"" + panoMsg.Replace("\"", "'") + "\",\"cams\":[");
         for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"k\":\"" + Key(tiles[k]) + "\",\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + ",\"ptz\":" + (CanPtz(tiles[k]) ? "true" : "false") + "}");
         stateJson = sb.Append("]}").ToString();
-        var ph = new long[tiles.Count]; var hv = new int[tiles.Count];
-        for (int k = 0; k < tiles.Count; k++) { ph[k] = tiles[k].Play; hv[k] = tiles[k].Half; }
-        playHandles = ph; halves = hv;
+        var ph = new long[tiles.Count]; var hv = new int[tiles.Count]; var vw = new PanoView[tiles.Count];
+        for (int k = 0; k < tiles.Count; k++) { ph[k] = tiles[k].Play; hv[k] = tiles[k].Half; vw[k] = tiles[k].View; }
+        playHandles = ph; halves = hv; viewOf = vw;
     }
 
     // Sets HD on or off for the channel of a camera. Doing it twice does nothing more (the phone may repeat a request).
@@ -924,6 +939,13 @@ class CamForm : Form
         }
 
         if (path == "/") { Send(st, "200 OK", "text/html; charset=utf-8", Encoding.UTF8.GetBytes(Page)); return; }
+        if (path.StartsWith("/grid"))
+        {
+            byte[] jpg = null; var vws = viewOf; var hv2 = halves;
+            for (int k = 0; k < vws.Length && k < hv2.Length; k++) if (hv2[k] == 3 && vws[k] != null) jpg = vws[k].GridJpeg(480);
+            if (jpg == null) Send(st, "404 Not Found", "text/plain", new byte[0]); else Send(st, "200 OK", "image/jpeg", jpg);
+            return;
+        }
         if (path.StartsWith("/snap")) { var jpg = Snapshot(i); if (jpg == null) Send(st, "404 Not Found", "text/plain", new byte[0]); else Send(st, "200 OK", "image/jpeg", jpg); return; }
         // The phone never waits for the screen: the action runs on the screen thread when it is free
         // (restarting a video can keep it busy 1-2 s). The answer waits at most 300 ms for it, then sends what is known.
@@ -957,7 +979,8 @@ class CamForm : Form
         var ph = playHandles; var hv = halves;   // ready copies: no waiting for the screen thread
         if (i >= 0 && i < ph.Length) { play = ph[i]; half = hv[i]; }
         if (play == 0) return null;
-        if (half == 3) { PanoView v; lock (views) views.TryGetValue(play, out v); return v != null ? v.Jpeg(480) : null; }
+        var vws = viewOf;
+        if (i < vws.Length && vws[i] != null) return vws[i].Jpeg(480);   // drawn by me: my last picture
         lock (snapLock)
         {
             string f = CaptureFile(play, "camaras_snap_" + i);
@@ -1074,15 +1097,17 @@ class CamForm : Form
     // The SDK gives each frame as I420 (Y plane, then U and V planes at half width and half height). A lookup table,
     // made once per frame size, says for each output pixel which pixel of lens A and of lens B to take, and how much
     // of each (soft seam in mode 2). Then I draw the result into the panel with GDI, from the SDK's own thread.
-    static Dictionary<long, PanoView> views = new Dictionary<long, PanoView>();
+    static Dictionary<long, PanoView[]> views = new Dictionary<long, PanoView[]>();
     static Native.RealDataCb panoCb = (h, type, buf, size, param, user) =>
     {
         if (type != 2) { lock (bytesPerPlay) { long b; bytesPerPlay.TryGetValue(h, out b); bytesPerPlay[h] = b + size; } return; }
-        PanoView v; lock (views) views.TryGetValue(h, out v);
+        PanoView[] vs; lock (views) views.TryGetValue(h, out vs);
         // For decoded frames, param points to {width, height, ...} of the whole frame (both lenses).
-        if (v != null && param != 0)
-            try { v.Frame(buf, Marshal.ReadInt32(new IntPtr(param)), Marshal.ReadInt32(new IntPtr(param), 4)); }
-            catch (Exception ex) { Log("panoramica cuadro: " + ex.Message); }
+        if (vs != null && param != 0)
+        {
+            int w = Marshal.ReadInt32(new IntPtr(param)), hh = Marshal.ReadInt32(new IntPtr(param), 4);
+            foreach (var v in vs) try { v.Frame(buf, w, hh); } catch (Exception ex) { Log("cuadro: " + ex.Message); }
+        }
     };
 
     class PanoView
@@ -1094,6 +1119,7 @@ class CamForm : Form
         [DllImport("gdi32.dll")] static extern int StretchDIBits(IntPtr dc, int x, int y, int w, int h, int sx, int sy, int sw, int sh, IntPtr bits, byte[] bmi, uint usage, uint rop);
 
         public PanoCal Cal; public IntPtr Target; public volatile int TW, TH;
+        public int Half;   // 1 or 2: just that half of the frame (no panorama, Cal is null)
         int fw, fh, OW, OH;
         int[] ia, ib, ua, ub; byte[] wa;   // per output pixel: Y and U/V index in lens A and B (-1 = none), share of A (0-255)
         int[] pix; GCHandle pin; byte[] bmi;
@@ -1101,13 +1127,40 @@ class CamForm : Form
         // Width / height of the picture, from the calibration alone (the layout needs it before the first frame).
         public double Aspect()
         {
+            if (Half > 0) return fh > 0 ? (double)fw / (fh / 2) : 16.0 / 9;
             if (Cal.Mode == 2) { var c = Cal.C2; return (c[6] - c[5]) / (c[8] - c[7]); }
             double x0, x1, y0, y1, seam; PanoBox(Cal.C1, out x0, out x1, out y0, out y1, out seam);
             return (x1 - x0) / (y1 - y0);
         }
 
+        // A half is drawn at the size it shows on screen (never bigger than the camera's own pixels): small squares cost little.
+        int HalfWidth(int w) { return Math.Max(64, Math.Min(w, TW)) & ~1; }
+
+        void BuildHalf(int w, int h)
+        {
+            int lw = w, lh = h / 2;
+            OW = HalfWidth(w); OH = Math.Max(2, OW * lh / lw);
+            int n = OW * OH;
+            ia = new int[n]; ib = new int[n]; ua = new int[n]; ub = new int[n]; wa = new byte[n];
+            for (int oy = 0; oy < OH; oy++)
+            {
+                int py = (int)((oy + 0.5) * lh / OH) + (Half == 2 ? lh : 0);
+                for (int ox = 0; ox < OW; ox++)
+                {
+                    int px = (int)((ox + 0.5) * lw / OW), k = oy * OW + ox;
+                    ia[k] = py * w + px; ua[k] = (py / 2) * (w / 2) + px / 2; ib[k] = -1; wa[k] = 255;
+                }
+            }
+            if (pin.IsAllocated) pin.Free();
+            pix = new int[n]; pin = GCHandle.Alloc(pix, GCHandleType.Pinned);
+            bmi = new byte[40];
+            BitConverter.GetBytes(40).CopyTo(bmi, 0); BitConverter.GetBytes(OW).CopyTo(bmi, 4); BitConverter.GetBytes(-OH).CopyTo(bmi, 8);
+            BitConverter.GetBytes((short)1).CopyTo(bmi, 12); BitConverter.GetBytes((short)32).CopyTo(bmi, 14);
+        }
+
         void Build(int w, int h)
         {
+            if (Half > 0) { BuildHalf(w, h); return; }
             int lw = w, lh = h / 2;
             double x0 = 0, x1 = 1, y0 = 0, y1 = 1, seam, s = 1, dx = 0, dy = 0;
             Lens lens = null;
@@ -1199,7 +1252,7 @@ class CamForm : Form
             if (w <= 0 || h <= 0 || !Monitor.TryEnter(this)) return;   // still busy with the last frame: skip this one
             try
             {
-                if (w != fw || h != fh) { Build(w, h); fw = w; fh = h; }
+                if (w != fw || h != fh || (Half > 0 && HalfWidth(w) != OW)) { Build(w, h); fw = w; fh = h; }
                 byte* Y = (byte*)buf, U = Y + w * h, V = U + w * h / 4;
                 int n = OW * OH;
                 fixed (int* o = pix) fixed (int* pa = ia) fixed (int* pb = ib) fixed (int* qa = ua) fixed (int* qb = ub) fixed (byte* sh = wa) fixed (int* cy = tY) fixed (int* crv = tRV) fixed (int* cgu = tGU) fixed (int* cgv = tGV) fixed (int* cbu = tBU) fixed (byte* cl = clamp)
@@ -1237,6 +1290,69 @@ class CamForm : Form
                 }
             }
             finally { Monitor.Exit(this); }
+        }
+
+        // Curiosity for the phone: the last panorama, darker, with a straight grid of each lens drawn the way
+        // the panorama bends it (light blue: camera 3 = lens A, orange: camera 4 = lens B).
+        public byte[] GridJpeg(int w)
+        {
+            lock (this)
+            {
+                if (pix == null || Half > 0 || Cal == null || fw == 0) return null;
+                int lw = fw, lh = fh / 2;
+                double x0 = 0, x1 = 1, y0 = 0, y1 = 1, seam; Lens lens = null;
+                if (Cal.Mode == 2) lens = new Lens(Cal.C2, lw, lh); else PanoBox(Cal.C1, out x0, out x1, out y0, out y1, out seam);
+                var r = new double[3]; var ra = new double[3];
+                // Lens pixel -> place in the picture (0..1), or false when it falls off.
+                Func<int, double, double, PointF?> map = (lensNo, x, y) =>
+                {
+                    double u, v;
+                    if (lens != null)
+                    {
+                        var c = Cal.C2;
+                        lens.Unproject(x, y, r); if (lensNo == 1) { lens.ToA(r, ra); Array.Copy(ra, r, 3); }
+                        double ang = Math.Atan2(r[0], r[2]), hgt = r[1] / Math.Sqrt(r[0] * r[0] + r[2] * r[2]);
+                        u = (ang - c[5]) / (c[6] - c[5]); v = (hgt - c[7]) / (c[8] - c[7]);
+                        if (lensNo == 1) { double du, dv; FieldAt(c, u, v, out du, out dv); u -= du; v -= dv; }
+                    }
+                    else
+                    {
+                        double X = x / lw, Y = y / lw;
+                        if (lensNo == 1) { X = Cal.C1[1] + Cal.C1[0] * X; Y = Cal.C1[2] + Cal.C1[0] * Y; }
+                        u = (X - x0) / (x1 - x0); v = (Y - y0) / (y1 - y0);
+                    }
+                    if (u < -0.3 || u > 1.3 || v < -0.5 || v > 1.5) return null;
+                    return new PointF((float)u, (float)v);
+                };
+                int oh = Math.Max(1, OH * w / OW);
+                using (var src = new Bitmap(OW, OH, OW * 4, System.Drawing.Imaging.PixelFormat.Format32bppRgb, pin.AddrOfPinnedObject()))
+                using (var dst = new Bitmap(w, oh))
+                using (var g = Graphics.FromImage(dst))
+                using (var ms = new MemoryStream())
+                {
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+                    g.DrawImage(src, new Rectangle(0, 0, w, oh));
+                    using (var dim = new SolidBrush(Color.FromArgb(150, 0, 0, 0))) g.FillRectangle(dim, 0, 0, w, oh);
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    for (int lensNo = 0; lensNo < 2; lensNo++)
+                        using (var pen = new Pen(lensNo == 0 ? Color.FromArgb(220, 80, 200, 255) : Color.FromArgb(220, 255, 150, 40), 1.5f))
+                            for (int dir = 0; dir < 2; dir++)
+                                for (int i = 0; i <= 12; i++)
+                                {
+                                    PointF? last = null;
+                                    for (int j = 0; j <= 48; j++)
+                                    {
+                                        double a = (double)i / 12, b = (double)j / 48;
+                                        double x = (dir == 0 ? a : b) * (lw - 1), y = (dir == 0 ? b : a) * (lh - 1);
+                                        var pt = map(lensNo, x, y);
+                                        if (pt != null) { var pp = new PointF(pt.Value.X * w, pt.Value.Y * oh); if (last != null) g.DrawLine(pen, last.Value, pp); last = pp; }
+                                        else last = null;
+                                    }
+                                }
+                    dst.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    return ms.ToArray();
+                }
+            }
         }
 
         // Last pasted frame as a JPEG for the phone.
@@ -1695,13 +1811,14 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 #zoom{display:flex;flex-direction:column;gap:14px}#zoom button{width:64px;height:64px;font-size:28px;touch-action:none}
 </style></head><body>
 <header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
-<div id=pano style='display:none;padding:0 10px 6px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=1>Simple</button> <button data-pano=2>Avanzada</button></div>
+<div id=pano style='display:none;padding:0 10px 6px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=1>Simple</button> <button data-pano=2>Avanzada</button>
+<div id=gridbox style='display:none'><img id=gridimg style='width:100%;border-radius:8px;margin-top:8px'><p class=tip style='margin:2px 0'>Como se deforma cada lente: celeste = camara 3, naranja = camara 4.</p></div></div>
 <p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
 <p class=tip id=msg style='color:#fc0'></p>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=grid></div><img id=ghost>
 <script>
-var st={big:-1,cams:[]};
+var st={big:-1,cams:[]},gridKey='';
 // ONE connection that stays open (WebSocket) for everything; if it drops, connect again at once.
 // Buttons change on the phone right away; the TV follows when the command arrives.
 var ws=null,queue=[],lastMsg=0,net=document.getElementById('net');
@@ -1729,6 +1846,8 @@ function draw(s){st=s;var g=document.getElementById('grid');
  var pb=document.getElementById('pano');pb.style.display=s.split?'':'none';
  [].forEach.call(pb.querySelectorAll('button'),function(b){b.classList.toggle('on',+b.dataset.pano==(+s.pano||0))});
  document.getElementById('msg').textContent=s.msg||'';
+ var gk=(+s.pano||0)+'|'+(s.msg||''),gb=document.getElementById('gridbox');gb.style.display=s.pano&&!s.msg?'':'none';
+ if(gk!=gridKey&&s.pano&&!s.msg){gridKey=gk;setTimeout(function(){document.getElementById('gridimg').src='/grid?'+Date.now()},2500)}else if(!s.pano)gridKey='';
  var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none'}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
 var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;

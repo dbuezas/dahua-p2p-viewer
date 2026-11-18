@@ -23,6 +23,8 @@ This app shows the cameras in about 10 seconds.
 - Right click a camera: switch it between low quality (sub stream, fast) and HD (main stream). A red "HD"
   shows on HD cameras. The choice is saved in `hd.txt`. Too many HD cameras at once can hit the NVR's stream limit.
 - Drag a camera onto another one: they swap places. The order is saved in `orden.txt`.
+- A split camera is played ONCE in every mode: the app takes the decoded frames and draws each half (or the
+  panorama) itself, at the size it shows on screen, so both halves always show the same moment.
 - Panorama of a split camera (phone: "Camaras 3 y 4 juntas: No / Simple / Avanzada"). It is worked out again each time it
   is turned on, from a picture taken then (the moving lens may point elsewhere). Both lenses come from ONE decoded
   stream (SDK decoded-frame callback, I420), pasted with a lookup table and drawn by the app, so they never get out
@@ -34,6 +36,8 @@ This app shows the cameras in about 10 seconds.
     different places: the leftover shift is measured all over the shared strip and lens B is bent locally to fit,
     fading out over its own part (fine bending grid kept in `panoramica.txt`).
   If the lenses no longer see a shared strip, the phone says so.
+  Under the buttons the phone shows, as a curiosity, the panorama with a straight grid of each lens bent the way the
+  panorama bends it (light blue: camera 3, orange: camera 4).
 - When it cannot connect, it shows in big letters what to try: the other Wi-Fi network, or restarting the router.
 - Phone remote: a small web page on port 8080 (`puerto_web` in `camaras.ini`, 0 = off), only for the local network.
   One WebSocket connection carries everything (opening new connections is what fails on a weak Wi-Fi).
