@@ -52,6 +52,9 @@ This app shows the cameras in about 10 seconds.
   - Each lens is shown unbent from its own place; they only have to agree on the seam, so the seam follows a path
     where they look alike, and each row of lens B is taken at the distance of its seam point (B moves only up or
     down a little per row: straight lines stay straight).
+  - Then a small bending near the seam only (+-32 px): what is still off between both lenses there is measured
+    (patches), cleaned, smoothed and kept gentle, and each lens bends half of it toward the other, fully in the
+    middle and fading to nothing at the band's edges; the seam blends softly over 32 px with no doubles.
   - The result is shown zoomed on the seam, cut to only picture. "Ver superpuestas" shows both lenses half and half at the end (the seam hides errors; this does not). If the
     per-row distances do not make the shared part match better than none, none are used.
   - The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels, the seam per row) as one binary

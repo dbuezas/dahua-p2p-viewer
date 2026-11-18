@@ -92,13 +92,13 @@ class CamForm : Form
     // (part of the width, -1: none); ALeft: lens A shows on the left of the seam.
     class Mesh3
     {
-        public int OW, OH, NX, NY, Step; public bool ALeft; public float[] M, Seam; public byte[] Raw; public string Head;
+        public int OW, OH, NX, NY, Step, Band; public bool ALeft; public float[] M, Seam; public byte[] Raw; public string Head;
         public static Mesh3 Parse(byte[] b)
         {
             if (b.Length < 6 || b[0] != 'P' || b[1] != '3') return null;
             int hl = BitConverter.ToInt32(b, 2); string head = Encoding.UTF8.GetString(b, 6, hl);
             Func<string, int> num = k => { var m = System.Text.RegularExpressions.Regex.Match(head, "\"" + k + "\":(-?[0-9.]+)"); return m.Success ? (int)double.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : -1; };
-            var r = new Mesh3 { OW = num("OW"), OH = num("OH"), NX = num("NX"), NY = num("NY"), Step = num("step"), ALeft = head.Contains("\"aLeft\":true"), Raw = b, Head = head };
+            var r = new Mesh3 { OW = num("OW"), OH = num("OH"), NX = num("NX"), NY = num("NY"), Step = num("step"), Band = Math.Max(0, num("band")), ALeft = head.Contains("\"aLeft\":true"), Raw = b, Head = head };
             if (r.OW < 2 || r.OH < 2 || r.NX < 2 || r.NY < 2 || r.Step < 1) return null;
             int off = 6 + hl; off += (4 - off % 4) % 4;
             int nm = r.NX * r.NY * 4; if (b.Length < off + (nm + r.OH) * 4) return null;
@@ -1249,8 +1249,9 @@ class CamForm : Form
             ia = new int[n]; ib = new int[n]; ua = new int[n]; ub = new int[n]; wa = new byte[n];
             var ax = new double[OW]; var ay = new double[OW]; var bx = new double[OW]; var by = new double[OW];
             var inA = new bool[OW]; var inB = new bool[OW]; 
-            // Half width of the soft seam, in output pixels.
-            double band = Math.Max(2, OW / 200.0);
+            // Half width of the soft seam, in output pixels: what the phone says (it bends both lenses to agree over
+            // that width), else narrow.
+            double band = m3.Band > 0 ? m3.Band * (double)OW / m3.OW : Math.Max(2, OW / 200.0);
             for (int oy = 0; oy < OH; oy++)
             {
                 int minA = int.MaxValue, maxA = -1, minB = int.MaxValue, maxB = -1;

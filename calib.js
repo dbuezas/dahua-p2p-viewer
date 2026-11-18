@@ -359,6 +359,7 @@ var Calib = (function () {
     seam(st, show);
     // the per-row distances must make the shared part match better than none at all; otherwise none
     if (stripMatch(st, true) < stripMatch(st, false)) seam(st, show, true);
+    if (o.warp !== false) seamWarp(st, show);
     // lens B was shown as if everything were far; now each row settles at its band's distance (smoothly)
     show({ stage: 5, text: 'Ajustando la camara 4 a la distancia de cada cosa', frac: 0.88, rig: g, mix: true, W: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 1500,
       slide: { rows: true, to: g, c: st.view.cyl, crop1: st.view.crop, dur: 1400 } });
@@ -529,22 +530,109 @@ var Calib = (function () {
   // output pixel -> cylinder point
   function outToCyl(fr, ox, oy, p) { p[0] = fr.x0 + ox; p[1] = fr.y0 + oy; }
 
+  // -- 6b. Small bending near the seam only, so a wide soft seam shows no doubles. --
+  // In a band of +-HB pixels around the seam, what is left between both lenses is measured (patches of A searched in
+  // B, both as drawn), cleaned, smoothed, and kept gentle (neighbours differ by little, so nothing folds). Each lens
+  // then bends half of it toward the other, fully in the middle of the band and fading to nothing at its edges.
+  var HB = 32;
+  function seamWarp(st, show) {
+    var c = st.cyl, g = st.rig, ws = st.ws, R = 8, P = 4, step = 6, r = [0, 0, 0], q = [0, 0], y, x, i, j;
+    st.warp = null;
+    if (!ws) return;
+    var lo = 1e9, hi = -1; for (y = 0; y < c.CH; y++) if (ws.seam[y] >= 0) { lo = Math.min(lo, ws.seam[y]); hi = Math.max(hi, ws.seam[y]); }
+    if (hi < 0) return;
+    var X0 = Math.max(0, Math.floor(lo - HB - R - P - 2)), X1 = Math.min(c.CW - 1, Math.ceil(hi + HB + R + P + 2)), BW = X1 - X0 + 1, H = c.CH;
+    // both lenses as drawn (A unshifted, B at its row's distance) over the box
+    var A = new Float32Array(BW * H).fill(NaN), B = new Float32Array(BW * H).fill(NaN);
+    for (y = 0; y < H; y++) { var sy = ws.seam[y]; if (sy < 0) continue;
+      for (x = Math.max(X0, Math.floor(sy - HB - R - P - 1)); x <= Math.min(X1, Math.ceil(sy + HB + R + P + 1)); x++) {
+        cylRay(c, x, y, r); var k = y * BW + x - X0;
+        if (toA(g, r, 0, q)) A[k] = bil(st.inp.A, LW, LH, q[0], q[1]);
+        if (toBrow(st, r, y, q)) B[k] = bil(st.inp.B, LW, LH, q[0], q[1]);
+      } }
+    // measures on a grid of nodes: B's patch that best matches A's patch, within +-R pixels
+    var NX = Math.floor(BW / step) + 1, NY = Math.floor(H / step) + 1, N = NX * NY, mdx = new Float32Array(N), mdy = new Float32Array(N), has = new Uint8Array(N), out = new Uint8Array(N);
+    for (var gy = 0; gy < NY; gy++) for (var gx = 0; gx < NX; gx++) {
+      var cx = X0 + gx * step, cy = gy * step, gi = gy * NX + gx, sc = ws.seam[Math.min(H - 1, cy)];
+      if (sc < 0 || Math.abs(cx - sc) > HB) { out[gi] = 1; continue; }
+      if (cy < P + R || cy >= H - P - R || cx - X0 < P + R || X1 - cx < P + R) continue;
+      var pa = [], sa = 0, saa = 0, okp = true;
+      for (j = -P; j <= P && okp; j++) for (i = -P; i <= P; i++) { var av = A[(cy + j) * BW + cx - X0 + i]; if (av !== av) { okp = false; break; } pa.push(av); sa += av; saa += av * av; }
+      if (!okp) continue; var n = pa.length, va = saa / n - (sa / n) * (sa / n); if (va < 25) continue;
+      var best = -2, second = -2, bx = 0, by = 0;
+      for (var dy = -R; dy <= R; dy++) for (var dx = -R; dx <= R; dx++) {
+        var sb = 0, sbb = 0, sab = 0, m = 0, okb = true;
+        for (j = -P; j <= P && okb; j++) for (i = -P; i <= P; i++) { var bv = B[(cy + dy + j) * BW + cx + dx - X0 + i]; if (bv !== bv) { okb = false; break; } var aa = pa[m++]; sb += bv; sbb += bv * bv; sab += aa * bv; }
+        if (!okb) continue; var vb = sbb / n - (sb / n) * (sb / n); if (vb < 1) continue;
+        var v = (sab / n - sa / n * sb / n) / Math.sqrt(va * vb);
+        if (v > best) { if (Math.abs(dx - bx) + Math.abs(dy - by) > 2) second = best; best = v; bx = dx; by = dy; } else if (v > second && Math.abs(dx - bx) + Math.abs(dy - by) > 2) second = v;
+      }
+      if (best > 0.75 && best - second > 0.02 && Math.abs(bx) < R && Math.abs(by) < R) { mdx[gi] = bx; mdy[gi] = by; has[gi] = 1; }
+      if (show && gx === 0 && gy % 20 === 0) show({ textOnly: true, text: 'Encajando la costura: fila ' + gy + ' de ' + NY, frac: 0.95 });
+    }
+    // clean: a measure far (2.5 px) from the middle value of those around it goes
+    var keep = has.slice();
+    for (gy = 0; gy < NY; gy++) for (gx = 0; gx < NX; gx++) { gi = gy * NX + gx; if (!has[gi]) continue; var lx = [], ly = [];
+      for (j = -2; j <= 2; j++) for (i = -2; i <= 2; i++) { var xx = gx + i, yy = gy + j; if (xx < 0 || yy < 0 || xx >= NX || yy >= NY || !has[yy * NX + xx]) continue; lx.push(mdx[yy * NX + xx]); ly.push(mdy[yy * NX + xx]); }
+      if (lx.length < 4) { keep[gi] = 0; continue; } lx.sort(function (a2, b2) { return a2 - b2; }); ly.sort(function (a2, b2) { return a2 - b2; });
+      if (Math.abs(mdx[gi] - lx[lx.length >> 1]) > 2.5 || Math.abs(mdy[gi] - ly[ly.length >> 1]) > 2.5) keep[gi] = 0; }
+    // fill: smooth surface pulled to the measures, zero outside the band
+    var fx = new Float32Array(N), fy = new Float32Array(N);
+    for (var it = 0; it < 600; it++) for (gy = 0; gy < NY; gy++) for (gx = 0; gx < NX; gx++) {
+      gi = gy * NX + gx; if (out[gi]) { fx[gi] = 0; fy[gi] = 0; continue; }
+      var s1 = 0, s2 = 0, cn = 0;
+      if (gx > 0) { s1 += fx[gi - 1]; s2 += fy[gi - 1]; cn++; } if (gx < NX - 1) { s1 += fx[gi + 1]; s2 += fy[gi + 1]; cn++; }
+      if (gy > 0) { s1 += fx[gi - NX]; s2 += fy[gi - NX]; cn++; } if (gy < NY - 1) { s1 += fx[gi + NX]; s2 += fy[gi + NX]; cn++; }
+      if (keep[gi]) { s1 += cn * mdx[gi]; s2 += cn * mdy[gi]; cn *= 2; }
+      fx[gi] = s1 / cn; fy[gi] = s2 / cn;
+    }
+    // gentle: neighbouring nodes differ by at most a quarter of their distance (nothing folds or smears)
+    var lim = step * 0.25;
+    for (var pass = 0; pass < 50; pass++) { var chg = false;
+      for (gy = 0; gy < NY; gy++) for (gx = 0; gx < NX; gx++) { gi = gy * NX + gx;
+        [gx + 1 < NX ? gi + 1 : -1, gy + 1 < NY ? gi + NX : -1].forEach(function (h2) { if (h2 < 0) return; [fx, fy].forEach(function (f) { var d = f[h2] - f[gi]; if (Math.abs(d) > lim) { var fix = (Math.abs(d) - lim) / 2 * Math.sign(d); f[gi] += fix; f[h2] -= fix; chg = true; } }); }); }
+      if (!chg) break; }
+    var kc = 0; for (i = 0; i < N; i++) kc += keep[i];
+    st.warp = { X0: X0, NX: NX, NY: NY, step: step, dx: fx, dy: fy, measured: kc };
+  }
+  // the bending at work-canvas point (x, y), already faded by the distance to the seam: [dx, dy] (B minus A)
+  function warpAt(st, x, y) {
+    var wp = st.warp; if (!wp) return null;
+    var sy = st.ws.seam[Math.max(0, Math.min(st.ws.seam.length - 1, Math.round(y)))]; if (sy < 0) return null;
+    var d = Math.abs(x - sy), f = d <= HB / 2 ? 1 : d >= HB ? 0 : 1 - (d - HB / 2) / (HB / 2); if (f <= 0) return null;
+    var gx = Math.max(0, Math.min(wp.NX - 1.001, (x - wp.X0) / wp.step)), gy = Math.max(0, Math.min(wp.NY - 1.001, y / wp.step));
+    var x0 = gx | 0, y0 = gy | 0, ax = gx - x0, ay = gy - y0, k = y0 * wp.NX + x0;
+    var bl = function (F) { return (F[k] * (1 - ax) + F[k + 1] * ax) * (1 - ay) + (F[k + wp.NX] * (1 - ax) + F[k + wp.NX + 1] * ax) * ay; };
+    f = f * f * (3 - 2 * f);
+    return [bl(wp.dx) * f, bl(wp.dy) * f];
+  }
+  // A's and B's pixel for work-canvas point (x, y): rows of B at their distance, each lens bent half toward the other
+  function sampleAB(st, x, y, qa, qb) {
+    var c = st.cyl, g = st.rig, r = [0, 0, 0], wv = warpAt(st, x, y), hx = wv ? wv[0] / 2 : 0, hy = wv ? wv[1] / 2 : 0;
+    cylRay(c, x - hx, y - hy, r); var inA = toA(g, r, 0, qa);
+    cylRay(c, x + hx, y + hy, r); var inB = toBrow(st, r, y + hy, qb);
+    return (inA ? 1 : 0) | (inB ? 2 : 0);
+  }
+
   // -- 7. mesh for the PC --
   function mesh(st) {
-    var fr = st.fr, c = st.cyl, g = st.rig, step = 8, NXm = Math.ceil((fr.OW - 1) / step) + 1, NYm = Math.ceil((fr.OH - 1) / step) + 1;
+    var fr = st.fr, c = st.cyl, g = st.rig, step = 6, NXm = Math.ceil((fr.OW - 1) / step) + 1, NYm = Math.ceil((fr.OH - 1) / step) + 1;
     var m = new Float32Array(NXm * NYm * 4), p = [0, 0], r = [0, 0, 0], qa = [0, 0], qb = [0, 0], ws = st.ws;
     for (var j = 0; j < NYm; j++) for (var i = 0; i < NXm; i++) {
       var ox = Math.min(fr.OW - 1, i * step), oy = Math.min(fr.OH - 1, j * step), k = (j * NXm + i) * 4;
-      outToCyl(fr, ox, oy, p); cylRay(c, p[0], p[1], r);
-      var w = ws ? ws.W[Math.max(0, Math.min(ws.W.length - 1, Math.round(p[1])))] : 0;
+      outToCyl(fr, ox, oy, p);
       // raw lens coordinates (may fall outside the picture: the PC checks each pixel)
+      var wv = warpAt(st, p[0], p[1]), hx = wv ? wv[0] / 2 : 0, hy = wv ? wv[1] / 2 : 0;
+      cylRay(c, p[0] - hx, p[1] - hy, r);
       if (project(g.L, r[0], r[1], r[2], qa)) { m[k] = qa[0] / LW; m[k + 1] = qa[1] / LH; } else { m[k] = NaN; m[k + 1] = NaN; }
+      cylRay(c, p[0] + hx, p[1] + hy, r);
+      var w = ws ? ws.W[Math.max(0, Math.min(ws.W.length - 1, Math.round(p[1] + hy)))] : 0;
       var x = r[0] - 2 * g.h[0] * w, y = r[1] - 2 * g.h[1] * w, z = r[2] - 2 * g.h[2] * w, R = g.R;
       if (project(g.L, R[0] * x + R[1] * y + R[2] * z, R[3] * x + R[4] * y + R[5] * z, R[6] * x + R[7] * y + R[8] * z, qb)) { m[k + 2] = qb[0] / LW; m[k + 3] = qb[1] / LH; } else { m[k + 2] = NaN; m[k + 3] = NaN; }
     }
     var seamU = new Float32Array(fr.OH);
     for (var y2 = 0; y2 < fr.OH; y2++) { var sc = ws ? ws.seam[Math.max(0, Math.min(c.CH - 1, Math.round(fr.y0 + y2)))] : -1; seamU[y2] = sc < 0 ? -1 : (sc - fr.x0 + 0.5) / fr.OW; }
-    return { head: { OW: fr.OW, OH: fr.OH, NX: NXm, NY: NYm, step: step, aLeft: st.aLeft, pan: g.pan, tilt: g.tilt, clip: fr.clip }, mesh: m, seam: seamU };
+    return { head: { OW: fr.OW, OH: fr.OH, NX: NXm, NY: NYm, step: step, aLeft: st.aLeft, band: st.warp ? HB / 2 : 0, pan: g.pan, tilt: g.tilt, clip: fr.clip }, mesh: m, seam: seamU };
   }
   // Binary message for the PC: "P3", header length (uint32), header JSON, padding to 4, mesh floats, seam floats.
   function pack(ms) {
@@ -576,9 +664,11 @@ var Calib = (function () {
       if (fr) outToCyl(fr, ox, oy, p); else { p[0] = cx0 + ox; p[1] = cy0 + oy; }
       cylRay(c, p[0], p[1], r);
       if ((opt.W || opt.seam) && st.ws) pw = other ? cylOf(wc, r) : p;
-      var inA = toA(g, r, 0, qa), inB = opt.W && st.ws ? toBrow(st, r, pw[1], qb) : toB(g, r, 0, qb), k = (y * PW + x) * 4, t;
+      var inA, inB, k = (y * PW + x) * 4, t;
+      if (opt.W && st.ws && st.warp && g === st.rig) { var fl = sampleAB(st, pw[0], pw[1], qa, qb); inA = !!(fl & 1); inB = !!(fl & 2); }
+      else { inA = toA(g, r, 0, qa); inB = opt.W && st.ws ? toBrow(st, r, pw[1], qb) : toB(g, r, 0, qb); }
       if (!inA && !inB) { img[k + 3] = 255; continue; }
-      if (opt.seam && st.ws && inA && inB) { var sxx = st.ws.seam[Math.max(0, Math.min(wc.CH - 1, Math.round(pw[1])))]; t = st.aLeft ? (pw[0] > sxx ? 1 : 0) : (pw[0] < sxx ? 1 : 0); }
+      if (opt.seam && st.ws && inA && inB) { var sxx = st.ws.seam[Math.max(0, Math.min(wc.CH - 1, Math.round(pw[1])))], bw = st.warp ? HB / 2 : 0.5, dd = st.aLeft ? pw[0] - sxx : sxx - pw[0]; t = Math.max(0, Math.min(1, 0.5 + dd / (2 * bw))); }
       else t = inA && inB ? 0.5 : inB ? 1 : 0;
       for (var ch = 0; ch < 3; ch++) {
         var a = inA ? colAt(inp.Ac, qa[0], qa[1], ch) : 0, b = inB ? colAt(inp.Bc, qb[0], qb[1], ch) : 0;
