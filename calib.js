@@ -151,70 +151,93 @@ var Calib = (function () {
     }
     cand.sort(function (a, b) { return b.v - a.v; });
     var tops = [];
-    cand.forEach(function (c) { if (tops.length < 6 && tops.every(function (t) { return Math.abs(t.pan - c.pan) > 5 * D || Math.abs(t.tilt - c.tilt) > 5 * D; })) tops.push(c); });
-    best = { v: -2, pan: 0, tilt: 0 };
-    tops.forEach(function (c0) {
+    cand.forEach(function (c) { if (tops.length < 10 && tops.every(function (t) { return Math.abs(t.pan - c.pan) > 5 * D || Math.abs(t.tilt - c.tilt) > 5 * D; })) tops.push(c); });
+    // each of the few best places, refined on the sharper pictures
+    tops = tops.map(function (c0) {
       var b0 = { v: rough(c0.pan, c0.tilt, 1), pan: c0.pan, tilt: c0.tilt };
       [2, 1, 0.5, 0.25].forEach(function (s) {
         var bb = b0;
         for (var pi = -2; pi <= 2; pi++) for (var ti = -2; ti <= 2; ti++) { var pan = bb.pan + pi * s * D, tilt = bb.tilt + ti * s * D, vv = rough(pan, tilt, 1); if (vv > b0.v) b0 = { v: vv, pan: pan, tilt: tilt }; }
       });
-      if (b0.v > best.v) best = b0;
-    });
-    if (best.v < 0.5) throw new Error('las dos lentes no parecen ver la misma parte (la camara 4 mira muy lejos de la 3)');
-    var g0 = Rig(o, best.pan, best.tilt);
-    show({ stage: 1, text: 'Camara 4 (aprox., ajuste ' + best.v.toFixed(2) + '): paneo ' + (best.pan / D).toFixed(1) + '°, inclinacion ' + (best.tilt / D).toFixed(1) + '°', frac: 0.15, rig: g0, mix: true });
+      return b0;
+    }).filter(function (t) { return t.v >= 0.5; }).sort(function (a, b) { return b.v - a.v; });
+    if (!tops.length) throw new Error('las dos lentes no parecen ver la misma parte (la camara 4 mira muy lejos de la 3)');
 
-    // -- 2. shared corners --
-    var resp = new Float32Array(LW * LH), cs = [];
+    // -- 2. shared corners (corners of B, each searched in A near where a pan/tilt puts it) --
+    var resp = new Float32Array(LW * LH), corners = [];
     for (y = 2; y < LH - 2; y++) for (x = 2; x < LW - 2; x++) {
       var sxx = 0, syy = 0, sxy = 0;
       for (var j = -1; j <= 1; j++) for (var i = -1; i <= 1; i++) { var kk = (y + j) * LW + x + i, gx = B[kk + 1] - B[kk - 1], gy = B[kk + LW] - B[kk - LW]; sxx += gx * gx; syy += gy * gy; sxy += gx * gy; }
       resp[y * LW + x] = sxx * syy - sxy * sxy - 0.05 * (sxx + syy) * (sxx + syy);
     }
-    var mg = Math.round(LH * 0.05), rb = [0, 0, 0];
+    var mg = Math.round(LH * 0.05);
     for (y = mg; y < LH - mg; y++) for (x = 12; x < LW - 12; x++) {
       var rv = resp[y * LW + x]; if (rv <= 0) continue; var top = true;
       for (j = -3; j <= 3 && top; j++) for (i = -3; i <= 3; i++) if (resp[(y + j) * LW + x + i] > rv) { top = false; break; }
-      if (!top) continue;
-      unproject(g0.L, x, y, rb); var R0 = g0.R;
-      if (!project(g0.L, R0[0] * rb[0] + R0[3] * rb[1] + R0[6] * rb[2], R0[1] * rb[0] + R0[4] * rb[1] + R0[7] * rb[2], R0[2] * rb[0] + R0[5] * rb[1] + R0[8] * rb[2], q)) continue;
-      if (q[0] < 20 || q[0] > LW - 20 || q[1] < 20 || q[1] > LH - 20) continue;
-      cs.push([x, y, rv, q[0], q[1]]);
+      if (top) corners.push([x, y, rv]);
     }
-    cs.sort(function (a, b) { return b[2] - a[2]; }); cs = cs.slice(0, 800);
-    var A2 = shrink(A, LW, LH, 2), B2 = shrink(B, LW, LH, 2), w2 = LW / 2, h2 = LH / 2, Rs = Math.round(w2 * 0.09), matches = [];
-    for (var ci = 0; ci < cs.length; ci++) {
-      var c = cs[ci], px = Math.round(c[3] / 2), py = Math.round(c[4] / 2), bx = Math.round(c[0] / 2), by = Math.round(c[1] / 2);
-      var bst = -2, second = -2, bax = 0, bay = 0;
-      for (y = py - Rs; y <= py + Rs; y++) for (x = px - Rs; x <= px + Rs; x++) {
-        var nv = ncc(A2, B2, w2, h2, x, y, bx, by, 6), far = Math.abs(x - bax) + Math.abs(y - bay) > 2;
-        if (nv > bst) { if (far) second = bst; bst = nv; bax = x; bay = y; } else if (nv > second && far) second = nv;
+    corners.sort(function (a, b) { return b[2] - a[2]; });
+    var A2 = shrink(A, LW, LH, 2), B2 = shrink(B, LW, LH, 2), w2 = LW / 2, h2 = LH / 2, Rs = Math.round(w2 * 0.09);
+    function findMatches(g0, maxC, progress) {
+      var cs = [], rb = [0, 0, 0], R0 = g0.R, ms = [];
+      for (var k = 0; k < corners.length && cs.length < maxC; k++) {
+        var c = corners[k]; unproject(g0.L, c[0], c[1], rb);
+        if (!project(g0.L, R0[0] * rb[0] + R0[3] * rb[1] + R0[6] * rb[2], R0[1] * rb[0] + R0[4] * rb[1] + R0[7] * rb[2], R0[2] * rb[0] + R0[5] * rb[1] + R0[8] * rb[2], q)) continue;
+        if (q[0] < 20 || q[0] > LW - 20 || q[1] < 20 || q[1] > LH - 20) continue;
+        cs.push([c[0], c[1], c[2], q[0], q[1]]);
       }
-      if (bst >= 0.75 && bst - second >= 0.03) {
-        var fb = -2, fx = 0, fy = 0;
-        for (y = bay * 2 - 3; y <= bay * 2 + 3; y++) for (x = bax * 2 - 3; x <= bax * 2 + 3; x++) { nv = ncc(A, B, LW, LH, x, y, c[0], c[1], 7); if (nv > fb) { fb = nv; fx = x; fy = y; } }
-        if (fb > 0.8) matches.push([fx, fy, c[0], c[1]]);
+      for (var ci = 0; ci < cs.length; ci++) {
+        var c2 = cs[ci], px = Math.round(c2[3] / 2), py = Math.round(c2[4] / 2), bx = Math.round(c2[0] / 2), by = Math.round(c2[1] / 2);
+        var bst = -2, second = -2, bax = 0, bay = 0, xx, yy, nv;
+        for (yy = py - Rs; yy <= py + Rs; yy++) for (xx = px - Rs; xx <= px + Rs; xx++) {
+          nv = ncc(A2, B2, w2, h2, xx, yy, bx, by, 6); var far = Math.abs(xx - bax) + Math.abs(yy - bay) > 2;
+          if (nv > bst) { if (far) second = bst; bst = nv; bax = xx; bay = yy; } else if (nv > second && far) second = nv;
+        }
+        if (bst >= 0.75 && bst - second >= 0.03) {
+          var fb = -2, fx = 0, fy = 0;
+          for (yy = bay * 2 - 3; yy <= bay * 2 + 3; yy++) for (xx = bax * 2 - 3; xx <= bax * 2 + 3; xx++) { nv = ncc(A, B, LW, LH, xx, yy, c2[0], c2[1], 7); if (nv > fb) { fb = nv; fx = xx; fy = yy; } }
+          if (fb > 0.8) ms.push([fx, fy, c2[0], c2[1]]);
+        }
+        if (progress && (ci % 60 === 59 || ci === cs.length - 1)) progress(ms, ci + 1, cs.length);
       }
-      if (ci % 60 === 59 || ci === cs.length - 1) show({ stage: 2, text: 'Puntos en comun: ' + matches.length + ' (de ' + (ci + 1) + ' esquinas probadas)', frac: 0.15 + 0.2 * (ci + 1) / cs.length, rig: g0, mix: true, matches: matches });
+      return ms;
     }
-    if (matches.length < 8) throw new Error('muy pocos puntos en comun (' + matches.length + ')');
-
     // -- 3. fine pan/tilt: every pair may be at any distance, it only has to lie on its line --
-    function cost(x) {
-      var g = Rig(o, x[0], x[1]), es = matches.map(function (m) { return epi(g, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
-      var use = Math.max(6, Math.floor(es.length * 0.9)), e = 0;
-      for (var i = 0; i < use; i++) e += es[i] < 2 ? es[i] * es[i] : 4 * es[i] - 4;
-      return e / use;
+    function fitRig(start, ms, iters, each) {
+      function cost(xv) {
+        var gg = Rig(o, xv[0], xv[1]), es = ms.map(function (m) { return epi(gg, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
+        var use = Math.max(6, Math.floor(es.length * 0.9)), e = 0;
+        for (var i2 = 0; i2 < use; i2++) e += es[i2] < 2 ? es[i2] * es[i2] : 4 * es[i2] - 4;
+        return e / use;
+      }
+      var f = nelder(cost, [start.pan, start.tilt], [1 * D, 0.5 * D], iters, each), gg = Rig(o, f.x[0], f.x[1]);
+      var es = ms.map(function (m) { return epi(gg, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
+      return { g: gg, good: es.filter(function (e) { return e < 2.5; }).length, med: es[es.length >> 1] };
     }
-    var fit = nelder(cost, [best.pan, best.tilt], [1 * D, 0.5 * D], 120, function (it, x) {
-      if (it % 6 === 0) show({ stage: 3, text: 'Ajustando paneo/inclinacion: ' + (x[0] / D).toFixed(2) + '°, ' + (x[1] / D).toFixed(2) + '°', frac: 0.35 + 0.15 * it / 120, rig: Rig(o, x[0], x[1]), mix: true, matches: matches });
+    // A near thing seen by both lenses (a ladder) can fool the rough search: try the few best places for real
+    // (shared corners and fine fit each) and keep the one where the most pairs fit.
+    var win = null;
+    // (corners are searched where the pictures line up best, not at the fitted pan/tilt: that one puts things at
+    // infinity, and near things then fall outside the search window)
+    var nT = Math.min(8, tops.length);
+    tops.slice(0, nT).forEach(function (t, k) {
+      var ms = findMatches(Rig(o, t.pan, t.tilt), 250);
+      var f = ms.length >= 8 ? fitRig(t, ms, 80) : { good: 0 };
+      show({ stage: 2, text: 'Probando direccion ' + (k + 1) + ' de ' + nT + ': ' + f.good + ' puntos encajan', frac: 0.15 + 0.1 * (k + 1) / nT, rig: f.g || Rig(o, t.pan, t.tilt), mix: true, matches: ms });
+      if (f.good > 0 && (!win || f.good > win.good)) win = { good: f.good, t: t, pan: f.g.pan, tilt: f.g.tilt };
     });
-    var g = Rig(o, fit.x[0], fit.x[1]);
-    var errs = matches.map(function (m) { return epi(g, m[0], m[1], m[2], m[3]); });
-    var sorted = errs.map(function (e) { return e.e; }).sort(function (a, b) { return a - b; });
-    st.rig = g; st.matchErr = sorted[sorted.length >> 1]; st.matches = matches;
-    show({ stage: 3, text: 'Paneo ' + (g.pan / D).toFixed(1) + '°, inclinacion ' + (g.tilt / D).toFixed(1) + '°; error tipico ' + st.matchErr.toFixed(1) + ' px', frac: 0.5, rig: g, mix: true, matches: matches });
+    if (!win) throw new Error('no encontre puntos en comun entre las dos lentes');
+    var g0 = Rig(o, win.t.pan, win.t.tilt);
+    var matches = findMatches(g0, 800, function (ms, n, tot) { show({ stage: 2, text: 'Puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.25 + 0.1 * n / tot, rig: g0, mix: true, matches: ms }); });
+    if (matches.length < 8) throw new Error('muy pocos puntos en comun (' + matches.length + ')');
+    var fr2 = fitRig(win, matches, 120, function (it, xv) {
+      if (it % 6 === 0) show({ stage: 3, text: 'Ajustando paneo/inclinacion: ' + (xv[0] / D).toFixed(2) + '°, ' + (xv[1] / D).toFixed(2) + '°', frac: 0.35 + 0.15 * it / 120, rig: Rig(o, xv[0], xv[1]), mix: true, matches: matches });
+    });
+    var g = fr2.g;
+    st.rig = g; st.matchErr = fr2.med; st.matches = matches;
+    show({ stage: 3, text: 'Paneo ' + (g.pan / D).toFixed(1) + '°, inclinacion ' + (g.tilt / D).toFixed(1) + '°; error tipico ' + st.matchErr.toFixed(1) + ' px, ' + fr2.good + ' de ' + matches.length + ' puntos encajan', frac: 0.5, rig: g, mix: true, matches: matches });
+    // a wrong result must not reach the TV
+    if (fr2.good < 15 || fr2.med > 4) throw new Error('no pude encajar las lentes (error tipico ' + fr2.med.toFixed(1) + ' px, ' + fr2.good + ' puntos buenos). Proba de nuevo o mové la camara 4.');
 
     // -- 4. distances --
     cylinder(st);
@@ -304,7 +327,7 @@ var Calib = (function () {
       if (it % 300 === 299) show({ stage: 4, text: 'Suavizando distancias', frac: 0.75 + 0.1 * it / 1500, rig: g, W: W, grid: st.grid });
     }
     var kc = 0; for (i = 0; i < N; i++) kc += keep[i];
-    st.measured = kc;
+    st.measured = kc; st.keep = keep;
   }
   function wAt(gr, x, y) {
     var gx = Math.max(0, Math.min(gr.NX - 1.001, x / gr.step)), gy = Math.max(0, Math.min(gr.NY - 1.001, y / gr.step));
@@ -466,7 +489,21 @@ var Calib = (function () {
     var x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, k = (y0 * LW + x0) * 4 + ch;
     return (img[k] * (1 - fx) + img[k + 4] * fx) * (1 - fy) + (img[k + LW * 4] * (1 - fx) + img[k + LW * 4 + 4] * fx) * fy;
   }
-  return { run: run, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
+  // 3D points of the shared strip, only near real measures (the fill between them is a guess): each one is lens A's
+  // pixel, at its measured distance along A's ray. [x, y, z, r, g, b] per point, metres, from lens A.
+  function cloud(st) {
+    var c = st.cyl, g = st.rig, gr = st.grid, keep = st.keep, out = [], r = [0, 0, 0], qa = [0, 0];
+    if (!gr || !keep) return new Float32Array(0);
+    for (var y = 0; y < c.CH; y += 2) for (var x = 0; x < c.CW; x += 2) {
+      var gx = Math.round(x / gr.step), gy = Math.round(y / gr.step);
+      if (gx >= gr.NX || gy >= gr.NY || !keep[gy * gr.NX + gx]) continue;
+      cylRay(c, x, y, r); if (!toA(g, r, 0, qa)) continue;
+      var w = wAt(gr, x, y); if (w < 0.1) continue;   // farther than 10 m: not measurable with 9 cm
+      var d = 1 / w; out.push(r[0] * d, r[1] * d, r[2] * d, colAt(st.inp.Ac, qa[0], qa[1], 0), colAt(st.inp.Ac, qa[0], qa[1], 1), colAt(st.inp.Ac, qa[0], qa[1], 2));
+    }
+    return new Float32Array(out);
+  }
+  return { run: run, cloud: cloud, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
 })();
 
 // ---- Web Worker side: the page sends the pictures; pictures of the work go back as it runs. ----
@@ -485,6 +522,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
         state = { inp: m.inp, o: m.o };
         Calib.run(state, function (opt) { post(opt, opt.frac === 1); });
         finish();
+        var pc = Calib.cloud(state); self.postMessage({ t: 'cloud', pts: pc }, [pc.buffer]);
       } else if (m.t === 'clip' && state) {
         Calib.setClip(state, m.clip); finish();
       }

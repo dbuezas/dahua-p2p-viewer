@@ -1032,11 +1032,14 @@ class CamForm : Form
         }
         if (path == "/calibsnap")
         {
-            long play = 0;
-            Invoke((MethodInvoker)delegate { var split = SplitChannels(); foreach (var t in tiles) if ((t.Half == 1 || t.Half == 3) && split.Contains(t.Ch) && t.Play != 0) { play = t.Play; break; } });
             byte[] jpg = null;
-            if (play != 0)
+            // Right after a restart the video may not have started yet: keep trying for 8 s.
+            for (int tries = 0; jpg == null && tries < 16; tries++)
             {
+                if (tries > 0) Thread.Sleep(500);
+                long play = 0;
+                Invoke((MethodInvoker)delegate { var split = SplitChannels(); foreach (var t in tiles) if ((t.Half == 1 || t.Half == 3) && split.Contains(t.Ch) && t.Play != 0) { play = t.Play; break; } });
+                if (play == 0) continue;
                 string f = null;
                 lock (snapLock) f = CaptureFile(play, "camaras_calib");
                 if (f != null)
@@ -2353,9 +2356,11 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
  <div style='display:flex;align-items:center;gap:8px'><b style='flex:1'>Calibrar panoramica (dos camaras a 9 cm)</b><button id=calx>Cerrar</button></div>
  <p id=calt style='margin:8px 0;min-height:2.6em'></p><div style='height:6px;background:#333;border-radius:3px'><div id=calp style='height:6px;width:0;background:#fc0;border-radius:3px'></div></div>
  <canvas id=calc style='width:100%;margin-top:10px;background:#111'></canvas>
+ <canvas id=cal3 style='width:100%;margin-top:10px;background:#111;display:none;touch-action:none'></canvas>
+ <p class=tip id=cal3t style='margin:6px 0;display:none'>3D de la franja que ven las dos camaras (solo donde midio la distancia). Arrastrar para girar.</p>
  <p class=tip style='margin:6px 0'>Lineas: donde cada lente ve el mismo punto (verde = encaja, rojo = no). Puntos: distancia medida (claro = cerca).</p>
  <div style='display:flex;align-items:center;gap:8px;margin:10px 0'><span>Ver todo</span><input id=calclip type=range min=0 max=1 step=0.05 value=0.8 style='flex:1' disabled><span>Recortar</span></div>
- <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button></div>
+ <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button><button id=cal3b disabled style='flex:1'>Ver en 3D</button></div>
 </div>
 <div id=pano style='display:none;padding:0 10px 6px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=1>Simple</button> <button data-pano=2>Avanzada</button> <button data-pano=3>Fisica</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4.</p></div>
 <p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
@@ -2434,7 +2439,7 @@ document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)retur
 var calW=null,calMesh=null,calBox=document.getElementById('cal'),calCv=document.getElementById('calc'),calSl=document.getElementById('calclip'),calGo=document.getElementById('calgo');
 function calText(t,f){document.getElementById('calt').textContent=t;if(f!=null)document.getElementById('calp').style.width=Math.round(f*100)+'%'}
 function calOpen(){calBox.style.display='block';calRun()}
-function calRun(){calMesh=null;calGo.disabled=true;calSl.disabled=true;calText('Sacando una foto de las camaras 3 y 4...',0);
+function calRun(){calMesh=null;calGo.disabled=true;calSl.disabled=true;P3=null;c3b.disabled=true;if(c3s.on)c3b.click();calText('Sacando una foto de las camaras 3 y 4...',0);
  fetch('/calibsnap?t='+Date.now()).then(function(r){if(!r.ok)throw Error('no pude sacar la foto');return r.blob()}).then(function(bl){return createImageBitmap(bl)}).then(function(bm){
   // each lens as 640x360; shrink in two steps so fine detail does not shimmer
   var c1=document.createElement('canvas');c1.width=1280;c1.height=1440;c1.getContext('2d').drawImage(bm,0,0,1280,1440);
@@ -2448,6 +2453,7 @@ function calRun(){calMesh=null;calGo.disabled=true;calSl.disabled=true;calText('
 function calMsg(e){var m=e.data;
  if(m.t=='error'){calText('No pude: '+m.text);return}
  if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calSl.disabled=false;return}
+ if(m.t=='cloud'){cal3Set(m.pts);return}
  calText(m.text,m.frac);calCv.width=m.w;calCv.height=m.h;var g=calCv.getContext('2d');g.putImageData(new ImageData(new Uint8ClampedArray(m.img),m.w,m.h),0,0);
  var L=m.lines||[];g.lineWidth=Math.max(1,m.w/500);
  for(var i=0;i<L.length;i+=5){var er=L[i+4];g.strokeStyle=er<2?'#3f3':er<6?'#fc0':'#f33';g.beginPath();g.moveTo(L[i],L[i+1]);g.lineTo(L[i+2],L[i+3]);g.stroke();
@@ -2457,6 +2463,30 @@ calSl.addEventListener('change',function(){if(!calW||calSl.disabled)return;calGo
 calGo.addEventListener('click',function(){if(!calMesh||!ws||ws.readyState!=1){calText('Sin conexion con la tele, proba de nuevo');return}
  ws.send(calMesh);calBox.style.display='none';st.pano=3;draw(st)});
 document.getElementById('calre').addEventListener('click',calRun);
+// 3D view of the shared strip: points from lens A at their measured distance, turned with the finger.
+var c3=document.getElementById('cal3'),c3b=document.getElementById('cal3b'),P3=null,c3s={yaw:0,pitch:0,y0:0,cen:[0,0,1],drag:null,t0:0,on:false};
+function cal3Set(p){P3=p;c3b.disabled=!p.length;var n=p.length/6,cx=0,cy=0,cz=0,ds=[];
+ for(var i=0;i<n;i++){ds.push(Math.hypot(p[i*6],p[i*6+1],p[i*6+2]))}ds.sort(function(a,b){return a-b});var dm=ds[n>>1]||1;
+ for(i=0;i<n;i++){var d=Math.hypot(p[i*6],p[i*6+1],p[i*6+2]);cx+=p[i*6]/d;cy+=p[i*6+1]/d;cz+=p[i*6+2]/d}
+ var l=Math.hypot(cx,cy,cz)||1;c3s.cen=[cx/l*dm,cy/l*dm,cz/l*dm];c3s.y0=-Math.atan2(cx,cz);c3s.yaw=0;c3s.pitch=0}
+function cal3Draw(){if(!c3s.on||!P3)return;var W=c3.width=c3.clientWidth*(window.devicePixelRatio||1),H=c3.height=Math.round(W*0.75),g=c3.getContext('2d');
+ g.fillStyle='#111';g.fillRect(0,0,W,H);var n=P3.length/6,cen=c3s.cen,D=Math.hypot(cen[0],cen[1],cen[2]),f=W*1.1;
+ // auto turn back and forth while nobody drags, so the depth shows
+ var yaw=c3s.y0+c3s.yaw+(c3s.drag?0:0.35*Math.sin((Date.now()-c3s.t0)/1500)),pitch=c3s.pitch,cyw=Math.cos(yaw),syw=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
+ var zs=new Float32Array(n),xs=new Float32Array(n),ys=new Float32Array(n),ord=new Uint32Array(n);
+ for(var i=0;i<n;i++){var x=P3[i*6]-cen[0],y=P3[i*6+1]-cen[1],z=P3[i*6+2]-cen[2];var x2=cyw*x+syw*z,z2=-syw*x+cyw*z;var y3=cp*y-sp*z2,z3=sp*y+cp*z2+D;
+  zs[i]=z3;xs[i]=W/2+f*x2/Math.max(0.05,z3);ys[i]=H/2+f*y3/Math.max(0.05,z3);ord[i]=i}
+ ord.sort(function(a,b){return zs[b]-zs[a]});
+ // each point covers 2 canvas pixels of the picture: as wide as that patch would be from here (no gaps, no blobs)
+ for(var k=0;k<n;k++){i=ord[k];if(zs[i]<0.05)continue;var d=Math.hypot(P3[i*6],P3[i*6+1],P3[i*6+2]),sz=Math.max(1.5,f*0.0028*d/zs[i]);
+  g.fillStyle='rgb('+(P3[i*6+3]|0)+','+(P3[i*6+4]|0)+','+(P3[i*6+5]|0)+')';g.fillRect(xs[i]-sz/2,ys[i]-sz/2,sz,sz)}
+ requestAnimationFrame(cal3Draw)}
+c3b.addEventListener('click',function(){c3s.on=!c3s.on;c3.style.display=c3s.on?'block':'none';document.getElementById('cal3t').style.display=c3s.on?'block':'none';calCv.style.display=c3s.on?'none':'block';
+ c3b.textContent=c3s.on?'Ver panoramica':'Ver en 3D';c3s.t0=Date.now();if(c3s.on)cal3Draw()});
+c3.addEventListener('pointerdown',function(e){c3.setPointerCapture(e.pointerId);c3s.drag={x:e.clientX,y:e.clientY,yaw:c3s.yaw,pitch:c3s.pitch}});
+c3.addEventListener('pointermove',function(e){var d=c3s.drag;if(!d)return;c3s.yaw=d.yaw+(e.clientX-d.x)/150;c3s.pitch=Math.max(-1.4,Math.min(1.4,d.pitch-(e.clientY-d.y)/150))});
+function c3up(){if(c3s.drag){c3s.yaw+=0.35*Math.sin((Date.now()-c3s.t0)/1500)*0;c3s.drag=null;c3s.t0=Date.now()}}
+c3.addEventListener('pointerup',c3up);c3.addEventListener('pointercancel',c3up);
 document.getElementById('calx').addEventListener('click',function(){calBox.style.display='none';if(calW){calW.terminate();calW=null}});
 connect();
 </script></body></html>";
