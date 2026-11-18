@@ -23,11 +23,15 @@ This app shows the cameras in about 10 seconds.
 - Right click a camera: switch it between low quality (sub stream, fast) and HD (main stream). A red "HD"
   shows on HD cameras. The choice is saved in `hd.txt`. Too many HD cameras at once can hit the NVR's stream limit.
 - Drag a camera onto another one: they swap places. The order is saved in `orden.txt`.
-- Panorama of a split camera (button "Panoramica" on the phone): the app takes one picture of the channel, finds where
-  the two lenses see the same strip (edge images, coarse then fine search of size and place), and shows both lenses
-  as one wide picture, pasted at the middle of that strip. No lens or perspective correction yet: lines can bend at
-  the seam. Only digital zoom and pan on it. The pasting is kept in `panoramica.txt`; press again for both lenses.
-  If the moving lens points somewhere else, the strip is gone and the phone says so.
+- Panorama of a split camera (phone: "Camaras 3 y 4 juntas: No / Simple / Avanzada"). It is worked out again each time it
+  is turned on, from a picture taken then (the moving lens may point elsewhere). Both lenses come from ONE decoded
+  stream (SDK decoded-frame callback, I420), pasted with a lookup table and drawn by the app, so they never get out
+  of step. About half a CPU core on the sub stream, almost one in HD (i7 Q720).
+  - Simple: size and place of lens B over lens A (search on edge images), hard seam in the middle of the shared strip.
+  - Advanced: corners of B matched in A, then the lens shape (ray angle t lands at radius F*(t + K*t^3)) and the
+    turn of lens B are fitted to them (Nelder-Mead); shown on a cylinder with a soft seam. Very close things can
+    show twice (the lenses are a few cm apart).
+  If the lenses no longer see a shared strip, the phone says so.
 - When it cannot connect, it shows in big letters what to try: the other Wi-Fi network, or restarting the router.
 - Phone remote: a small web page on port 8080 (`puerto_web` in `camaras.ini`, 0 = off), only for the local network.
   One WebSocket connection carries everything (opening new connections is what fails on a weak Wi-Fi).
