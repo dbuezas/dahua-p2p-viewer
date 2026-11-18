@@ -88,7 +88,39 @@ class CamForm : Form
     //      (dx + s*x, dy + s*y) of A. Units: A's width = 1 (both pictures are 16:9). Hard seam, no bending.
     //  2 = advanced: C2 = {f, k, yaw, pitch, roll, a0, a1, h0, h1}: lens shape and how B is turned from A (see Lens),
     //      shown on a cylinder (angle a0..a1, height h0..h1), soft seam.
-    class PanoCal { public int Mode; public double[] C1, C2; }
+    //  3 = two real cameras, worked out on the phone (calib.js): the phone sends a mesh, kept in panoramica3_<ch>.bin.
+    class PanoCal { public int Mode; public double[] C1, C2; public Mesh3 M3; }
+    // Mesh from the phone: output OW x OH; nodes every Step output pixels (NX x NY), each with lens A (x, y) and
+    // lens B (x, y) as parts of the lens picture's width and height (NaN: behind the lens); seam per output row
+    // (part of the width, -1: none); ALeft: lens A shows on the left of the seam.
+    class Mesh3
+    {
+        public int OW, OH, NX, NY, Step; public bool ALeft; public float[] M, Seam; public byte[] Raw;
+        public static Mesh3 Parse(byte[] b)
+        {
+            if (b.Length < 6 || b[0] != 'P' || b[1] != '3') return null;
+            int hl = BitConverter.ToInt32(b, 2); string head = Encoding.UTF8.GetString(b, 6, hl);
+            Func<string, int> num = k => { var m = System.Text.RegularExpressions.Regex.Match(head, "\"" + k + "\":(-?[0-9.]+)"); return m.Success ? (int)double.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : -1; };
+            var r = new Mesh3 { OW = num("OW"), OH = num("OH"), NX = num("NX"), NY = num("NY"), Step = num("step"), ALeft = head.Contains("\"aLeft\":true"), Raw = b };
+            if (r.OW < 2 || r.OH < 2 || r.NX < 2 || r.NY < 2 || r.Step < 1) return null;
+            int off = 6 + hl; off += (4 - off % 4) % 4;
+            int nm = r.NX * r.NY * 4; if (b.Length < off + (nm + r.OH) * 4) return null;
+            r.M = new float[nm]; Buffer.BlockCopy(b, off, r.M, 0, nm * 4);
+            r.Seam = new float[r.OH]; Buffer.BlockCopy(b, off + nm * 4, r.Seam, 0, r.OH * 4);
+            return r;
+        }
+        // Lens coordinates at output pixel (x, y) of an OW x OH output: k = 0 for A, 2 for B. False when behind the lens.
+        public bool At(double x, double y, int k, out double u, out double v)
+        {
+            double gx = Math.Max(0, Math.Min(NX - 1.0001, x / Step)), gy = Math.Max(0, Math.Min(NY - 1.0001, y / Step));
+            int x0 = (int)gx, y0 = (int)gy; double fx = gx - x0, fy = gy - y0;
+            int i00 = (y0 * NX + x0) * 4 + k, i10 = i00 + 4, i01 = i00 + NX * 4, i11 = i01 + 4;
+            u = (M[i00] * (1 - fx) + M[i10] * fx) * (1 - fy) + (M[i01] * (1 - fx) + M[i11] * fx) * fy;
+            v = (M[i00 + 1] * (1 - fx) + M[i10 + 1] * fx) * (1 - fy) + (M[i01 + 1] * (1 - fx) + M[i11 + 1] * fx) * fy;
+            return !double.IsNaN(u) && !double.IsNaN(v);
+        }
+    }
+    static string Pano3File(int ch) { return Path.Combine(Dir, "panoramica3_" + ch + ".bin"); }
     Dictionary<int, PanoCal> pano = new Dictionary<int, PanoCal>();
     bool panoBusy;
     static string PanoFile = Path.Combine(Dir, "panoramica.txt");
@@ -145,7 +177,10 @@ class CamForm : Form
                 {
                     var c = new PanoCal { Mode = int.Parse(f[1]), C1 = nums(2, 3) };
                     if (f.Length >= 14) c.C2 = nums(5, f.Length - 5);   // 9 numbers, then the fine bending (kept in mode 1 too)
-                    if (c.Mode == 1 || c.C2 != null) pano[int.Parse(f[0])] = c;
+                    int ch0 = int.Parse(f[0]);
+                    try { if (File.Exists(Pano3File(ch0))) c.M3 = Mesh3.Parse(File.ReadAllBytes(Pano3File(ch0))); } catch { }
+                    if (c.Mode == 3 && c.M3 == null) c.Mode = 0;   // the phone's mesh is missing: off
+                    if (c.Mode == 1 || c.Mode == 3 || c.C2 != null || c.M3 != null) pano[ch0] = c;
                 }
             }
         }
@@ -885,6 +920,7 @@ class CamForm : Form
             catch { alive = false; try { st.Close(); } catch { } }
         }) { IsBackground = true }.Start();
         // Receiver: commands from the phone.
+        var parts = new MemoryStream(); int partOp = 0;
         try
         {
             while (alive)
@@ -894,13 +930,21 @@ class CamForm : Form
                 int op = b0 & 0x0F; long len = b1 & 0x7F;
                 if (len == 126) len = (st.ReadByte() << 8) | st.ReadByte();
                 else if (len == 127) { len = 0; for (int k = 0; k < 8; k++) len = (len << 8) | (uint)st.ReadByte(); }
-                if (len > 65536) break;
+                if (len > 16 << 20) break;                            // the phone's panorama mesh is the biggest (~200 kB)
                 var mask = new byte[4]; ReadAll(st, mask, 4);
                 var data = new byte[len]; ReadAll(st, data, (int)len);
                 if ((b1 & 0x80) != 0) for (int k = 0; k < len; k++) data[k] ^= mask[k % 4];
                 if (op == 8) break;                                   // close
                 if (op == 9) { frame(10, data); continue; }           // ping -> pong
+                // A big message can come in pieces (Chrome cuts at 128 kB): first piece has the type, the rest op 0,
+                // the last one has the FIN bit.
+                bool fin = (b0 & 0x80) != 0;
+                if (op != 0) { partOp = op; parts.SetLength(0); }
+                parts.Write(data, 0, data.Length);
+                if (!fin) continue;
+                data = parts.ToArray(); op = partOp;
                 if (op == 1) Command(Encoding.UTF8.GetString(data));
+                if (op == 2) { var d2 = data; BeginInvoke((MethodInvoker)delegate { Pano3Receive(d2); }); }   // binary: panorama mesh
             }
         }
         catch (IOException) { }
@@ -945,7 +989,7 @@ class CamForm : Form
             else if (p[0] == "ptz" && t != null && CanPtz(t) && p.Length > 3) { int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy); PtzDrag(t.Ch, dx * 2, dy * 2); }
             else if (p[0] == "ptzstop") PtzStop();
             // Panorama of the split camera: "pano 1" (simple), "pano 2" (advanced), "pano 0" (both lenses again).
-            else if (p[0] == "pano" && p.Length > 1) { if (p[1] == "0") PanoOff(); else PanoOn(p[1] == "2" ? 2 : 1); }
+            else if (p[0] == "pano" && p.Length > 1) { if (p[1] == "0") PanoOff(); else if (p[1] == "3") Pano3Use(); else PanoOn(p[1] == "2" ? 2 : 1); }
             // Phone zoom buttons: "zoom i 1" (in) / "zoom i -1" (out): one digital zoom step each.
             else if (p[0] == "zoom" && t != null && p.Length > 2) ZoomStep(t, p[2] == "1" ? 1 : -1);
             // Test: "ptzraw channel cmd speed" moves a recorder channel directly ("ptzstop" stops it).
@@ -974,6 +1018,34 @@ class CamForm : Form
             byte[] jpg = null; var vws = viewOf; var hv2 = halves;
             for (int k = 0; k < vws.Length && k < hv2.Length; k++) if (hv2[k] == 3 && vws[k] != null) jpg = vws[k].GridJpeg(480);
             if (jpg == null) Send(st, "404 Not Found", "text/plain", new byte[0]); else Send(st, "200 OK", "image/jpeg", jpg);
+            return;
+        }
+        // Phone calibration (mode 3): the worker code, built into the exe, and a fresh full picture of the split camera.
+        if (path == "/calib.js")
+        {
+            using (var rs = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("calib.js"))
+            using (var ms = new MemoryStream())
+            {
+                if (rs == null) { Send(st, "404 Not Found", "text/plain", new byte[0]); return; }
+                rs.CopyTo(ms); Send(st, "200 OK", "application/javascript; charset=utf-8", ms.ToArray()); return;
+            }
+        }
+        if (path == "/calibsnap")
+        {
+            long play = 0;
+            Invoke((MethodInvoker)delegate { var split = SplitChannels(); foreach (var t in tiles) if ((t.Half == 1 || t.Half == 3) && split.Contains(t.Ch) && t.Play != 0) { play = t.Play; break; } });
+            byte[] jpg = null;
+            if (play != 0)
+            {
+                string f = null;
+                lock (snapLock) f = CaptureFile(play, "camaras_calib");
+                if (f != null)
+                {
+                    if (f.EndsWith(".jpg")) jpg = File.ReadAllBytes(f);
+                    else using (var bm = new Bitmap(f)) using (var ms = new MemoryStream()) { bm.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg); jpg = ms.ToArray(); }
+                }
+            }
+            if (jpg == null) Send(st, "503 Service Unavailable", "text/plain", Encoding.UTF8.GetBytes("no pude sacar la foto")); else Send(st, "200 OK", "image/jpeg", jpg);
             return;
         }
         if (path.StartsWith("/snap")) { var jpg = Snapshot(i); if (jpg == null) Send(st, "404 Not Found", "text/plain", new byte[0]); else Send(st, "200 OK", "image/jpeg", jpg); return; }
@@ -1092,7 +1164,7 @@ class CamForm : Form
                 {
                     panoBusy = false;
                     if (c1 == null || (mode == 2 && c2 == null)) { panoMsg = "No pude armar la panoramica: " + err; Log("panoramica canal " + t.Ch + ": " + err); UpdateState(); return; }
-                    pano[t.Ch] = new PanoCal { Mode = mode, C1 = c1, C2 = c2 ?? prev }; SavePano(); panoMsg = "";
+                    pano[t.Ch] = new PanoCal { Mode = mode, C1 = c1, C2 = c2 ?? prev, M3 = old != null ? old.M3 : null }; SavePano(); panoMsg = "";
                     Log("panoramica " + mode + " canal " + t.Ch + " en " + sw.ElapsedMilliseconds + " ms: " + Nums(c1) + (c2 != null ? " | " + Nums(c2) : ""));
                     ReplaceSplitTiles(t.Ch);
                 });
@@ -1108,15 +1180,44 @@ class CamForm : Form
         // Off, but the last advanced result stays known (mode 0): it helps the next fit.
         var on = new List<int>(); foreach (var kv in pano) if (kv.Value.Mode > 0) on.Add(kv.Key);
         if (on.Count == 0) { UpdateState(); return; }
-        foreach (var ch in on) { if (pano[ch].C2 != null) pano[ch].Mode = 0; else pano.Remove(ch); }
+        foreach (var ch in on) { if (pano[ch].C2 != null || pano[ch].M3 != null) pano[ch].Mode = 0; else pano.Remove(ch); }
         SavePano();
         foreach (var ch in on) ReplaceSplitTiles(ch);
+    }
+
+    // Mode 3: the phone worked the panorama out (calib.js) and sends the mesh; it goes to every split channel.
+    void Pano3Receive(byte[] data)
+    {
+        var m = Mesh3.Parse(data);
+        if (m == null) { Log("panoramica 3: malla del telefono no valida (" + data.Length + " bytes)"); return; }
+        foreach (int ch in SplitChannels())
+        {
+            try { File.WriteAllBytes(Pano3File(ch), data); } catch (Exception ex) { Log("panoramica 3: " + ex.Message); }
+            PanoCal old; pano.TryGetValue(ch, out old);
+            pano[ch] = new PanoCal { Mode = 3, C1 = old != null ? old.C1 : null, C2 = old != null ? old.C2 : null, M3 = m };
+            Log("panoramica 3 canal " + ch + ": malla " + m.NX + "x" + m.NY + " para " + m.OW + "x" + m.OH);
+            ReplaceSplitTiles(ch);
+        }
+        panoMsg = ""; SavePano(); UpdateState();
+    }
+
+    // "pano 3" from the phone without a new mesh: show the last one again (when there is one).
+    void Pano3Use()
+    {
+        bool any = false;
+        foreach (int ch in SplitChannels())
+        {
+            PanoCal c; if (!pano.TryGetValue(ch, out c) || c.M3 == null || c.Mode == 3) continue;
+            c.Mode = 3; any = true; ReplaceSplitTiles(ch);
+        }
+        if (any) SavePano();
+        UpdateState();
     }
 
     void SavePano()
     {
         var lines = new List<string>();
-        foreach (var kv in pano) lines.Add(kv.Key + " " + kv.Value.Mode + " " + Nums(kv.Value.C1) + (kv.Value.C2 != null ? " " + Nums(kv.Value.C2) : ""));
+        foreach (var kv in pano) lines.Add(kv.Key + " " + kv.Value.Mode + " " + Nums(kv.Value.C1 ?? new double[] { 1, 0, 0 }) + (kv.Value.C2 != null ? " " + Nums(kv.Value.C2) : ""));
         try { File.WriteAllLines(PanoFile, lines.ToArray()); } catch { }
     }
 
@@ -1156,6 +1257,7 @@ class CamForm : Form
         public double Aspect()
         {
             if (Half > 0) return fh > 0 ? (double)fw / (fh / 2) : 16.0 / 9;
+            if (Cal.Mode == 3) return (double)Cal.M3.OW / Cal.M3.OH;
             if (Cal.Mode == 2) { var c = Cal.C2; return (c[6] - c[5]) / (c[8] - c[7]); }
             double x0, x1, y0, y1, seam; PanoBox(Cal.C1, out x0, out x1, out y0, out y1, out seam);
             return (x1 - x0) / (y1 - y0);
@@ -1191,8 +1293,12 @@ class CamForm : Form
             if (Half > 0) { BuildHalf(w, h); return; }
             int lw = w, lh = h / 2;
             double x0 = 0, x1 = 1, y0 = 0, y1 = 1, seam, s = 1, dx = 0, dy = 0;
-            Lens lens = null;
-            if (Cal.Mode == 2)
+            Lens lens = null; var m3 = Cal.Mode == 3 ? Cal.M3 : null;
+            if (m3 != null)
+            {
+                OW = Math.Min(1920, m3.OW); OH = (int)Math.Round((double)m3.OH * OW / m3.OW);
+            }
+            else if (Cal.Mode == 2)
             {
                 var c = Cal.C2; lens = new Lens(c, lw, lh);
                 OW = Math.Min(1920, (int)(lens.F * (c[6] - c[5])));
@@ -1212,13 +1318,20 @@ class CamForm : Form
             var inA = new bool[OW]; var inB = new bool[OW]; 
             var ray = new double[3]; var rb = new double[3]; var q = new double[2];
             // Half width of the soft seam, in output pixels: narrow when the seam follows the best path.
-            double band = Cal.Mode == 2 ? (SeamAt(Cal.C2, 0.5) >= 0 ? Math.Max(2, OW / 200.0) : Math.Max(4, OW / 60.0)) : 0;
+            double band = m3 != null ? Math.Max(2, OW / 200.0) : Cal.Mode == 2 ? (SeamAt(Cal.C2, 0.5) >= 0 ? Math.Max(2, OW / 200.0) : Math.Max(4, OW / 60.0)) : 0;
             for (int oy = 0; oy < OH; oy++)
             {
                 int minA = int.MaxValue, maxA = -1, minB = int.MaxValue, maxB = -1;
                 for (int ox = 0; ox < OW; ox++)
                 {
-                    if (Cal.Mode == 2)
+                    if (m3 != null)
+                    {
+                        // The phone's mesh: lens coordinates at this output point (in the mesh's own pixels).
+                        double mx = (ox + 0.5) * m3.OW / OW - 0.5, my = (oy + 0.5) * m3.OH / OH - 0.5, u, v;
+                        if (m3.At(mx, my, 0, out u, out v)) { ax[ox] = u * lw; ay[ox] = v * lh; } else ax[ox] = -1e9;
+                        if (m3.At(mx, my, 2, out u, out v)) { bx[ox] = u * lw; by[ox] = v * lh; } else bx[ox] = -1e9;
+                    }
+                    else if (Cal.Mode == 2)
                     {
                         var c = Cal.C2;
                         double ang = c[5] + (ox + 0.5) / OW * (c[6] - c[5]), hgt = c[7] + (oy + 0.5) / OH * (c[8] - c[7]);
@@ -1265,6 +1378,12 @@ class CamForm : Form
                 double lo = Math.Max(minA, minB), hi = Math.Min(maxA, maxB);
                 double seamX = lo <= hi ? (lo + hi) / 2 : (bRight ? maxA : minA);
                 if (Cal.Mode == 2) { double su = SeamAt(Cal.C2, (oy + 0.5) / OH); if (su >= 0) seamX = su * OW - 0.5; }
+                if (m3 != null)
+                {
+                    double su = m3.Seam[Math.Min(m3.OH - 1, (int)((oy + 0.5) * m3.OH / OH))];
+                    if (su >= 0) seamX = su * OW - 0.5;
+                    bRight = m3.ALeft;
+                }
                 for (int ox = 0; ox < OW; ox++)
                 {
                     int k = oy * OW + ox;
@@ -1382,6 +1501,7 @@ class CamForm : Form
         public static PointF? MapLens(PanoCal cal, int lw, int lh, int lensNo, double x, double y)
         {
             double u, v;
+            if (cal.Mode == 3) return null;   // the phone shows its own grid while it calibrates
             if (cal.Mode == 2)
             {
                 var c = cal.C2; var lens = new Lens(c, lw, lh); var r = new double[3]; var ra = new double[3];
@@ -2208,7 +2328,15 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 #zoom{display:flex;flex-direction:column;gap:14px}#zoom button{width:64px;height:64px;font-size:28px;touch-action:none}
 </style></head><body>
 <header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
-<div id=pano style='display:none;padding:0 10px 6px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=1>Simple</button> <button data-pano=2>Avanzada</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4.</p></div>
+<div id=cal style='display:none;position:fixed;inset:0;background:#000;z-index:20;overflow:auto;padding:10px'>
+ <div style='display:flex;align-items:center;gap:8px'><b style='flex:1'>Calibrar panoramica (dos camaras a 9 cm)</b><button id=calx>Cerrar</button></div>
+ <p id=calt style='margin:8px 0;min-height:2.6em'></p><div style='height:6px;background:#333;border-radius:3px'><div id=calp style='height:6px;width:0;background:#fc0;border-radius:3px'></div></div>
+ <canvas id=calc style='width:100%;margin-top:10px;background:#111'></canvas>
+ <p class=tip style='margin:6px 0'>Lineas: donde cada lente ve el mismo punto (verde = encaja, rojo = no). Puntos: distancia medida (claro = cerca).</p>
+ <div style='display:flex;align-items:center;gap:8px;margin:10px 0'><span>Ver todo</span><input id=calclip type=range min=0 max=1 step=0.05 value=0.8 style='flex:1' disabled><span>Recortar</span></div>
+ <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button></div>
+</div>
+<div id=pano style='display:none;padding:0 10px 6px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=1>Simple</button> <button data-pano=2>Avanzada</button> <button data-pano=3>Fisica</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4.</p></div>
 <p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
 <p class=tip id=msg style='color:#fc0'></p>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
@@ -2278,9 +2406,37 @@ function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='no
   var x=st.cams[d.i];st.cams[d.i]=st.cams[j];st.cams[j]=x;draw(st);cmd('order '+st.cams.map(function(c){return c.k}).join(','))}}
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
 document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)return;
- if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==0&&!st.pano)return;st.pano=m;st.msg=m?'Calculando la panoramica...':'';draw(st);cmd('pano '+m);return}
+ if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==3){calOpen();return}if(m==0&&!st.pano)return;st.pano=m;st.msg=m?'Calculando la panoramica...':'';draw(st);cmd('pano '+m);return}
  if(b.dataset.all){setBig(-1);return}
  if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
+// ---- Panorama calibration on this phone (mode 3): calib.js runs in a worker and sends pictures of its work. ----
+var calW=null,calMesh=null,calBox=document.getElementById('cal'),calCv=document.getElementById('calc'),calSl=document.getElementById('calclip'),calGo=document.getElementById('calgo');
+function calText(t,f){document.getElementById('calt').textContent=t;if(f!=null)document.getElementById('calp').style.width=Math.round(f*100)+'%'}
+function calOpen(){calBox.style.display='block';calRun()}
+function calRun(){calMesh=null;calGo.disabled=true;calSl.disabled=true;calText('Sacando una foto de las camaras 3 y 4...',0);
+ fetch('/calibsnap?t='+Date.now()).then(function(r){if(!r.ok)throw Error('no pude sacar la foto');return r.blob()}).then(function(bl){return createImageBitmap(bl)}).then(function(bm){
+  // each lens as 640x360; shrink in two steps so fine detail does not shimmer
+  var c1=document.createElement('canvas');c1.width=1280;c1.height=1440;c1.getContext('2d').drawImage(bm,0,0,1280,1440);
+  var c2=document.createElement('canvas');c2.width=640;c2.height=720;var x=c2.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(c1,0,0,640,720);
+  var a=x.getImageData(0,0,640,360).data,b=x.getImageData(0,360,640,360).data;
+  function gray(c){var g=new Float32Array(640*360);for(var i=0;i<g.length;i++)g[i]=0.299*c[4*i]+0.587*c[4*i+1]+0.114*c[4*i+2];return g}
+  if(calW)calW.terminate();calW=new Worker('/calib.js');calW.onmessage=calMsg;
+  calW.onerror=function(e){calText('Error: '+e.message)};
+  calW.postMessage({t:'start',pw:Math.min(900,Math.round(calBox.clientWidth*(window.devicePixelRatio||1))),inp:{A:gray(a),B:gray(b),Ac:a,Bc:b},o:{clip:+calSl.value,outW:1400}});
+ }).catch(function(e){calText('Error: '+e.message)})}
+function calMsg(e){var m=e.data;
+ if(m.t=='error'){calText('No pude: '+m.text);return}
+ if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calSl.disabled=false;return}
+ calText(m.text,m.frac);calCv.width=m.w;calCv.height=m.h;var g=calCv.getContext('2d');g.putImageData(new ImageData(new Uint8ClampedArray(m.img),m.w,m.h),0,0);
+ var L=m.lines||[];g.lineWidth=Math.max(1,m.w/500);
+ for(var i=0;i<L.length;i+=5){var er=L[i+4];g.strokeStyle=er<2?'#3f3':er<6?'#fc0':'#f33';g.beginPath();g.moveTo(L[i],L[i+1]);g.lineTo(L[i+2],L[i+3]);g.stroke();
+  g.fillStyle=g.strokeStyle;g.fillRect(L[i]-2,L[i+1]-2,4,4)}
+ var D=m.dots||[];for(i=0;i<D.length;i+=3){var v=Math.min(255,Math.round(D[i+2]/3*255));g.fillStyle='rgb('+v+','+(255-v)+',255)';g.beginPath();g.arc(D[i],D[i+1],Math.max(2,m.w/300),0,7);g.fill()}}
+calSl.addEventListener('change',function(){if(!calW||calSl.disabled)return;calGo.disabled=true;calText('Encuadrando...');calW.postMessage({t:'clip',clip:+calSl.value})});
+calGo.addEventListener('click',function(){if(!calMesh||!ws||ws.readyState!=1){calText('Sin conexion con la tele, proba de nuevo');return}
+ ws.send(calMesh);calBox.style.display='none';st.pano=3;draw(st)});
+document.getElementById('calre').addEventListener('click',calRun);
+document.getElementById('calx').addEventListener('click',function(){calBox.style.display='none';if(calW){calW.terminate();calW=null}});
 connect();
 </script></body></html>";
 

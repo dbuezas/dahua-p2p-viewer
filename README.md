@@ -43,6 +43,15 @@ This app shows the cameras in about 10 seconds.
     may differ by at most half their distance), and where it asks for a pixel outside a lens the lens is taken
     unbent there.
     Test without the TV: `Camaras.exe --pano picture.jpg out [last-numbers.txt]` writes both panoramas and the grid.
+  - Física (mode 3, worked out on the phone, `calib.js` in a Web Worker, built into the exe): the two lenses as two
+    real cameras 9 cm apart (lens B under lens A, on the PTZ motor). Fixed for the camera: lens shape and how lens A
+    sits on the body (found once from three pictures taken at different times). Per calibration only the pan and tilt
+    of lens B, and one number per grid point: the distance of what is there; a point can only slide along its line
+    between the lenses, so the picture cannot bend in ways no real scene does. Steps, each shown on the phone as it
+    runs: rough pan/tilt (edge pictures, wide search, so moving the PTZ is fine), shared corners, fine pan/tilt,
+    distances (A's patch fixed, B's slid along its line), seam, frame. A slider sets how much to cut: from everything
+    (black corners) to only picture. The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels,
+    the seam per row) as one binary WebSocket message; the PC keeps it in `panoramica3_<ch>.bin` and only draws it.
   If the lenses no longer see a shared strip, the phone says so.
   The panorama card on the phone shows, as a curiosity, the panorama with a straight grid of each lens bent the way the
   panorama bends it (light blue: camera 3, orange: camera 4).
