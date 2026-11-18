@@ -67,7 +67,8 @@ This app shows the cameras in about 10 seconds.
   It shows a picture of each camera: tap one to make it big (tap again for all), drag one onto another to swap
   them, and an HD button per camera.
   Its address stays in the bottom right corner and a QR code of it in the bottom left (scan it with the phone).
-- While the app is in front, the PC does not sleep and the screen stays on.
+- While the app runs, the PC does not sleep (even if it is not in front); while it is in front the screen stays on too.
+  Closing a notebook lid still makes Windows sleep unless the lid action is set to "Do nothing".
 - Only one copy runs. Opening it again brings the running copy to the front.
 - Uses as much of the screen as possible without stretching the pictures: it tries normal grids
   and rows with different counts (for example 5 cameras = 2 big on top + 3 smaller below) and keeps the bigger one.

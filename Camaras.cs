@@ -732,9 +732,10 @@ class CamForm : Form
     void KeepAwake()
     {
         bool front = Win.GetForegroundWindow() == Handle;
-        // 0x80000000 = continuous, 0x1 = system needed, 0x2 = display needed. Only "continuous" = normal again.
-        Win.SetThreadExecutionState(front ? 0x80000003u : 0x80000000u);   // timer runs on the UI thread, so the state stays with it
-        if (front != awakeOn) { awakeOn = front; Log(front ? "pantalla siempre encendida (app al frente)" : "pantalla normal (app atras)"); }
+        // 0x80000000 = continuous, 0x1 = system needed, 0x2 = display needed. The PC never sleeps while the app runs
+        // (it may have been started without coming to the front); the screen stays on only while the app is in front.
+        Win.SetThreadExecutionState(front ? 0x80000003u : 0x80000001u);   // timer runs on the UI thread, so the state stays with it
+        if (front != awakeOn) { awakeOn = front; Log(front ? "pantalla siempre encendida (app al frente)" : "pantalla normal (app atras), la PC igual no se duerme"); }
     }
 
     Label addrLabel;
