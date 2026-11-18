@@ -1476,7 +1476,28 @@ class CamForm : Form
                     g.DrawImage(src, new Rectangle(0, 0, w, oh));
                     using (var dim = new SolidBrush(Color.FromArgb(150, 0, 0, 0))) g.FillRectangle(dim, 0, 0, w, oh);
                     g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                    for (int lensNo = 0; lensNo < 2; lensNo++)
+                    if (Cal.Mode == 3)
+                    {
+                        // Mode 3: the mesh says, for each output point, which lens point it shows. A grid line of a lens
+                        // is where that lens point crosses a 1/12 step (only where that lens's picture is).
+                        g.Flush();
+                        var m3 = Cal.M3; var above = new int[2, w];
+                        for (int y = 0; y < oh; y++)
+                        {
+                            var row = new int[2, w];
+                            for (int x = 0; x < w; x++)
+                                for (int ln = 0; ln < 2; ln++)
+                                {
+                                    double u, v; row[ln, x] = int.MinValue;
+                                    if (!m3.At((x + 0.5) * m3.OW / w - 0.5, (y + 0.5) * m3.OH / oh - 0.5, ln * 2, out u, out v) || u < 0 || u > 1 || v < 0 || v > 1) continue;
+                                    row[ln, x] = (int)(u * 12) * 100 + (int)(v * 12);
+                                    bool line = (x > 0 && row[ln, x - 1] != int.MinValue && row[ln, x - 1] != row[ln, x]) || (y > 0 && above[ln, x] != int.MinValue && above[ln, x] != row[ln, x]);
+                                    if (line) dst.SetPixel(x, y, ln == 0 ? Color.FromArgb(80, 200, 255) : Color.FromArgb(255, 150, 40));
+                                }
+                            above = row;
+                        }
+                    }
+                    for (int lensNo = 0; lensNo < 2 && Cal.Mode != 3; lensNo++)
                         using (var pen = new Pen(lensNo == 0 ? Color.FromArgb(220, 80, 200, 255) : Color.FromArgb(220, 255, 150, 40), 1.5f))
                             for (int dir = 0; dir < 2; dir++)
                                 for (int i = 0; i <= 12; i++)
