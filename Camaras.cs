@@ -1566,14 +1566,20 @@ function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
   if(a<1||p<1)requestAnimationFrame(step);else setTimeout(calNext,Math.max(0,hold-el))})()}
 // Lens B sliding into place: two layers composed every screen frame (A; B where A has nothing; B half over A),
 // while the view zooms from crop0 to crop1 and the pair lines move with lens B.
-var calLA=document.createElement('canvas'),calLB=document.createElement('canvas'),calComp=document.createElement('canvas');
+var calLA=document.createElement('canvas'),calLB=document.createElement('canvas'),calLS=document.createElement('canvas'),calComp=document.createElement('canvas');
 function calSlide(m){var W=m.outW,H=m.outH;
  [[calLA,m.A],[calLB,m.B]].forEach(function(x){x[0].width=m.w;x[0].height=m.h;x[0].getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(x[1]),m.w,m.h),0,0)});
  calComp.width=m.w;calComp.height=m.h;calCv.width=W;calCv.height=H;var t0=performance.now();
  (function step(){var el=performance.now()-t0,p=Math.min(1,el/m.dur),e=p*p*(3-2*p),dx=m.off[0]*(1-e),dy=m.off[1]*(1-e),k=calComp.getContext('2d');
+  // lens B: one shift for all, or (settling at the distances) its own shift per thin strip of rows
+  // (strips go first into their own picture, whole pixels, one row of overlap: no seams, no double see-through)
+  var srcB=calLB;
+  if(m.rows){var R=m.rows,bk=calLS.getContext('2d');calLS.width=m.w;calLS.height=m.h;bk.clearRect(0,0,m.w,m.h);
+   for(var y=0;y<m.h;y+=3){var hh=Math.min(4,m.h-y);bk.drawImage(calLB,0,y,m.w,hh,Math.round(R[2*y]*e),Math.round(y+R[2*y+1]*e),m.w,hh)}srcB=calLS}
+  var drawB=function(){k.drawImage(srcB,m.rows?0:dx,m.rows?0:dy)};
   k.globalCompositeOperation='source-over';k.globalAlpha=1;k.clearRect(0,0,m.w,m.h);k.drawImage(calLA,0,0);
-  k.globalCompositeOperation='destination-over';k.drawImage(calLB,dx,dy);
-  k.globalCompositeOperation='source-atop';k.globalAlpha=0.5;k.drawImage(calLB,dx,dy);
+  k.globalCompositeOperation='destination-over';drawB();
+  k.globalCompositeOperation='source-atop';k.globalAlpha=0.5;drawB();
   // view: from crop0 to crop1, with the output's shape (centre and width move, height follows)
   var c0=m.crop0,c1=m.crop1,cx=(c0[0]+c0[2])/2*(1-e)+(c1[0]+c1[2])/2*e,cy=(c0[1]+c0[3])/2*(1-e)+(c1[1]+c1[3])/2*e,sw=(c0[2]-c0[0])*(1-e)+(c1[2]-c1[0])*e,sh=sw*H/W;
   var g=calCv.getContext('2d');g.fillStyle='#000';g.fillRect(0,0,W,H);g.drawImage(calComp,cx-sw/2,cy-sh/2,sw,sh,0,0,W,H);

@@ -265,6 +265,9 @@ var Calib = (function () {
     cylinder(st);
     measure(st, show);
     seam(st, show);
+    // lens B was shown as if everything were far; now each row settles at its measured distance (smoothly)
+    show({ stage: 5, text: 'Ajustando la camara 4 a la distancia de cada cosa', frac: 0.88, rig: g, mix: true, W: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 1500,
+      slide: { rows: true, to: g, c: st.view.cyl, crop1: st.view.crop, dur: 1400 } });
     // the seam is drawn from top to bottom while lens B settles row by row, then the final picture fades in
     show({ stage: 5, text: 'Costura: por donde las dos lentes se ven igual', frac: 0.92, rig: g, mix: true, W: true, seamLine: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 1900, anim: 1700, fade: 400 });
     framing(st);
@@ -561,6 +564,7 @@ var Calib = (function () {
   // On the narrow zoomed view a small pan/tilt change is almost a plain shift, so the shift of the view's middle is
   // used. Also the zoom (crop0 -> crop1) and the pair lines (both ends) for in between.
   function slideData(st, PW, sl) {
+    if (sl.rows) return rowData(st, PW, sl);
     var c = sl.c, g = sl.to, f = sl.from, c0 = sl.crop0 || sl.crop1, c1 = sl.crop1 || c0, r = [0, 0, 0], q = [0, 0], rb = [0, 0, 0];
     // where the middle of the final view's lens B picture showed with 'from'
     cylRay(c, (c1.x0 + c1.x1) / 2, (c1.y0 + c1.y1) / 2, r); var off = [0, 0];
@@ -585,6 +589,30 @@ var Calib = (function () {
     });
     var cr = function (cc) { return [L(cc.x0, U.x0), L(cc.y0, U.y0), L(cc.x1, U.x0), L(cc.y1, U.y0)]; };
     return { w: LWp, h: LHp, A: la, B: lb, off: [off[0] / sc, off[1] / sc], crop0: cr(c0), crop1: cr(c1), lines: lines, outW: PW, outH: Math.round(PW * (c1.y1 - c1.y0) / (c1.x1 - c1.x0)) };
+  }
+  // Lens B settling row by row at the measured distances: layers of both lenses as if everything were far, and per
+  // layer row the shift of lens B from there to its place at that row's distance (the phone moves B in thin strips).
+  function rowData(st, PW, sl) {
+    var c = sl.c, g = sl.to, cr = sl.crop1, sc = (cr.x1 - cr.x0) / PW, LWp = PW, LHp = Math.max(1, Math.round((cr.y1 - cr.y0) / sc));
+    var la = new Uint8ClampedArray(LWp * LHp * 4), lb = new Uint8ClampedArray(LWp * LHp * 4), r = [0, 0, 0], qa = [0, 0], qb = [0, 0], rb = [0, 0, 0];
+    for (var y = 0; y < LHp; y++) for (var x = 0; x < LWp; x++) {
+      cylRay(c, cr.x0 + (x + 0.5) * sc, cr.y0 + (y + 0.5) * sc, r); var k = (y * LWp + x) * 4;
+      if (toA(g, r, 0, qa)) { for (var ch = 0; ch < 3; ch++) la[k + ch] = colAt(st.inp.Ac, qa[0], qa[1], ch); la[k + 3] = 255; }
+      if (toB(g, r, 0, qb)) { for (ch = 0; ch < 3; ch++) lb[k + ch] = colAt(st.inp.Bc, qb[0], qb[1], ch); lb[k + 3] = 255; }
+    }
+    var rows = new Float32Array(LHp * 2), R = g.R, xm = st.ws ? null : (cr.x0 + cr.x1) / 2;
+    for (y = 0; y < LHp; y++) {
+      // at the seam of this row (where it matters), else the middle
+      var vy = cr.y0 + (y + 0.5) * sc, vx = (cr.x0 + cr.x1) / 2;
+      cylRay(c, vx, vy, r); var pw = cylOf(st.cyl, r), sx = st.ws ? st.ws.seam[Math.max(0, Math.min(st.cyl.CH - 1, Math.round(pw[1])))] : -1;
+      if (sx >= 0) { cylRay(st.cyl, sx, pw[1], r); var pv = cylOf(c, r); vx = pv[0]; cylRay(c, vx, vy, r); }
+      if (!toBrow(st, r, cylOf(st.cyl, r)[1], qb)) continue;
+      unproject(g.L, qb[0], qb[1], rb);
+      var d = [R[0] * rb[0] + R[3] * rb[1] + R[6] * rb[2], R[1] * rb[0] + R[4] * rb[1] + R[7] * rb[2], R[2] * rb[0] + R[5] * rb[1] + R[8] * rb[2]], p0 = cylOf(c, d);
+      rows[2 * y] = (vx - p0[0]) / sc; rows[2 * y + 1] = (vy - p0[1]) / sc;
+    }
+    var cc = [0, 0, LWp, LHp];
+    return { w: LWp, h: LHp, A: la, B: lb, off: [0, 0], rows: rows, crop0: cc, crop1: cc, lines: [], outW: PW, outH: LHp };
   }
   function colAt(img, x, y, ch) {
     var x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, k = (y0 * LW + x0) * 4 + ch;
@@ -614,7 +642,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
   var post = function (opt) {
     if (opt.slide) {
       var sd = Calib.slideData(state, PW, opt.slide);
-      self.postMessage({ t: 'show', kind: 'slide', text: opt.text, frac: opt.frac, w: sd.w, h: sd.h, A: sd.A, B: sd.B, off: sd.off, crop0: sd.crop0, crop1: sd.crop1, lines: sd.lines, outW: sd.outW, outH: sd.outH, hold: opt.hold || 1000, dur: opt.slide.dur || 1000 }, [sd.A.buffer, sd.B.buffer]);
+      self.postMessage({ t: 'show', kind: 'slide', text: opt.text, frac: opt.frac, w: sd.w, h: sd.h, A: sd.A, B: sd.B, off: sd.off, crop0: sd.crop0, crop1: sd.crop1, lines: sd.lines, rows: sd.rows || null, outW: sd.outW, outH: sd.outH, hold: opt.hold || 1000, dur: opt.slide.dur || 1000 }, [sd.A.buffer, sd.B.buffer]);
       return;
     }
     var pv = Calib.preview(state, PW, opt);
