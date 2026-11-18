@@ -419,6 +419,14 @@ var Calib = (function () {
     // lens B was shown as if everything were far; now each row settles at its band's distance (smoothly)
     show({ stage: 5, text: 'Ajustando la camara 4 a la distancia de cada cosa', frac: 0.88, rig: g, mix: true, W: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 1500,
       slide: { rows: true, to: g, c: st.view.cyl, crop1: st.view.crop, dur: 1400 } });
+    // then the bending grows smoothly from none to all (it used to pop in with the seam)
+    if (st.warp) {
+      for (var wsI = 0; wsI <= 12; wsI++) {
+        var wt = wsI / 12; st.warpScale = wt * wt * (3 - 2 * wt);
+        show({ stage: 5, text: 'Doblando las lentes para que encajen (' + st.warp.measured + ' medidas)', frac: 0.9, rig: g, mix: true, W: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 90, fade: wsI ? 80 : 0 });
+      }
+      st.warpScale = null;
+    }
     // the seam is drawn from top to bottom while lens B settles row by row, then the final picture fades in
     show({ stage: 5, text: 'Costura: por donde las dos lentes se ven igual', frac: 0.92, rig: g, mix: true, W: true, seamLine: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 1900, anim: 1700, fade: 400 });
     framing(st);
@@ -732,6 +740,7 @@ var Calib = (function () {
     var x0 = gx | 0, y0 = gy | 0, ax = gx - x0, ay = gy - y0, k = y0 * wp.NX + x0;
     var bl = function (F) { return (F[k] * (1 - ax) + F[k + 1] * ax) * (1 - ay) + (F[k + wp.NX] * (1 - ax) + F[k + wp.NX + 1] * ax) * ay; };
     f = f * f * (3 - 2 * f);
+    if (st.warpScale != null) f *= st.warpScale;   // the show grows the bending from none to all
     return [bl(wp.dx) * f, bl(wp.dy) * f];
   }
   // A's and B's pixel for work-canvas point (x, y): rows of B at their distance, each lens bent half toward the other
