@@ -1434,7 +1434,6 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
  <canvas id=cal3 style='width:100%;margin-top:10px;background:#111;display:none;touch-action:none'></canvas>
  <p class=tip id=cal3t style='margin:6px 0;display:none'>3D de la franja que ven las dos camaras (solo donde midio la distancia). Arrastrar para girar.</p>
  <p class=tip style='margin:6px 0'>Lineas: donde cada lente ve el mismo punto (verde = encaja, rojo = no). Puntos: distancia medida (claro = cerca).</p>
- <div style='display:flex;align-items:center;gap:8px;margin:10px 0'><span>Ver todo</span><input id=calclip type=range min=0 max=1 step=0.05 value=0.8 style='flex:1' disabled><span>Recortar</span></div>
  <div id=calhand style='display:none;margin:10px 0'><button id=calfine style='width:100%;background:#fc0;color:#000;font-weight:bold'>Listo, afinar</button></div>
  <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button><button id=cal3b disabled style='flex:1'>Ver en 3D</button></div>
 </div>
@@ -1513,10 +1512,10 @@ document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)retur
  if(b.dataset.all){setBig(-1);return}
  if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
 // ---- Panorama calibration on this phone (mode 3): calib.js runs in a worker and sends pictures of its work. ----
-var calW=null,calMesh=null,calBox=document.getElementById('cal'),calCv=document.getElementById('calc'),calSl=document.getElementById('calclip'),calGo=document.getElementById('calgo');
+var calW=null,calMesh=null,calBox=document.getElementById('cal'),calCv=document.getElementById('calc'),calGo=document.getElementById('calgo');
 function calText(t,f){document.getElementById('calt').textContent=t;if(f!=null)document.getElementById('calp').style.width=Math.round(f*100)+'%'}
 function calOpen(){calBox.style.display='block';calRun()}
-function calRun(){calQ=[];calBusy=false;calMesh=null;calGo.disabled=true;calSl.disabled=true;P3=null;c3b.disabled=true;if(c3s.on)c3b.click();calText('Sacando una foto de las camaras 3 y 4...',0);
+function calRun(){calQ=[];calBusy=false;calMesh=null;calGo.disabled=true;P3=null;c3b.disabled=true;if(c3s.on)c3b.click();calText('Sacando una foto de las camaras 3 y 4...',0);
  Promise.all([fetch('/calibsnap?t='+Date.now()).then(function(r){if(!r.ok)throw Error('no pude sacar la foto');return r.blob()}).then(function(bl){return createImageBitmap(bl)}),
   fetch('/calibprev?t='+Date.now()).then(function(r){return r.json()}).catch(function(){return {}})]).then(function(res){var bm=res[0],prev=res[1];
   // each lens as 640x360; shrink in two steps so fine detail does not shimmer
@@ -1526,7 +1525,7 @@ function calRun(){calQ=[];calBusy=false;calMesh=null;calGo.disabled=true;calSl.d
   function gray(c){var g=new Float32Array(640*360);for(var i=0;i<g.length;i++)g[i]=0.299*c[4*i]+0.587*c[4*i+1]+0.114*c[4*i+2];return g}
   if(calW)calW.terminate();calW=new Worker('/calib.js');calW.onmessage=calMsg;
   calW.onerror=function(e){calText('Error: '+e.message)};
-  calW.postMessage({t:'load',pw:Math.min(900,Math.round(calBox.clientWidth*(window.devicePixelRatio||1))),inp:{A:gray(a),B:gray(b),Ac:a,Bc:b},o:{clip:+calSl.value,outW:1400}});
+  calW.postMessage({t:'load',pw:Math.min(900,Math.round(calBox.clientWidth*(window.devicePixelRatio||1))),inp:{A:gray(a),B:gray(b),Ac:a,Bc:b},o:{clip:1,outW:1400}});
   // step 1: the person lines the lenses up roughly (from the last calibration, or a usual place)
   calHand={pan:prev.pan!=null?prev.pan:-0.7,tilt:prev.tilt!=null?prev.tilt:-0.05,busy:false,again:false,rpp:0.003};
   document.getElementById('calhand').style.display='block';
@@ -1549,7 +1548,7 @@ function calMsg(e){var m=e.data;
  calQ.push(m);if(!calBusy)calNext()}
 function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
  if(m.t=='error'){calText('No pude: '+m.text);calQ=[];calBusy=false;return}
- if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calSl.disabled=false;calNext();return}
+ if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calNext();return}
  if(m.t=='cloud'){cal3Set(m.pts);calNext();return}
  calText(m.text,m.frac);
  // a frame waiting long in the queue plays faster (never more than ~6 s behind the work)
@@ -1559,11 +1558,15 @@ function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
  calImg.width=m.w;calImg.height=m.h;calImg.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(m.img),m.w,m.h),0,0);
  if(!same){calCv.width=m.w;calCv.height=m.h}
  var t0=performance.now();
- (function step(){var a=fade&&same?Math.min(1,(performance.now()-t0)/fade):1,g=calCv.getContext('2d');
+ var anim=m.anim||0;
+ (function step(){var el=performance.now()-t0,a=fade&&same?Math.min(1,el/fade):1,p=anim?Math.min(1,el/anim):1,g=calCv.getContext('2d');
   if(a<1){g.globalAlpha=1;g.drawImage(calOld,0,0);g.globalAlpha=a*a*(3-2*a)}
-  g.drawImage(calImg,0,0);g.globalAlpha=1;calOver(g,m,a);
-  if(a<1)requestAnimationFrame(step);else setTimeout(calNext,Math.max(0,hold-(performance.now()-t0)))})()}
-function calOver(g,m,a){var W=m.w,lw=Math.max(1.5,W/400);
+  g.drawImage(calImg,0,0);g.globalAlpha=1;calOver(g,m,p);
+  if(a<1||p<1)requestAnimationFrame(step);else setTimeout(calNext,Math.max(0,hold-el))})()}
+function calOver(g,m,a){var W=m.w,H=m.h,lw=Math.max(1.5,W/400);
+ // the final cut closing in: everything outside the kept box darkens, the box frame moves in from the edges
+ if(m.cut){var e=a*a*(3-2*a),c=m.cut,x0=c[0]*e,y0=c[1]*e,x1=W+(c[2]-W)*e,y1=H+(c[3]-H)*e;g.save();g.fillStyle='rgba(0,0,0,'+(0.75*e)+')';
+  g.fillRect(0,0,W,y0);g.fillRect(0,y1,W,H-y1);g.fillRect(0,y0,x0,y1-y0);g.fillRect(x1,y0,W-x1,y1-y0);g.strokeStyle='#fc0';g.lineWidth=lw*1.5;g.strokeRect(x0,y0,x1-x0,y1-y0);g.restore()}
  // measuring scan line
  if(m.scan!=null){var gr=g.createLinearGradient(0,m.scan-W/40,0,m.scan);gr.addColorStop(0,'rgba(80,200,255,0)');gr.addColorStop(1,'rgba(80,200,255,0.5)');g.fillStyle=gr;g.fillRect(0,m.scan-W/40,W,W/40)}
  // pairs: from where lens A shows a point to where lens B shows it (green = fits)
@@ -1576,7 +1579,6 @@ function calOver(g,m,a){var W=m.w,lw=Math.max(1.5,W/400);
  g.restore();
  // the seam, drawn from the top down
  var S=m.seam||[];if(S.length>3){var n=Math.round(S.length/2*(m.reveal==null?1:m.reveal));g.save();g.strokeStyle='#fc0';g.lineWidth=lw*1.6;g.shadowColor='#fc0';g.shadowBlur=W/80;g.beginPath();g.moveTo(S[0],S[1]);for(i=1;i<n;i++)g.lineTo(S[2*i],S[2*i+1]);g.stroke();g.restore()}}
-calSl.addEventListener('change',function(){if(!calW||calSl.disabled)return;calGo.disabled=true;calText('Encuadrando...');calW.postMessage({t:'clip',clip:+calSl.value})});
 calGo.addEventListener('click',function(){if(!calMesh||!ws||ws.readyState!=1){calText('Sin conexion con la tele, proba de nuevo');return}
  ws.send(calMesh);calBox.style.display='none';st.pano=3;draw(st)});
 document.getElementById('calre').addEventListener('click',calRun);

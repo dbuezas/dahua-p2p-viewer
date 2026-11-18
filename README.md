@@ -43,7 +43,7 @@ This app shows the cameras in about 10 seconds.
   - Each lens is shown unbent from its own place; they only have to agree on the seam, so the seam follows a path
     where they look alike, and each row of lens B is taken at the distance of its seam point (B moves only up or
     down a little per row: straight lines stay straight).
-  - A slider sets how much to cut: from everything (black corners) to only picture. "Ver en 3D" shows the shared strip
+  - At the end the show displays everything both lenses see, then cuts the black edges off (animated). "Ver en 3D" shows the shared strip
     as points at their measured distance (only near real measures), turned with the finger.
   - The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels, the seam per row) as one binary
     WebSocket message; the PC keeps it in `panoramica3_<ch>.bin` and only draws it. After moving the PTZ, calibrate
