@@ -999,7 +999,7 @@ class CamForm : Form
     // ---- Panorama: find where lens B sits over lens A, from one picture of the channel. ----
     // Both lenses see a strip of the same scene. Search size and place of B that make that strip match best
     // (on edge images, so different brightness does not matter): first coarse on small pictures, then fine.
-    // Turns the panorama on in mode 1 or 2 (or switches mode). It is worked out again every time, from a picture
+    // Turns the panorama on in mode 1 or 2, switches mode, or works it out again (same mode pressed again), from a picture
     // taken now: the moving lens may point somewhere else than last time.
     void PanoOn(int mode)
     {
@@ -1008,7 +1008,6 @@ class CamForm : Form
         foreach (var t in tiles)
         {
             if ((t.Half != 1 && t.Half != 3) || !split.Contains(t.Ch) || t.Play == 0) continue;
-            PanoCal now; if (pano.TryGetValue(t.Ch, out now) && now.Mode == mode) continue;
             todo.Add(t);
         }
         if (todo.Count == 0 || panoBusy) return;
@@ -1765,7 +1764,7 @@ function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='no
   var x=st.cams[d.i];st.cams[d.i]=st.cams[j];st.cams[j]=x;draw(st);cmd('order '+st.cams.map(function(c){return c.k}).join(','))}}
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
 document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)return;
- if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==(+st.pano||0))return;st.pano=m;st.msg=m?'Calculando la panoramica...':'';draw(st);cmd('pano '+m);return}
+ if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==0&&!st.pano)return;st.pano=m;st.msg=m?'Calculando la panoramica...':'';draw(st);cmd('pano '+m);return}
  if(b.dataset.all){setBig(-1);return}
  if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
 connect();
