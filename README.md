@@ -51,7 +51,11 @@ This app shows the cameras in about 10 seconds.
     runs: rough pan/tilt (edge pictures, wide search, so moving the PTZ is fine), shared corners, fine pan/tilt,
     distances (A's patch fixed, B's slid along its line), seam, frame. Each lens is shown unbent from its own place;
     they only have to agree on the seam, so the seam follows a path where they look alike, and each row of lens B is
-    taken at the distance of its seam point (B moves only up or down a little per row: straight lines stay straight). A slider sets how much to cut: from everything
+    taken at the distance of its seam point (B moves only up or down a little per row: straight lines stay straight).
+    The rough search can be fooled by a near thing both lenses see (a ladder), so its best few directions are each
+    tried for real (shared corners and fine fit) and the one where the most pairs fit wins; a result with few
+    fitting pairs or a big typical error is refused instead of sent. "Ver en 3D" shows the shared strip as points at
+    their measured distance (only near real measures), turned with the finger. A slider sets how much to cut: from everything
     (black corners) to only picture. The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels,
     the seam per row) as one binary WebSocket message; the PC keeps it in `panoramica3_<ch>.bin` and only draws it.
   If the lenses no longer see a shared strip, the phone says so.
