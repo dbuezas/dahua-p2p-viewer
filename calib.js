@@ -559,6 +559,13 @@ var Calib = (function () {
     var bx2 = -1, bvv = INF; for (x = 0; x < w; x++) if (prev[x] < bvv) { bvv = prev[x]; bx2 = x; }
     var seamC = new Float32Array(c.CH), Ws = new Float32Array(c.CH), hx = new Float32Array(h);
     if (bx2 >= 0) for (y = h - 1; y >= 0; y--) { hx[y] = bx2; bx2 = from[y * w + bx2]; } else hx.fill(-1);
+    // test: a straight up-and-down seam in the middle of the shared part (middle value of every row's middle)
+    if (SEAM_MID) {
+      var mids = [];
+      for (y = 0; y < h; y++) { var f0 = -1, f1 = -1; for (x = 0; x < w; x++) if (ok[y * w + x]) { if (f0 < 0) f0 = x; f1 = x; } if (f0 >= 0 && f1 - f0 > 4) mids.push((f0 + f1) / 2); }
+      mids.sort(function (a2, b2) { return a2 - b2; });
+      if (mids.length) { var xm = Math.round(mids[mids.length >> 1]); for (y = 0; y < h; y++) hx[y] = xm; }
+    }
     for (y = 0; y < c.CH; y++) { var yh = Math.min(h - 1, Math.floor(y / S)); seamC[y] = hx[yh] < 0 ? -1 : hx[yh] * S + S / 2; Ws[y] = hwA[yh]; }
     st.ws = { seam: seamC, W: Ws };
     // which lens is left: where only A shows, on average
@@ -654,6 +661,7 @@ var Calib = (function () {
   // then bends half of it toward the other, fully in the middle of the band and fading to nothing at its edges.
   // HB 128: the whole shared part bends (not only next to the seam), so far things line up in it too.
   var HB = 128;
+  var SEAM_MID = true;   // test: straight seam in the middle
   function seamWarp(st, show) {
     var c = st.cyl, g = st.rig, ws = st.ws, R = 16, P = 4, step = 6, r = [0, 0, 0], q = [0, 0], y, x, i, j;
     st.warp = null;
