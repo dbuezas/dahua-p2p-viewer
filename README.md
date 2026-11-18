@@ -38,6 +38,11 @@ This app shows the cameras in about 10 seconds.
     to fit (each takes half: A minus half, B plus half), fading out over each lens's own part (fine bending grid kept in `panoramica.txt`). Long straight edges count too
     (the smallest shift that fits). The seam follows the path where both lenses look most alike (dynamic
     programming, on edge strength so a lighter lens does not matter). With few shared points the known lens shape is kept and only the turn is fitted.
+    The table the camera stands on is handled on its own (one lens is above the other, so this near flat thing
+    shifts much more than the rest): its back edge is found in each lens (lowest long dark-to-light step; in lens B
+    only near the bottom), the shift is measured where both edges meet (fine-tuned on the edge, light band and
+    groove), and below that edge lens B is taken with that shift, fading out over B's own side. On the table
+    lens A wins wherever it sees it; under B's picture its table strip is mirrored.
     Test without the TV: `Camaras.exe --pano picture.jpg out [last-numbers.txt]` writes both panoramas and the grid.
   If the lenses no longer see a shared strip, the phone says so.
   The panorama card on the phone shows, as a curiosity, the panorama with a straight grid of each lens bent the way the

@@ -1209,7 +1209,7 @@ class CamForm : Form
             int n = OW * OH;
             ia = new int[n]; ib = new int[n]; ua = new int[n]; ub = new int[n]; wa = new byte[n];
             var ax = new double[OW]; var ay = new double[OW]; var bx = new double[OW]; var by = new double[OW];
-            var inA = new bool[OW]; var inB = new bool[OW];
+            var inA = new bool[OW]; var inB = new bool[OW]; var tab = new bool[OW]; var onTab = new bool[OW]; var tabTopB = new double[OW]; for (int i = 0; i < OW; i++) tabTopB[i] = double.NaN; var bxN = new double[OW]; var byN = new double[OW];
             var ray = new double[3]; var rb = new double[3]; var q = new double[2];
             // Half width of the soft seam, in output pixels: narrow when the seam follows the best path.
             double band = Cal.Mode == 2 ? (SeamAt(Cal.C2, 0.5) >= 0 ? Math.Max(2, OW / 200.0) : Math.Max(4, OW / 60.0)) : 0;
@@ -1230,9 +1230,19 @@ class CamForm : Form
                         ray[0] = Math.Sin(angA); ray[1] = hgtA; ray[2] = Math.Cos(angA);
                         if (lens.Project(ray, q)) { ax[ox] = q[0]; ay[ox] = q[1]; } else ax[ox] = -1e9;
                         double angB = ang + fb * du * (c[6] - c[5]), hgtB = hgt + fb * dv * (c[8] - c[7]);
+                        double uA = (ox + 0.5) / OW + fa * du, vA = (oy + 0.5) / OH + fa * dv, dT;
                         ray[0] = Math.Sin(angB); ray[1] = hgtB; ray[2] = Math.Cos(angB);
                         lens.ToB(ray, rb);
                         if (lens.Project(rb, q)) { bx[ox] = q[0]; by[ox] = q[1]; } else bx[ox] = -1e9;
+                        bxN[ox] = bx[ox]; byN[ox] = by[ox]; tab[ox] = false; onTab[ox] = false;
+                        if (TableAt(c, uA, vA, out dT))
+                        {
+                            // on the table: lens B is taken with the table's own shift
+                            tab[ox] = true; onTab[ox] = true;
+                            ray[0] = Math.Sin(angA); ray[1] = hgtA + dT * (c[8] - c[7]); ray[2] = Math.Cos(angA);
+                            lens.ToB(ray, rb);
+                            if (lens.Project(rb, q)) { bx[ox] = q[0]; by[ox] = q[1]; } else bx[ox] = -1e9;
+                        }
                     }
                     else
                     {
@@ -1241,6 +1251,22 @@ class CamForm : Form
                     }
                     inA[ox] = ax[ox] >= 0 && ax[ox] <= lw - 1 && ay[ox] >= 0 && ay[ox] <= lh - 1;
                     inB[ox] = bx[ox] >= 0 && bx[ox] <= lw - 1 && by[ox] >= 0 && by[ox] <= lh - 1;
+                    // Table seen by lens B only below its picture, or under the camera's name: take B as before.
+                    // Table below the bottom of lens B's picture: nobody sees it there; repeat B's last row of table
+                    // (looks like more table, instead of the wrong things B shows there).
+                    if (tab[ox] && inB[ox] && double.IsNaN(tabTopB[ox])) tabTopB[ox] = by[ox];   // where B's table starts in this column
+                    if (tab[ox] && !inB[ox] && bx[ox] >= 0 && bx[ox] <= lw - 1 && by[ox] > lh - 1)
+                    {
+                        // mirror B's strip of table back and forth (wood goes on), staying off its edge and the last rows
+                        double bot = lh - 4, top = double.IsNaN(tabTopB[ox]) ? bot : tabTopB[ox] + 4, span = bot - top;
+                        if (span > 4) { double t = (by[ox] - bot) % (2 * span); by[ox] = t < span ? bot - t : top + (t - span); } else by[ox] = bot;
+                        inB[ox] = true;
+                    }
+                    if (tab[ox] && (!inB[ox] || Osd(bx[ox] / lw, by[ox] / lh, 1)))
+                    {
+                        bx[ox] = bxN[ox]; by[ox] = byN[ox]; tab[ox] = false;
+                        inB[ox] = bx[ox] >= 0 && bx[ox] <= lw - 1 && by[ox] >= 0 && by[ox] <= lh - 1;
+                    }
                     if (inA[ox]) { minA = Math.Min(minA, ox); maxA = ox; }
                     if (inB[ox]) { minB = Math.Min(minB, ox); maxB = ox; }
                 }
@@ -1252,7 +1278,8 @@ class CamForm : Form
                 for (int ox = 0; ox < OW; ox++)
                 {
                     int k = oy * OW + ox;
-                    double share = !inB[ox] ? 1 : !inA[ox] ? 0
+                    // On the table lens A wins wherever it sees it (it sees the whole table; B only a thin strip).
+                    double share = !inB[ox] ? 1 : !inA[ox] ? 0 : onTab[ox] ? 1
                         : band <= 0 ? ((bRight ? ox < seamX : ox >= seamX) ? 1 : 0)
                         : Math.Max(0, Math.Min(1, 0.5 + (bRight ? seamX - ox : ox - seamX) / (2 * band)));
                     wa[k] = (byte)Math.Round(share * 255);
@@ -1373,7 +1400,14 @@ class CamForm : Form
                 double ang = Math.Atan2(r[0], r[2]), hgt = r[1] / Math.Sqrt(r[0] * r[0] + r[2] * r[2]);
                 u = (ang - c[5]) / (c[6] - c[5]); v = (hgt - c[7]) / (c[8] - c[7]);
                 // The bending moves the picture; undo it a few times to find where this lens point really shows.
-                double f = FieldBoth(c) ? (lensNo == 1 ? 0.5 : -0.5) : (lensNo == 1 ? 1 : 0), uu = u, vv = v;
+                double dT0; int asLens = lensNo;
+                if (lensNo == 1)
+                {
+                    // a B point on the table shows where lens A sees that table point
+                    double vA0 = v; for (int i = 0; i < 3; i++) { double d; if (!TableAt(c, u, vA0, out d)) { vA0 = double.NaN; break; } vA0 = v - d; }
+                    if (!double.IsNaN(vA0) && TableAt(c, u, vA0, out dT0)) { v = vA0; asLens = 0; }
+                }
+                double f = FieldBoth(c) ? (asLens == 1 ? 0.5 : -0.5) : (asLens == 1 ? 1 : 0), uu = u, vv = v;
                 for (int i = 0; i < 4; i++) { double du, dv; FieldAt(c, uu, vv, out du, out dv); uu = u - f * du; vv = v - f * dv; }
                 u = uu; v = vv;
             }
@@ -1638,6 +1672,139 @@ class CamForm : Form
             return e;
         };
         if (FieldOnEdges) { cax = grad(cax, vax, ow, ohx); cbx = grad(cbx, vbx, ow, ohx); }
+        // ---- The table the camera stands on (bottom of the picture). One lens is above the other, so a near flat
+        // thing shifts up-down a lot more than the rest; a smooth bending cannot do both. So: find the table's back
+        // edge in each lens (the long step from darker above to lighter below, low in the picture), measure how far
+        // apart the two edges are where both lenses see them, and below that edge lens B is taken with that shift.
+        // In each column, from the bottom up: the first clear step from darker (above) to lighter (below). The table
+        // is the nearest thing, so its back edge is the lowest such step. Then one smooth curve through most of
+        // those points (random tries, the curve most points agree with); columns off the curve do not count.
+        Func<double[], bool[], int, double[]> edgeLine = (img, m, nearBottom) =>
+        {
+            // every step from a wide darker zone above to lighter below, in the lower part of each column
+            var cx = new List<int>(); var cy = new List<double>(); var cc = new List<double>();
+            for (int x = 0; x < ow; x++)
+            {
+                int yb = ohx - 3; while (yb > mo + oh / 2 && !m[yb * ow + x]) yb--;
+                double prevC = 0;
+                for (int y = yb - 3; y > Math.Max(mo + oh / 3 + 12, yb - nearBottom); y--)
+                {
+                    if (!m[(y - 12) * ow + x] || !m[(y + 2) * ow + x]) break;
+                    double g = img[(y + 2) * ow + x] - img[(y - 2) * ow + x];
+                    double above = 0, below = 0; int nb = 0;
+                    for (int k = 3; k <= 12; k++) { above += img[(y - k) * ow + x]; if (y + k < ohx && m[(y + k) * ow + x]) { below += img[(y + k) * ow + x]; nb++; } }
+                    above /= 10; below = nb > 3 ? below / nb : img[(y + 2) * ow + x];
+                    double c = below - above;
+                    if (g >= 15 && c >= 20 && c >= prevC) { if (cx.Count > 0 && cx[cx.Count - 1] == x && Math.Abs(cy[cy.Count - 1] - y) <= 4) { cy[cy.Count - 1] = y; cc[cc.Count - 1] = c; } else { cx.Add(x); cy.Add(y); cc.Add(c); } }
+                    prevC = c;
+                }
+            }
+            var line = new double[ow]; for (int x = 0; x < ow; x++) line[x] = double.NaN;
+            if (cx.Count < 20) return line;
+            // the smooth curve that collects the most contrast over the columns (one point per column)
+            var rnd = new Random(1); double[] bestQ = null; double bestS = 0; var colBest = new double[ow];
+            for (int t = 0; t < 1500; t++)
+            {
+                int i1 = rnd.Next(cx.Count), i2 = rnd.Next(cx.Count), i3 = rnd.Next(cx.Count);
+                if (cx[i1] == cx[i2] || cx[i2] == cx[i3] || cx[i1] == cx[i3]) continue;
+                var qf = FitQuad(new List<double> { cx[i1], cx[i2], cx[i3] }, new List<double> { cy[i1], cy[i2], cy[i3] }, 3);
+                if (qf == null) continue;
+                for (int x = 0; x < ow; x++) colBest[x] = 0;
+                for (int k = 0; k < cx.Count; k++) { int x = cx[k]; if (Math.Abs(qf[0] + qf[1] * x + qf[2] * x * x - cy[k]) < 3) colBest[x] = Math.Max(colBest[x], cc[k]); }
+                double sc = 0; foreach (var v2 in colBest) sc += v2;
+                if (sc > bestS) { bestS = sc; bestQ = qf; }
+            }
+            if (bestQ == null) return line;
+            for (int k = 0; k < cx.Count; k++) { int x = cx[k]; if (Math.Abs(bestQ[0] + bestQ[1] * x + bestQ[2] * x * x - cy[k]) < 3) line[x] = cy[k]; }
+            return line;
+        };
+        // In lens B (the lower one) the table it stands on is only a strip at the very bottom of its picture.
+        Func<double[], double[]> fitOf = ln => { var xs3 = new List<double>(); var ys3 = new List<double>(); for (int x = 0; x < ow; x++) if (!double.IsNaN(ln[x])) { xs3.Add(x); ys3.Add(ln[x]); } return FitQuad(xs3, ys3); };
+        // {1, a, b, q0, q1, q2, uMax, uMeet, fade}: shift (a + b*u) (picture heights), fading out after uMeet over
+        // fade; edge at v = q0 + q1*u + q2*u*u; only for u <= uMax.
+        double[] table = null;
+        var lineA = edgeLine(cax, vax, ohx); var lineB = edgeLine(cbx, vbx, Math.Max(30, oh / 6));
+        {
+            // Each lens sees the edge on its own side; like the eye, follow both curves to where they meet (the
+            // middle between A's last and B's first column) and measure the up-down gap there.
+            var fA = fitOf(lineA); var fB = fitOf(lineB);
+            int lastA = -1, firstB = -1, nA = 0, nB = 0;
+            for (int x = 0; x < ow; x++) { if (!double.IsNaN(lineA[x])) { lastA = x; nA++; } if (firstB < 0 && !double.IsNaN(lineB[x])) firstB = x; if (!double.IsNaN(lineB[x])) nB++; }
+            if (fA != null && fB != null && nA >= 30 && nB >= 30 && lastA >= 0 && firstB >= 0)
+            {
+                double xm = (lastA + firstB) / 2.0;
+                // where they meet, a straight line through the nearest 80 columns of each side follows the edge best
+                Func<double[], int, int, double[]> lineAt = (ln, x0l, x1l) =>
+                {
+                    var xs4 = new List<double>(); var ys4 = new List<double>();
+                    for (int x = Math.Max(0, x0l); x <= Math.Min(ow - 1, x1l); x++) if (!double.IsNaN(ln[x])) { xs4.Add(x); ys4.Add(ln[x]); }
+                    if (xs4.Count < 10) return null;
+                    double n = xs4.Count, sx = 0, sy = 0, sxx = 0, sxy = 0;
+                    for (int i = 0; i < xs4.Count; i++) { sx += xs4[i]; sy += ys4[i]; sxx += xs4[i] * xs4[i]; sxy += xs4[i] * ys4[i]; }
+                    double bb = (n * sxy - sx * sy) / (n * sxx - sx * sx), aa = (sy - bb * sx) / n;
+                    return new[] { aa + bb * xm, bb };
+                };
+                var LA = lineAt(lineA, lastA - 80, lastA); var LB = lineAt(lineB, firstB, firstB + 80);
+                double d = LA != null && LB != null ? LB[0] - LA[0] : (fB[0] + fB[1] * xm + fB[2] * xm * xm) - (fA[0] + fA[1] * xm + fA[2] * xm * xm);
+                // Fine tune like the eye at the meeting point: the up-down pattern of the table's edge (edge, light
+                // band, groove) just left of it in A must match the one just right of it in B.
+                if (LA != null && LB != null)
+                {
+                    Func<double[], bool[], int, int, double[]> colProfile = (img, m, xa, xb) =>
+                    {
+                        var g = new double[ohx];
+                        for (int y = 1; y < ohx - 1; y++)
+                        {
+                            double sum = 0; int n = 0;
+                            for (int x = Math.Max(0, xa); x <= Math.Min(ow - 1, xb); x++) if (m[(y - 1) * ow + x] && m[(y + 1) * ow + x]) { sum += img[(y + 1) * ow + x] - img[(y - 1) * ow + x]; n++; }
+                            g[y] = n > 0 ? sum / n : double.NaN;
+                        }
+                        return g;
+                    };
+                    var pA = colProfile(cax, vax, lastA - 12, lastA - 2); var pB = colProfile(cbx, vbx, firstB + 2, firstB + 12);
+                    int yE = (int)Math.Round(LA[0]); double bestC = -2; int bestD = (int)Math.Round(d);
+                    for (int dd = (int)d - 30; dd <= (int)d + 30; dd++)
+                    {
+                        double sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0; int n = 0;
+                        for (int y = yE - 10; y <= yE + 30; y++)
+                        {
+                            int y2 = y + dd; if (y < 1 || y >= ohx - 1 || y2 < 1 || y2 >= ohx - 1) continue;
+                            double av = pA[y], bv = pB[y2]; if (double.IsNaN(av) || double.IsNaN(bv)) continue;
+                            sa += av; sb += bv; saa += av * av; sbb += bv * bv; sab += av * bv; n++;
+                        }
+                        if (n < 20) continue;
+                        double va3 = saa / n - (sa / n) * (sa / n), vb3 = sbb / n - (sb / n) * (sb / n);
+                        double cc2 = va3 > 1 && vb3 > 1 ? (sab / n - sa / n * sb / n) / Math.Sqrt(va3 * vb3) : -1;
+                        if (cc2 > bestC) { bestC = cc2; bestD = dd; }
+                    }
+                    Log("panoramica 2: mesa: afinado en el encuentro " + d.ToString("0") + " -> " + bestD + " px (parecido " + bestC.ToString("0.00") + ")");
+                    if (bestC >= 0.5) d = bestD;
+                }
+                // A plane's shift changes along it: B's edge must go on in the same direction as A's edge.
+                double slope = LA != null && LB != null ? Math.Max(-0.05, Math.Min(0.05, LB[1] - LA[1])) : 0;
+                // Full shift where the lenses meet, fading out over B's own side (far from the seam B shows its table
+                // where it really sees it; nothing there has to line up with lens A).
+                double fadeW = ow * 0.25, xf = xm + ow * 0.06;   // full until a bit past the meeting point (the seam can be there)
+                Func<double, double> dAt = x => (d + slope * (x - xm)) * (x <= xf ? 1 : Math.Max(0, 1 - (x - xf) / fadeW));
+                Log("panoramica 2: mesa: borde en " + nA + " columnas de A y " + nB + " de B, se juntan en x " + xm.ToString("0") + ", corrimiento " + d.ToString("0") + " px (cambia " + (LA != null && LB != null ? (LB[1] - LA[1]).ToString("0.000") : "-") + " por columna)");
+                if (d > 0 && d < oh * 0.5)
+                {
+                    // edge line (in lens A's place): A's own curve, continued over B's side by B's curve moved up by d
+                    var ex = new List<double>(); var ey = new List<double>();
+                    for (int x = 0; x < ow; x++)
+                    {
+                        double y2 = x <= xm ? fA[0] + fA[1] * x + fA[2] * x * x : fB[0] + fB[1] * x + fB[2] * x * x - dAt(x);
+                        ex.Add((x + 0.5) / ow); ey.Add((y2 - mo + 0.5) / oh);
+                    }
+                    var qq = FitQuad(ex, ey);
+                    // the table counts only up to the last column where B's edge was really found
+                    int lastB = firstB; for (int x = 0; x < ow; x++) if (!double.IsNaN(lineB[x])) lastB = x;
+                    if (qq != null) table = new[] { 1, (d - slope * xm) / oh, slope * ow / oh, qq[0], qq[1], qq[2], (lastB + 10.0) / ow, xf / ow, fadeW / ow };
+                }
+            }
+            else Log("panoramica 2: mesa: no encontre su borde (A " + nA + ", B " + nB + " columnas)");
+        }
+        Func<double, double, bool> onTable = (u2, v2) => table != null && u2 <= table[6] && v2 > table[3] + table[4] * u2 + table[5] * u2 * u2;
         // The panorama's own rows.
         var ca = new double[ow * oh]; var cb = new double[ow * oh]; var va = new bool[ow * oh]; var vb = new bool[ow * oh];
         Array.Copy(cax, mo * ow, ca, 0, ow * oh); Array.Copy(cbx, mo * ow, cb, 0, ow * oh);
@@ -1662,39 +1829,47 @@ class CamForm : Form
         // (cx, cy) wins. Returns false when nothing fits well.
         Func<double[], double[], bool[], bool[], int, int, int, int, int, int, int, int[], bool> search = (A2, B2, VA, VB, w2, h2, px, py, cx, cy, S, res) =>
         {
-            if (!okIn(VA, w2, h2, px - P, py - P) || !okIn(VA, w2, h2, px + P, py + P) || !okIn(VA, w2, h2, px - P, py + P) || !okIn(VA, w2, h2, px + P, py - P)) return false;
-            double sa = 0, saa = 0; int n = 0;
-            for (int j = -P; j <= P; j += 2) for (int i = -P; i <= P; i += 2) { double a = A2[(py + j) * w2 + px + i]; sa += a; saa += a * a; n++; }
-            double ma = sa / n, vA = saa / n - ma * ma;
-            if (DebugField && w2 == hw && py * 2 - mo > oh * 0.8 && Math.Abs(px * 2 - ow / 2) < ow / 6) dbgLines.Add("  nodo " + (px * 2) + "," + (py * 2 - mo) + " textura " + vA.ToString("0"));
-            if (vA < 30) return false;   // plain wall: nothing to measure
-            int side = 2 * S + 1; var vals = new double[side * side]; double best = -2;
-            for (int dy = -S; dy <= S; dy++) for (int dx = -S; dx <= S; dx++)
+            // Patches may be partly outside a lens or on the camera's text: only pixels both lenses have count,
+            // at least PartMin of the patch (the table at the very bottom of lens B is only a thin strip).
+            if (!okIn(VA, w2, h2, px, py)) return false;
+            int total = (P + 1) * (P + 1);
+            double sa0 = 0, saa0 = 0; int n0 = 0;
+            for (int j = -P; j <= P; j += 2) for (int i = -P; i <= P; i += 2) { if (!okIn(VA, w2, h2, px + i, py + j)) continue; double a = A2[(py + j) * w2 + px + i]; sa0 += a; saa0 += a * a; n0++; }
+            if (n0 < total * PartMin) return false;
+            double vA0 = saa0 / n0 - (sa0 / n0) * (sa0 / n0);
+            if (DebugField && w2 == hw && py * 2 - mo > oh * 0.8 && Math.Abs(px * 2 - ow / 2) < ow / 6) dbgLines.Add("  nodo " + (px * 2) + "," + (py * 2 - mo) + " textura " + vA0.ToString("0"));
+            if (vA0 < 30) return false;   // plain wall: nothing to measure
+            // One lens is above the other: the leftover shift is mostly up-down, so less is searched sideways.
+            int Sx = Math.Max(3, S / 4), side = 2 * S + 1; var vals = new double[side * side]; double best = -2;
+            for (int dy = -S; dy <= S; dy++) for (int dx = -Sx; dx <= Sx; dx++)
             {
                 int k = (dy + S) * side + dx + S; vals[k] = -2;
                 int qx = px + cx + dx, qy = py + cy + dy;
-                if (!okIn(VB, w2, h2, qx - P, qy - P) || !okIn(VB, w2, h2, qx + P, qy + P) || !okIn(VB, w2, h2, qx - P, qy + P) || !okIn(VB, w2, h2, qx + P, qy - P)) continue;
-                double sb = 0, sbb = 0, sab = 0;
+                if (!okIn(VB, w2, h2, qx, qy)) continue;
+                double sa = 0, saa = 0, sb = 0, sbb = 0, sab = 0; int n = 0;
                 for (int j = -P; j <= P; j += 2) for (int i = -P; i <= P; i += 2)
                 {
-                    double a = A2[(py + j) * w2 + px + i] - ma, b = B2[(qy + j) * w2 + qx + i];
-                    sb += b; sbb += b * b; sab += a * b;
+                    int ax = px + i, ay = py + j, bx2 = qx + i, by2 = qy + j;
+                    if (!okIn(VA, w2, h2, ax, ay) || !okIn(VB, w2, h2, bx2, by2)) continue;
+                    double a = A2[ay * w2 + ax], b = B2[by2 * w2 + bx2];
+                    sa += a; saa += a * a; sb += b; sbb += b * b; sab += a * b; n++;
                 }
-                double vB = sbb / n - (sb / n) * (sb / n);
-                vals[k] = vB > 1 ? (sab / n) / Math.Sqrt(vA * vB) : -1;
+                if (n < total * PartMin) continue;
+                double vA = saa / n - (sa / n) * (sa / n), vB = sbb / n - (sb / n) * (sb / n);
+                vals[k] = vA > 10 && vB > 1 ? (sab / n - sa / n * sb / n) / Math.Sqrt(vA * vB) : -1;
                 if (vals[k] > best) best = vals[k];
             }
             if (DebugField && w2 == hw && py * 2 - mo > oh * 0.8 && Math.Abs(px * 2 - ow / 2) < ow / 6)
             {
                 int qx = 0, qy = 0; double bv = -3;
-                for (int dy = -S; dy <= S; dy++) for (int dx = -S; dx <= S; dx++) if (vals[(dy + S) * side + dx + S] > bv) { bv = vals[(dy + S) * side + dx + S]; qx = dx; qy = dy; }
+                for (int dy = -S; dy <= S; dy++) for (int dx = -Sx; dx <= Sx; dx++) if (vals[(dy + S) * side + dx + S] > bv) { bv = vals[(dy + S) * side + dx + S]; qx = dx; qy = dy; }
                 dbgLines.Add("    mejor " + best.ToString("0.00") + " en " + (2 * qx) + "," + (2 * qy));
             }
             if (best < MinCorr) return false;
             int bx = 0, by = 0; double bd = double.MaxValue;
-            for (int dy = -S; dy <= S; dy++) for (int dx = -S; dx <= S; dx++)
+            for (int dy = -S; dy <= S; dy++) for (int dx = -Sx; dx <= Sx; dx++)
                 if (vals[(dy + S) * side + dx + S] >= best - Tol && dx * dx + dy * dy < bd) { bd = dx * dx + dy * dy; bx = dx; by = dy; }
-            if (Math.Abs(bx) == S || Math.Abs(by) == S) return false;
+            if (Math.Abs(bx) == Sx || Math.Abs(by) == S) return false;
             res[0] = cx + bx; res[1] = cy + by; return true;
         };
         int measured = 0; double maxShift = 0; var rr = new int[2];
@@ -1703,6 +1878,7 @@ class CamForm : Form
         {
             int px = gx * step, py = gy * step;
             if (!ok(vb, px, py)) continue;
+            if (onTable((px + 0.5) / ow, (py + 2.0 * P + 0.5) / oh)) continue;   // the table has its own shift
             if (!search(ca2, cb2, va2, vb2, hw, hh, px / 2, (py + mo) / 2, 0, 0, Swide, rr)) continue;
             int cx2 = rr[0] * 2, cy2 = rr[1] * 2;
             // Finer step on the full size picture; when its smaller patch cannot tell, the half size result stays.
@@ -1718,6 +1894,8 @@ class CamForm : Form
                         int k = y * ow + x; int v = pair.Item3[k] ? (int)Math.Max(0, Math.Min(255, pair.Item2[k])) : 0;
                         bm.SetPixel(x, y, pair.Item3[k] ? Color.FromArgb(v, v, v) : Color.FromArgb(80, 0, 0));
                         if (y == mo || y == mo + oh - 1) bm.SetPixel(x, y, Color.Yellow);
+                        var ln = pair.Item1 == "_ca.png" ? lineA : lineB;
+                        if (!double.IsNaN(ln[x]) && Math.Abs(y - ln[x]) < 1) bm.SetPixel(x, y, Color.Red);
                     }
                     bm.Save(DebugOut + pair.Item1, System.Drawing.Imaging.ImageFormat.Png);
                 }
@@ -1737,7 +1915,9 @@ class CamForm : Form
             for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++)
             {
                 int x = gx + i, y = gy + j, k = y * NX + x; if ((i == 0 && j == 0) || x < 0 || y < 0 || x >= NX || y >= NY || !known[k]) continue;
-                if (Math.Abs(du[k] - du[g]) <= 5 && Math.Abs(dv[k] - dv[g]) <= 5) agree++;
+                // Big shifts (near things, a table going away) change fast between neighbours: tolerance grows with them.
+                double tol = 5 + 0.3 * Math.Max(Math.Max(Math.Abs(dv[k]), Math.Abs(dv[g])), Math.Max(Math.Abs(du[k]), Math.Abs(du[g])));
+                if (Math.Abs(du[k] - du[g]) <= tol && Math.Abs(dv[k] - dv[g]) <= tol) agree++;
             }
             if (agree >= 2) { keep[g] = true; maxShift = Math.Max(maxShift, Math.Max(Math.Abs(du[g]), Math.Abs(dv[g]))); }
         }
@@ -1799,6 +1979,7 @@ class CamForm : Form
                 D[x] = INF;
                 double hx = grid(du, x, y) / 2, hy = grid(dv, x, y) / 2;
                 double axp = x - hx, ayp = y - hy, sx = x + hx, sy = y + hy;
+                if (onTable((axp + 0.5) / ow, (ayp + 0.5) / oh) && va[y * ow + x]) { D[x] = 0.5; any = true; continue; }
                 if (axp < 0 || ayp < 0 || axp >= ow - 1 || ayp >= oh - 1 || sx < 0 || sy < 0 || sx >= ow - 1 || sy >= oh - 1) continue;
                 int ka = (int)ayp * ow + (int)axp; if (!va[ka] || !va[ka + 1] || !va[ka + ow] || !va[ka + ow + 1]) continue;
                 int k = (int)sy * ow + (int)sx; if (!vb[k] || !vb[k + 1] || !vb[k + ow] || !vb[k + ow + 1]) continue;
@@ -1832,10 +2013,11 @@ class CamForm : Form
         }
         Log("panoramica 2: union " + (nS > 0 ? "por el camino mas parecido" : "en el medio"));
         // NX is stored negative: both lenses take half of the bending.
-        var r = new double[4 + 2 * N + 1 + nS]; r[0] = -NX; r[1] = NY; r[2] = (double)step / ow; r[3] = (double)step / oh;
-        for (int g = 0; g < N; g++) { r[4 + g] = du[g] / ow; r[4 + N + g] = dv[g] / oh; }
-        r[4 + 2 * N] = nS; for (int k = 0; k < nS; k++) r[5 + 2 * N + k] = seamU[k];
-        return r;
+        var fieldOut = new double[4 + 2 * N + 1 + nS + 9]; fieldOut[0] = -NX; fieldOut[1] = NY; fieldOut[2] = (double)step / ow; fieldOut[3] = (double)step / oh;
+        if (table != null) Array.Copy(table, 0, fieldOut, 5 + 2 * N + nS, 9);   // else zeros: no table
+        for (int g = 0; g < N; g++) { fieldOut[4 + g] = du[g] / ow; fieldOut[4 + N + g] = dv[g] / oh; }
+        fieldOut[4 + 2 * N] = nS; for (int k = 0; k < nS; k++) fieldOut[5 + 2 * N + k] = seamU[k];
+        return fieldOut;
     }
 
     // Text the camera writes on its picture: the date and time (top right of lens A), the name "Device1" (bottom
@@ -1852,6 +2034,34 @@ class CamForm : Form
     }
 
     // True when both lenses take half of the fine bending (older calibrations bend lens B only).
+    static double[] FitQuad(List<double> xs, List<double> ys, int minPoints = 10)
+    {
+        if (xs.Count < minPoints) return null;
+        var M = new double[3, 4];
+        for (int i = 0; i < xs.Count; i++) { double[] t = { 1, xs[i], xs[i] * xs[i] }; for (int r = 0; r < 3; r++) { for (int c = 0; c < 3; c++) M[r, c] += t[r] * t[c]; M[r, 3] += t[r] * ys[i]; } }
+        for (int c = 0; c < 3; c++)
+        {
+            int piv = c; for (int r = c + 1; r < 3; r++) if (Math.Abs(M[r, c]) > Math.Abs(M[piv, c])) piv = r;
+            if (Math.Abs(M[piv, c]) < 1e-12) return null;
+            for (int k = 0; k < 4; k++) { double t = M[c, k]; M[c, k] = M[piv, k]; M[piv, k] = t; }
+            for (int r = 0; r < 3; r++) if (r != c) { double f = M[r, c] / M[c, c]; for (int k = 0; k < 4; k++) M[r, k] -= f * M[c, k]; }
+        }
+        return new[] { M[0, 3] / M[0, 0], M[1, 3] / M[1, 1], M[2, 3] / M[2, 2] };
+    }
+
+    // The table the camera stands on: true when (u, v) (lens A's place, 0..1) is below its back edge; dT = how much
+    // lower lens B sees it there (part of the picture height).
+    static bool TableAt(double[] c, double u, double v, out double dT)
+    {
+        dT = 0;
+        if (c.Length < 13) return false;
+        int N = (int)Math.Abs(c[9]) * (int)c[10], o = 13 + 2 * N; if (c.Length <= o) return false;
+        int t = o + 1 + (int)c[o]; if (c.Length < t + 9 || c[t] != 1) return false;
+        if (u > c[t + 6] || v <= c[t + 3] + c[t + 4] * u + c[t + 5] * u * u) return false;
+        double fade = u <= c[t + 7] ? 1 : Math.Max(0, 1 - (u - c[t + 7]) / c[t + 8]);
+        dT = (c[t + 1] + c[t + 2] * u) * fade; return true;
+    }
+
     static bool FieldBoth(double[] c) { return c.Length >= 13 && c[9] < 0; }
 
     // Seam column (0 to 1) at height v of the picture, or -1 when the calibration has none.
@@ -1889,7 +2099,7 @@ class CamForm : Form
 
     static bool DebugField, FieldOnEdges = false; static string DebugOut;
     // Fine bending search: a match counts from MinCorr; among matches within Tol of the best, the smallest shift wins.
-    static double MinCorr = 0.72, Tol = 0.06;
+    static double MinCorr = 0.72, Tol = 0.06, PartMin = 0.5;
     static void PanoTest(string inFile, string outBase, string prevFile)
     {
         LogFile = outBase + ".log"; DebugField = true; DebugOut = outBase;
