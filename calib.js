@@ -669,7 +669,7 @@ var Calib = (function () {
   // then bends half of it toward the other, fully in the middle of the band and fading to nothing at its edges.
   // HB 128: the whole shared part bends (not only next to the seam), so far things line up in it too.
   var HB = 128;
-  var SEAM_MID = true;   // test: straight seam in the middle
+  var SEAM_MID = false;   // test switch: true = straight seam in the middle
   function seamWarp(st, show) {
     var c = st.cyl, g = st.rig, ws = st.ws, R = 16, P = 4, step = 6, r = [0, 0, 0], q = [0, 0], y, x, i, j;
     st.warp = null;
