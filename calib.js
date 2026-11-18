@@ -290,12 +290,14 @@ var Calib = (function () {
     show({ stage: 2, text: 'Probando alineaciones y lentes', frac: 0.05, rig: shown, mix: true, viewCyl: true, hold: 300 });
     seeds.forEach(function (x) {
       tried++; var v = roughX(x, 0);
+      if (tried % 8 === 0) show({ textOnly: true, text: 'Probando alineaciones y lentes: ' + tried + ' de ' + seeds.length + ' (la mejor: ' + D2(cur) + ')', frac: 0.05 + 0.1 * tried / seeds.length });
       if (v > curV) { cur = x; curV = v; showBest('Probando alineaciones y lentes: ' + tried + ' probadas, la mejor: ' + D2(cur), 0.05 + 0.1 * tried / seeds.length, cur, 220); }
     });
     // 2. descent on the sharper pictures: a small step in each direction, keep what improves, then smaller steps
     curV = roughX(cur, 1);
     [[1, 0.6, 8, 0.02], [0.5, 0.3, 4, 0.01], [0.25, 0.15, 2, 0.005], [0.12, 0.08, 1, 0.0025]].forEach(function (stp, si) {
       for (var it = 0; it < 30; it++) {
+        show({ textOnly: true, text: 'Bajando por la pendiente (paso ' + (si + 1) + ' de 4), vuelta ' + (it + 1) + ': ' + D2(cur), frac: 0.15 + 0.05 * si });
         var improved = false;
         for (var pi = 0; pi < 4; pi++) for (var sg = -1; sg <= 1; sg += 2) {
           var y2 = cur.slice(); y2[pi] += sg * stp[pi] * (pi < 2 ? D : 1); var v2 = roughX(y2, 1);
@@ -306,7 +308,7 @@ var Calib = (function () {
     });
     // 3. shared pairs where the pictures line up best now
     var g0 = rigX(cur), win = { t: { pan: cur[0], tilt: cur[1], F: cur[2], K: cur[3] } };
-    var matches = findMatches(g0, 800, function (ms, n, tot) { show({ stage: 2, text: 'Buscando puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.35 + 0.05 * n / tot, rig: g0, mix: true, matches: ms, viewCyl: true, hold: 160 }); });
+    var matches = findMatches(g0, 800, function (ms, n, tot) { show({ textOnly: true, text: 'Buscando puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.35 + 0.05 * n / tot }); });
     var fr2 = matches.length >= 8 ? fitRig(win.t, matches, 80) : { good: 0 };
     if (fr2.good < 15) {
       // A near thing seen by both lenses (a ladder) can fool the picture score: try the rough search's best
@@ -324,6 +326,7 @@ var Calib = (function () {
     var lastShown = -1, lastX = null;
     var eachFit = function (label) { return function (it, xv) {
       var x4 = xv.length > 2 ? xv : [xv[0], xv[1], o.F, o.K];
+      if (it % 10 === 0) show({ textOnly: true, text: label + ', iteracion ' + it + ': ' + D2(x4), frac: 0.42 });
       if (lastX && Math.abs(x4[0] - lastX[0]) < 0.05 * D && Math.abs(x4[1] - lastX[1]) < 0.05 * D && Math.abs(x4[2] - lastX[2]) < 1 && Math.abs(x4[3] - lastX[3]) < 0.003) return;
       if (it - lastShown < 3) return;
       lastShown = it; lastX = x4.slice(); showBest(label + ': ' + D2(x4), 0.42, x4, 110);
@@ -352,6 +355,8 @@ var Calib = (function () {
     cylinder(st);
     measure(st, show);
     seam(st, show);
+    // the per-row distances must make the shared part match better than none at all; otherwise none
+    if (stripMatch(st, true) < stripMatch(st, false)) seam(st, show, true);
     // lens B was shown as if everything were far; now each row settles at its measured distance (smoothly)
     show({ stage: 5, text: 'Ajustando la camara 4 a la distancia de cada cosa', frac: 0.88, rig: g, mix: true, W: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 1500,
       slide: { rows: true, to: g, c: st.view.cyl, crop1: st.view.crop, dur: 1400 } });
@@ -446,6 +451,7 @@ var Calib = (function () {
         if (kk === NW) continue;
         wv[gi] = WMAX * kk / NW; known[gi] = 1; W[gi] = wv[gi];
       }
+      if (gy % 4 === 3) show({ textOnly: true, text: 'Midiendo distancias: fila ' + (gy + 1) + ' de ' + NY, frac: 0.5 + 0.3 * gy / NY });
       if (gy === NY - 1) show({ stage: 4, text: 'Distancias medidas (calido = cerca)', frac: 0.8, rig: g, mix: true, wdots: { step: step, NX: NX, known: known, wv: wv }, dotsFade: true, cylObj: st.view && st.view.cyl, crop: st.view && st.view.crop, hold: 1300, anim: 400 });
     }
     // clean: a measure needs 2 neighbours (in the 5x5 around) that agree with it
@@ -488,19 +494,35 @@ var Calib = (function () {
   // That distance is the BACKGROUND's in that row (a low value of the measures there): a near thing at the seam (the
   // table the camera stands on) would pull the whole row of B with it. Then the seam is a path from top to bottom
   // where both lenses, exactly as they will be drawn, look most alike.
-  function seam(st, show) {
+  function seam(st, show, flat) {
     var c = st.cyl, g = st.rig, gr = st.grid, S = 2, w = Math.floor(c.CW / S), h = Math.floor(c.CH / S), x, y, i, j;
     var KW = c.Fc / S * Math.sqrt(4 * (g.h[0] * g.h[0] + g.h[1] * g.h[1] + g.h[2] * g.h[2]));   // half-size px per unit w
-    // background distance per grid row: the 30% point of the good measures in that row and the next ones
-    var rowW = new Float64Array(gr.NY).fill(NaN);
-    for (var gy = 0; gy < gr.NY; gy++) {
-      var l = []; for (var dy = -1; dy <= 1; dy++) { var yy = gy + dy; if (yy < 0 || yy >= gr.NY) continue; for (var gx = 0; gx < gr.NX; gx++) { var gi = yy * gr.NX + gx; if (st.keep && st.keep[gi]) l.push(gr.W[gi]); } }
-      if (l.length >= 2) { l.sort(function (a2, b2) { return a2 - b2; }); rowW[gy] = l[Math.floor(l.length * 0.3)]; }
+    // Distance per band of rows, chosen by looking: lens B is tried at many distances (also "no shift", also a bit
+    // "beyond far": the measuring has errors both ways) and the one where both lenses match best over the whole
+    // shared part of that band wins; among nearly as good ones, the smallest shift. So it can only look better.
+    var BAND = 8, nb = Math.ceil(h / BAND), hw = new Float32Array(h), bandW = new Float64Array(nb).fill(NaN), rq = [0, 0, 0], qa0 = [0, 0], qb0 = [0, 0];
+    var wLo = -10 / KW, wHi = Math.min(WMAX, 70 / KW), wStep = 0.5 / KW;
+    for (var bi = 0; bi < nb && !flat; bi++) {
+      var rays2 = [], av2 = [];
+      for (y = bi * BAND; y < Math.min(h, (bi + 1) * BAND); y++) for (x = 0; x < w; x += 2) {
+        cylRay(c, x * S + S / 2, y * S + S / 2, rq); if (!toA(g, rq, 0, qa0) || !toB(g, rq, 0, qb0)) continue;
+        rays2.push(rq.slice()); av2.push(bil(st.inp.A, LW, LH, qa0[0], qa0[1]));
+      }
+      if (rays2.length < 150) continue;
+      var scores = [], bestS = -2;
+      for (var wv = wLo; wv <= wHi; wv += wStep) {
+        var sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, n = 0;
+        for (i = 0; i < rays2.length; i++) { if (!toB(g, rays2[i], 2 * wv, qb0)) continue; var bv = bil(st.inp.B, LW, LH, qb0[0], qb0[1]); if (bv !== bv) continue; var a3 = av2[i]; sa += a3; sb += bv; saa += a3 * a3; sbb += bv * bv; sab += a3 * bv; n++; }
+        var sc = -2; if (n > rays2.length * 0.6) { var va = saa / n - (sa / n) * (sa / n), vb = sbb / n - (sb / n) * (sb / n); if (va > 1 && vb > 1) sc = (sab / n - sa / n * sb / n) / Math.sqrt(va * vb); }
+        scores.push([wv, sc]); if (sc > bestS) bestS = sc;
+      }
+      var pick = null; scores.forEach(function (q2) { if (q2[1] >= bestS - 0.01 && (!pick || Math.abs(q2[0]) < Math.abs(pick[0]))) pick = q2; });
+      if (pick && bestS > 0.3) bandW[bi] = pick[0];
+      if (show && bi % 6 === 5) show({ textOnly: true, text: 'Distancia por franjas: ' + (bi + 1) + ' de ' + nb, frac: 0.86 });
     }
-    var hw = new Float32Array(h);
     for (y = 0; y < h; y++) {
-      var gyf = (y * S + S / 2) / gr.step, best = NaN, bd = 1e9;
-      for (gy = 0; gy < gr.NY; gy++) if (rowW[gy] === rowW[gy] && Math.abs(gy - gyf) < bd) { bd = Math.abs(gy - gyf); best = rowW[gy]; }
+      var bb0 = Math.floor(y / BAND), best = NaN, bd = 1e9;
+      for (bi = 0; bi < nb; bi++) if (bandW[bi] === bandW[bi] && Math.abs(bi - bb0) < bd) { bd = Math.abs(bi - bb0); best = bandW[bi]; }
       hw[y] = best === best ? best : 0;
     }
     // smooth (middle value, then average), then at most 0.08 px more shift per row (at most 8% taller or shorter)
@@ -735,7 +757,17 @@ var Calib = (function () {
     }
     return new Float32Array(out);
   }
-  return { CAM: CAM, slideData: slideData, run: run, cloud: cloud, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
+  // Test: how well both lenses match over the shared part (correlation of brightness), B with or without the per-row distances.
+  function stripMatch(st, useW) {
+    var c = st.cyl, g = st.rig, r = [0, 0, 0], qa = [0, 0], qb = [0, 0], sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, n = 0;
+    for (var y = 0; y < c.CH; y += 2) for (var x = 0; x < c.CW; x += 2) {
+      cylRay(c, x, y, r); if (!toA(g, r, 0, qa)) continue; var ok = useW ? toBrow(st, r, y, qb) : toB(g, r, 0, qb); if (!ok) continue;
+      var a = bil(st.inp.A, LW, LH, qa[0], qa[1]), b = bil(st.inp.B, LW, LH, qb[0], qb[1]); if (a !== a || b !== b) continue;
+      sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b; n++;
+    }
+    return (sab / n - sa / n * sb / n) / Math.sqrt((saa / n - (sa / n) * (sa / n)) * (sbb / n - (sb / n) * (sb / n)));
+  }
+  return { CAM: CAM, slideData: slideData, stripMatch: stripMatch, run: run, cloud: cloud, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
 })();
 
 // ---- Web Worker side: the page sends the pictures; pictures of the work go back as it runs. ----
@@ -743,6 +775,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
   var state = null, PW = 720, lastShow = 0;
   // Every step of the work is one frame; the page plays them at their own pace (hold ms each, fade = cross-fade).
   var post = function (opt) {
+    if (opt.textOnly) { self.postMessage({ t: 'show', kind: 'text', text: opt.text, frac: opt.frac }); return; }
     if (opt.move) { self.postMessage({ t: 'show', kind: 'move', text: opt.text, frac: opt.frac, move: opt.move, hold: opt.hold || 150, dur: opt.dur || 120 }); return; }
     if (opt.slide) {
       var sd = Calib.slideData(state, PW, opt.slide);
@@ -773,6 +806,8 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
   var finish = function () {
     var ms = Calib.mesh(state), buf = Calib.pack(ms);
     post({ stage: 7, cylObj: state.view.cyl, crop: state.view.final || state.view.crop, text: 'Listo: paneo ' + (state.rig.pan * 180 / Math.PI).toFixed(1) + '°, inclinacion ' + (state.rig.tilt * 180 / Math.PI).toFixed(1) + '°, error tipico ' + state.matchErr.toFixed(1) + ' px, ' + state.matches.length + ' puntos, ' + state.measured + ' distancias', frac: 1, rig: state.rig, W: true, seam: true }, true);
+    var cr0 = state.view.final || state.view.crop, fs = Calib.preview(state, PW, { stage: 7, rig: state.rig, W: true, seam: true, cylObj: state.view.cyl, crop: cr0 }), fm = Calib.preview(state, PW, { stage: 7, rig: state.rig, W: true, mix: true, cylObj: state.view.cyl, crop: cr0 });
+    self.postMessage({ t: 'final', w: fs.w, h: fs.h, seam: fs.data, mix: fm.data, seamLine: fs.seam }, [fs.data.buffer, fm.data.buffer]);
     self.postMessage({ t: 'done', mesh: buf, OW: ms.head.OW, OH: ms.head.OH }, [buf]);
   };
 }

@@ -53,7 +53,8 @@ This app shows the cameras in about 10 seconds.
     where they look alike, and each row of lens B is taken at the distance of its seam point (B moves only up or
     down a little per row: straight lines stay straight).
   - At the end the show displays everything both lenses see, then cuts the black edges off (animated). "Ver en 3D" shows the shared strip
-    as points at their measured distance (only near real measures), turned with the finger.
+    as points at their measured distance (only near real measures), turned with the finger. "Ver superpuestas" shows both lenses half and half at the end (the seam hides errors; this does not). If the
+    per-row distances do not make the shared part match better than none, none are used.
   - The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels, the seam per row) as one binary
     WebSocket message; the PC keeps it in `panoramica3_<ch>.bin` and only draws it. After moving the PTZ, calibrate
     again ("Calibrar").

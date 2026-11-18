@@ -1440,7 +1440,7 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
  <p class=tip id=cal3t style='margin:6px 0;display:none'>3D de la franja que ven las dos camaras (solo donde midio la distancia). Arrastrar para girar.</p>
  <p class=tip style='margin:6px 0'>Lineas: donde cada lente ve el mismo punto (verde = encaja, rojo = no). Puntos: distancia medida (claro = cerca).</p>
  <div id=calhand style='display:none;margin:10px 0'><button id=calfine style='width:100%;background:#fc0;color:#000;font-weight:bold'>Listo, afinar</button></div>
- <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button><button id=cal3b disabled style='flex:1'>Ver en 3D</button></div>
+ <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button><button id=calmix style='flex:1;display:none'>Ver superpuestas</button><button id=cal3b disabled style='flex:1'>Ver en 3D</button></div>
 </div>
 <div id=pano style='display:none;padding:0 10px 6px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=3>Si</button> <button id=calbtn>Calibrar</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4.</p></div>
 <p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
@@ -1520,7 +1520,11 @@ document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)retur
 var calW=null,calMesh=null,calBox=document.getElementById('cal'),calCv=document.getElementById('calc'),calGo=document.getElementById('calgo');
 function calText(t,f){document.getElementById('calt').textContent=t;if(f!=null)document.getElementById('calp').style.width=Math.round(f*100)+'%'}
 function calOpen(){calBox.style.display='block';calRun()}
-function calRun(){calQ=[];calBusy=false;calMesh=null;calGo.disabled=true;P3=null;c3b.disabled=true;if(c3s.on)c3b.click();calText('Sacando una foto de las camaras 3 y 4...',0);
+// The result, zoomed on the seam, as drawn (seam) or both lenses half and half (shows how well they really fit).
+var calFinal=null,calFinalMix=false;
+document.getElementById('calmix').addEventListener('click',function(){var m=calFinal;if(!m)return;calFinalMix=!calFinalMix;this.textContent=calFinalMix?'Ver costura':'Ver superpuestas';
+ if(c3s.on)c3b.click();calCv.width=m.w;calCv.height=m.h;calCv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(calFinalMix?m.mix:m.seam),m.w,m.h),0,0)});
+function calRun(){calQ=[];calBusy=false;calFinal=null;document.getElementById('calmix').style.display='none';calMesh=null;calGo.disabled=true;P3=null;c3b.disabled=true;if(c3s.on)c3b.click();calText('Sacando una foto de las camaras 3 y 4...',0);
  Promise.all([fetch('/calibsnap?t='+Date.now()).then(function(r){if(!r.ok)throw Error('no pude sacar la foto');return r.blob()}).then(function(bl){return createImageBitmap(bl)}),
   fetch('/calibprev?t='+Date.now()).then(function(r){return r.json()}).catch(function(){return {}})]).then(function(res){var bm=res[0],prev=res[1];
   // each lens as 640x360; shrink in two steps so fine detail does not shimmer
@@ -1555,6 +1559,8 @@ function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
  if(m.t=='error'){calText('No pude: '+m.text);calQ=[];calBusy=false;return}
  if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calNext();return}
  if(m.t=='cloud'){cal3Set(m.pts);calNext();return}
+ if(m.t=='final'){calFinal=m;calFinalMix=false;var bm=document.getElementById('calmix');bm.style.display='';bm.textContent='Ver superpuestas';calNext();return}
+ if(m.kind=='text'){calText(m.text,m.frac);setTimeout(calNext,0);return}
  calText(m.text,m.frac);
  if(m.kind=='slide'){calSlide(m);return}
  if(m.kind=='move'){calMove(m);return}
