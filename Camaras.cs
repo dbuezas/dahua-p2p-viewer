@@ -1436,11 +1436,9 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
  <div style='display:flex;align-items:center;gap:8px'><b style='flex:1'>Calibrar panoramica (dos camaras a 9 cm)</b><button id=calx>Cerrar</button></div>
  <p id=calt style='margin:8px 0;min-height:2.6em'></p><div style='height:6px;background:#333;border-radius:3px'><div id=calp style='height:6px;width:0;background:#fc0;border-radius:3px'></div></div>
  <canvas id=calc style='width:100%;margin-top:10px;background:#111;touch-action:none'></canvas>
- <canvas id=cal3 style='width:100%;margin-top:10px;background:#111;display:none;touch-action:none'></canvas>
- <p class=tip id=cal3t style='margin:6px 0;display:none'>3D de la franja que ven las dos camaras (solo donde midio la distancia). Arrastrar para girar.</p>
- <p class=tip style='margin:6px 0'>Lineas: donde cada lente ve el mismo punto (verde = encaja, rojo = no). Puntos: distancia medida (claro = cerca).</p>
+ <p class=tip style='margin:6px 0'>Lineas: donde cada lente ve el mismo punto (verde = encaja, rojo = no).</p>
  <div id=calhand style='display:none;margin:10px 0'><button id=calfine style='width:100%;background:#fc0;color:#000;font-weight:bold'>Listo, afinar</button></div>
- <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button><button id=calmix style='flex:1;display:none'>Ver superpuestas</button><button id=cal3b disabled style='flex:1'>Ver en 3D</button></div>
+ <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button><button id=calmix style='flex:1;display:none'>Ver superpuestas</button></div>
 </div>
 <div id=pano style='display:none;padding:0 10px 6px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=3>Si</button> <button id=calbtn>Calibrar</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4.</p></div>
 <p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
@@ -1523,8 +1521,8 @@ function calOpen(){calBox.style.display='block';calRun()}
 // The result, zoomed on the seam, as drawn (seam) or both lenses half and half (shows how well they really fit).
 var calFinal=null,calFinalMix=false;
 document.getElementById('calmix').addEventListener('click',function(){var m=calFinal;if(!m)return;calFinalMix=!calFinalMix;this.textContent=calFinalMix?'Ver costura':'Ver superpuestas';
- if(c3s.on)c3b.click();calCv.width=m.w;calCv.height=m.h;calCv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(calFinalMix?m.mix:m.seam),m.w,m.h),0,0)});
-function calRun(){calQ=[];calBusy=false;calFinal=null;document.getElementById('calmix').style.display='none';calMesh=null;calGo.disabled=true;P3=null;c3b.disabled=true;if(c3s.on)c3b.click();calText('Sacando una foto de las camaras 3 y 4...',0);
+ calCv.width=m.w;calCv.height=m.h;calCv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(calFinalMix?m.mix:m.seam),m.w,m.h),0,0)});
+function calRun(){calQ=[];calBusy=false;calFinal=null;document.getElementById('calmix').style.display='none';calMesh=null;calGo.disabled=true;calText('Sacando una foto de las camaras 3 y 4...',0);
  Promise.all([fetch('/calibsnap?t='+Date.now()).then(function(r){if(!r.ok)throw Error('no pude sacar la foto');return r.blob()}).then(function(bl){return createImageBitmap(bl)}),
   fetch('/calibprev?t='+Date.now()).then(function(r){return r.json()}).catch(function(){return {}})]).then(function(res){var bm=res[0],prev=res[1];
   // each lens as 640x360; shrink in two steps so fine detail does not shimmer
@@ -1558,7 +1556,6 @@ function calMsg(e){var m=e.data;
 function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
  if(m.t=='error'){calText('No pude: '+m.text);calQ=[];calBusy=false;return}
  if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calNext();return}
- if(m.t=='cloud'){cal3Set(m.pts);calNext();return}
  if(m.t=='final'){calFinal=m;calFinalMix=false;var bm=document.getElementById('calmix');bm.style.display='';bm.textContent='Ver superpuestas';calNext();return}
  if(m.kind=='text'){calText(m.text,m.frac);setTimeout(calNext,0);return}
  calText(m.text,m.frac);
@@ -1632,30 +1629,6 @@ function calOver(g,m,a){var W=m.w,H=m.h,lw=Math.max(1.5,W/400);
 calGo.addEventListener('click',function(){if(!calMesh||!ws||ws.readyState!=1){calText('Sin conexion con la tele, proba de nuevo');return}
  ws.send(calMesh);calBox.style.display='none';st.pano=3;draw(st)});
 document.getElementById('calre').addEventListener('click',calRun);
-// 3D view of the shared strip: points from lens A at their measured distance, turned with the finger.
-var c3=document.getElementById('cal3'),c3b=document.getElementById('cal3b'),P3=null,c3s={yaw:0,pitch:0,y0:0,cen:[0,0,1],drag:null,t0:0,on:false};
-function cal3Set(p){P3=p;c3b.disabled=!p.length;var n=p.length/6,cx=0,cy=0,cz=0,ds=[];
- for(var i=0;i<n;i++){ds.push(Math.hypot(p[i*6],p[i*6+1],p[i*6+2]))}ds.sort(function(a,b){return a-b});var dm=ds[n>>1]||1;
- for(i=0;i<n;i++){var d=Math.hypot(p[i*6],p[i*6+1],p[i*6+2]);cx+=p[i*6]/d;cy+=p[i*6+1]/d;cz+=p[i*6+2]/d}
- var l=Math.hypot(cx,cy,cz)||1;c3s.cen=[cx/l*dm,cy/l*dm,cz/l*dm];c3s.y0=-Math.atan2(cx,cz);c3s.yaw=0;c3s.pitch=0}
-function cal3Draw(){if(!c3s.on||!P3)return;var W=c3.width=c3.clientWidth*(window.devicePixelRatio||1),H=c3.height=Math.round(W*0.75),g=c3.getContext('2d');
- g.fillStyle='#111';g.fillRect(0,0,W,H);var n=P3.length/6,cen=c3s.cen,D=Math.hypot(cen[0],cen[1],cen[2]),f=W*1.1;
- // auto turn back and forth while nobody drags, so the depth shows
- var yaw=c3s.y0+c3s.yaw+(c3s.drag?0:0.35*Math.sin((Date.now()-c3s.t0)/1500)),pitch=c3s.pitch,cyw=Math.cos(yaw),syw=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
- var zs=new Float32Array(n),xs=new Float32Array(n),ys=new Float32Array(n),ord=new Uint32Array(n);
- for(var i=0;i<n;i++){var x=P3[i*6]-cen[0],y=P3[i*6+1]-cen[1],z=P3[i*6+2]-cen[2];var x2=cyw*x+syw*z,z2=-syw*x+cyw*z;var y3=cp*y-sp*z2,z3=sp*y+cp*z2+D;
-  zs[i]=z3;xs[i]=W/2+f*x2/Math.max(0.05,z3);ys[i]=H/2+f*y3/Math.max(0.05,z3);ord[i]=i}
- ord.sort(function(a,b){return zs[b]-zs[a]});
- // each point covers 2 canvas pixels of the picture: as wide as that patch would be from here (no gaps, no blobs)
- for(var k=0;k<n;k++){i=ord[k];if(zs[i]<0.05)continue;var d=Math.hypot(P3[i*6],P3[i*6+1],P3[i*6+2]),sz=Math.max(1.5,f*0.0028*d/zs[i]);
-  g.fillStyle='rgb('+(P3[i*6+3]|0)+','+(P3[i*6+4]|0)+','+(P3[i*6+5]|0)+')';g.fillRect(xs[i]-sz/2,ys[i]-sz/2,sz,sz)}
- requestAnimationFrame(cal3Draw)}
-c3b.addEventListener('click',function(){c3s.on=!c3s.on;c3.style.display=c3s.on?'block':'none';document.getElementById('cal3t').style.display=c3s.on?'block':'none';calCv.style.display=c3s.on?'none':'block';
- c3b.textContent=c3s.on?'Ver panoramica':'Ver en 3D';c3s.t0=Date.now();if(c3s.on)cal3Draw()});
-c3.addEventListener('pointerdown',function(e){c3.setPointerCapture(e.pointerId);c3s.drag={x:e.clientX,y:e.clientY,yaw:c3s.yaw,pitch:c3s.pitch}});
-c3.addEventListener('pointermove',function(e){var d=c3s.drag;if(!d)return;c3s.yaw=d.yaw+(e.clientX-d.x)/150;c3s.pitch=Math.max(-1.4,Math.min(1.4,d.pitch-(e.clientY-d.y)/150))});
-function c3up(){if(c3s.drag){c3s.yaw+=0.35*Math.sin((Date.now()-c3s.t0)/1500)*0;c3s.drag=null;c3s.t0=Date.now()}}
-c3.addEventListener('pointerup',c3up);c3.addEventListener('pointercancel',c3up);
 document.getElementById('calx').addEventListener('click',function(){calBox.style.display='none';if(calW){calW.terminate();calW=null}});
 connect();
 </script></body></html>";

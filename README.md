@@ -38,7 +38,7 @@ This app shows the cameras in about 10 seconds.
   - Steps, each shown on the phone as it runs: first the person drags lens B's picture until both lenses roughly
     line up (starting from the last calibration), then the phone refines: pan/tilt within ±10° on edge pictures
     (the best few places each tried for real), shared corners (corners of B searched in A), fine pan/tilt (each pair
-    may be at any distance), distances (A's patch fixed, B's slid along its line), seam, frame. A result with few
+    may be at any distance), a distance per band of rows of lens B, seam, frame. A result with few
     fitting pairs or a big typical error is refused instead of sent.
   - The search is shown, always with the best result so far: spread tries of pan, tilt and lens shape (F, K) around
     the hand alignment, scored by how well both lenses' edge pictures match over all the shared part; then small
@@ -52,8 +52,7 @@ This app shows the cameras in about 10 seconds.
   - Each lens is shown unbent from its own place; they only have to agree on the seam, so the seam follows a path
     where they look alike, and each row of lens B is taken at the distance of its seam point (B moves only up or
     down a little per row: straight lines stay straight).
-  - At the end the show displays everything both lenses see, then cuts the black edges off (animated). "Ver en 3D" shows the shared strip
-    as points at their measured distance (only near real measures), turned with the finger. "Ver superpuestas" shows both lenses half and half at the end (the seam hides errors; this does not). If the
+  - The result is shown zoomed on the seam, cut to only picture. "Ver superpuestas" shows both lenses half and half at the end (the seam hides errors; this does not). If the
     per-row distances do not make the shared part match better than none, none are used.
   - The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels, the seam per row) as one binary
     WebSocket message; the PC keeps it in `panoramica3_<ch>.bin` and only draws it. After moving the PTZ, calibrate
