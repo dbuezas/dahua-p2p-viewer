@@ -49,7 +49,10 @@ This app shows the cameras in about 10 seconds.
     little: the turn explains as much as it can and distances only what is left (then what the person lined up by
     eye stays lined up). Then rounds that take turns: shared corners searched again with the current model, the
     direction (pan, tilt) with the lens kept, the lens shape (F, K, held loosely near the camera's known one) with the
-    direction kept; until a round no longer helps (each part can move the best of the other).
+    direction kept, and where lens B sits from lens A (leaning sideways and forward from straight down, loosely held
+    near straight down: the PTZ turns around its own axis, not around the lens, so lens B is not exactly below lens A;
+    the distance itself only scales the metres, the picture does not change with it); until a round no longer helps
+    (each part can move the best of the other).
   - Each lens is shown unbent from its own place; they only have to agree on the seam, so the seam follows a path
     where they look alike, and each row of lens B is taken at the distance of its seam point (B moves only up or
     down a little per row: straight lines stay straight).

@@ -129,7 +129,7 @@ var Calib = (function () {
   function run(st, show) {
     for (var kc in CAM) if (st.o[kc] === undefined) st.o[kc] = CAM[kc];
     // how the fit works (see fitRig): distances cost a little, lens shape fitted with the turn, 2 rounds of matching again
-    var FIT = { lam: 0.05, joint: true, rounds: 2 };
+    var FIT = { lam: 0.05, joint: true, rounds: 2, pos: true };
     for (kc in FIT) if (st.o[kc] === undefined) st.o[kc] = FIT[kc];
     var inp = st.inp, o = st.o, A = inp.A, B = inp.B;
     var D = 2 * Math.PI / 360;
@@ -251,8 +251,10 @@ var Calib = (function () {
     // Score: how well both lenses' edge pictures match over all of the shared part (at infinity), for a pan, tilt
     // and lens shape (F, K) together. First spread tries around the start (the hand alignment), then small steps in
     // each direction that keep only what improves, smaller and smaller (a descent), then the shared pairs.
-    var lensO = function (F, K) { return Object.assign({}, o, { F: F, K: K }); };
-    var rigX = function (x) { return Rig(lensO(x[2], x[3]), x[0], x[1]); };
+    // x = [pan, tilt, F, K, ax, az]: direction of lens B, lens shape, and where lens B sits from lens A (leaning
+    // sideways ax and forward az from straight down: the PTZ turns around its own axis, not around the lens)
+    var lensO = function (F, K, ax, az) { return Object.assign({}, o, { F: F, K: K, ax: ax || 0, az: az || 0 }); };
+    var rigX = function (x) { return Rig(lensO(x[2], x[3], x[4], x[5]), x[0], x[1]); };
     var rayCache = {}, rayKeys = [];
     function raysFor(F, K) {
       var key = F.toFixed(1) + '/' + K.toFixed(4), rs = rayCache[key];
@@ -284,7 +286,7 @@ var Calib = (function () {
       show({ stage: 2, text: text, frac: frac, move: moveOf(st.viewCyl, st.viewCrop, ref, nr), hold: dur + 20, dur: dur });
       shown = nr;
     }
-    var D2 = function (x) { return (x[0] / D).toFixed(1) + '°, ' + (x[1] / D).toFixed(1) + '°, F ' + x[2].toFixed(0) + ', K ' + x[3].toFixed(2); };
+    var D2 = function (x) { return (x[0] / D).toFixed(1) + '°, ' + (x[1] / D).toFixed(1) + '°, F ' + x[2].toFixed(0) + ', K ' + x[3].toFixed(2) + (x[4] || x[5] ? ', B ' + ((x[4] || 0) / D).toFixed(1) + '°/' + ((x[5] || 0) / D).toFixed(1) + '°' : ''); };
     // 1. spread tries (also the rough search's best places), on the soft edge pictures
     var curV = roughX(cur, 0), tried = 0;
     var halton = function (i, b) { var f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; };
@@ -328,9 +330,9 @@ var Calib = (function () {
     // only changes one can see (a twentieth of a degree, or a visible lens change) are shown
     var lastShown = -1, lastX = null;
     var eachFit = function (label) { return function (it, xv) {
-      var x4 = xv.length > 2 ? xv : [xv[0], xv[1], o.F, o.K];
+      var x4 = xv.length > 2 ? xv : [xv[0], xv[1], o.F, o.K, 0, 0];
       if (it % 10 === 0) show({ textOnly: true, text: label + ', iteracion ' + it + ': ' + D2(x4), frac: 0.42 });
-      if (lastX && Math.abs(x4[0] - lastX[0]) < 0.05 * D && Math.abs(x4[1] - lastX[1]) < 0.05 * D && Math.abs(x4[2] - lastX[2]) < 1 && Math.abs(x4[3] - lastX[3]) < 0.003) return;
+      if (lastX && Math.abs(x4[0] - lastX[0]) < 0.05 * D && Math.abs(x4[1] - lastX[1]) < 0.05 * D && Math.abs(x4[2] - lastX[2]) < 1 && Math.abs(x4[3] - lastX[3]) < 0.003 && Math.abs((x4[4] || 0) - (lastX[4] || 0)) < 0.2 * D && Math.abs((x4[5] || 0) - (lastX[5] || 0)) < 0.2 * D) return;
       if (it - lastShown < 3) return;
       lastShown = it; lastX = x4.slice(); showBest(label + ': ' + D2(x4), 0.42, x4, 110);
     }; };
@@ -342,25 +344,27 @@ var Calib = (function () {
       var use = Math.max(6, Math.floor(es.length * 0.9)), e = 0;
       for (var i2 = 0; i2 < use; i2++) e += es[i2] < 2 ? es[i2] * es[i2] : 4 * es[i2] - 4;
       // the lens stays near the camera's known shape (loosely: a picture this narrow says little about it)
-      return e / use + Math.pow((x[2] - o.F) / 20, 2) + Math.pow((x[3] - o.K) / 0.05, 2);
+      return e / use + Math.pow((x[2] - o.F) / 20, 2) + Math.pow((x[3] - o.K) / 0.05, 2) + (o.pos ? Math.pow((x[4] || 0) / 0.15, 2) + Math.pow((x[5] || 0) / 0.15, 2) : 0);
     }
     function part(x, ms, which, label) {
-      var idx = which === 'dir' ? [0, 1] : [2, 3], stp = which === 'dir' ? [0.5 * D, 0.3 * D] : [6, 0.02];
+      var idx = which === 'dir' ? [0, 1] : which === 'lens' ? [2, 3] : [4, 5], stp = which === 'dir' ? [0.5 * D, 0.3 * D] : which === 'lens' ? [6, 0.02] : [0.05, 0.05];
       var f = nelder(function (v) { var y = x.slice(); y[idx[0]] = v[0]; y[idx[1]] = v[1]; return pairCost(y, ms); }, [x[idx[0]], x[idx[1]]], stp, 60, function (it, v) {
         var y = x.slice(); y[idx[0]] = v[0]; y[idx[1]] = v[1]; eachFit(label)(it, y);
       });
       var y2 = x.slice(); y2[idx[0]] = f.x[0]; y2[idx[1]] = f.x[1]; return { x: y2, v: f.v };
     }
-    var xb = [win.t.pan, win.t.tilt, win.t.F || o.F, win.t.K != null ? win.t.K : o.K], vb = pairCost(xb, matches);
+    var xb = [win.t.pan, win.t.tilt, win.t.F || o.F, win.t.K != null ? win.t.K : o.K, 0, 0], vb = pairCost(xb, matches);
     for (var round = 1; round <= 5; round++) {
       if (round > 1) { var ms2 = findMatches(rigX(xb), 800, function (ms, n, tot) { show({ textOnly: true, text: 'Vuelta ' + round + ': buscando puntos en comun ' + ms.length + ' (de ' + n + ')', frac: 0.42 }); }); if (ms2.length >= 8) { matches = ms2; vb = pairCost(xb, matches); } }
       var before = vb;
       lastShown = -1; var pd = part(xb, matches, 'dir', 'Vuelta ' + round + ', ' + matches.length + ' puntos: direccion'); if (pd.v < vb) { xb = pd.x; vb = pd.v; }
       lastShown = -1; var pl = part(xb, matches, 'lens', 'Vuelta ' + round + ', ' + matches.length + ' puntos: lente'); if (pl.v < vb) { xb = pl.x; vb = pl.v; }
+      if (o.pos) { lastShown = -1; var pp = part(xb, matches, 'pos', 'Vuelta ' + round + ', ' + matches.length + ' puntos: posicion'); if (pp.v < vb) { xb = pp.x; vb = pp.v; } }
       show({ textOnly: true, text: 'Vuelta ' + round + ': costo ' + before.toFixed(2) + ' -> ' + vb.toFixed(2), frac: 0.44 });
       if (round > 1 && vb > before * 0.99) break;   // this round did not help: done
     }
     var gF = rigX(xb), esF = matches.map(function (m) { return epi(gF, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
+    st.fitX = xb;
     fr2 = { g: gF, x: xb, good: esF.filter(function (e) { return e < 2.5; }).length, med: esF[esF.length >> 1] };
     var g = fr2.g;
     st.rig = g; st.matchErr = fr2.med; st.matches = matches;
