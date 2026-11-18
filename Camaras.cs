@@ -143,7 +143,7 @@ class CamForm : Form
                 else if (f.Length >= 5)
                 {
                     var c = new PanoCal { Mode = int.Parse(f[1]), C1 = nums(2, 3) };
-                    if (c.Mode == 2 && f.Length >= 14) c.C2 = nums(5, 9);
+                    if (f.Length >= 14) c.C2 = nums(5, f.Length - 5);   // 9 numbers, then the fine bending (kept in mode 1 too)
                     if (c.Mode == 1 || c.C2 != null) pano[int.Parse(f[0])] = c;
                 }
             }
@@ -1016,18 +1016,22 @@ class CamForm : Form
         foreach (var t0 in todo)
         {
             var t = t0; long play = t.Play;
+            // The last advanced result (lens shape and turn) helps the next fit, also after mode 1 was used.
+            PanoCal old; pano.TryGetValue(t.Ch, out old); double[] prev = old != null ? old.C2 : null;
             new Thread(() =>
             {
                 double[] c1 = null, c2 = null; string err = null;
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 try
                 {
-                    string f; lock (snapLock) f = CaptureFile(play, "camaras_pano");
+                    // Right after the squares were built again the video may not have started yet: keep trying for 8 s.
+                    string f = null;
+                    for (int tries = 0; f == null && tries < 16; tries++) { if (tries > 0) Thread.Sleep(500); lock (snapLock) f = CaptureFile(play, "camaras_pano"); }
                     if (f == null) err = "no pude sacar la foto";
                     else using (var src = new Bitmap(f))
                     {
                         c1 = Calibrate(src, out err);
-                        if (c1 != null && mode == 2) c2 = Calibrate2(src, c1, out err);
+                        if (c1 != null && mode == 2) c2 = Calibrate2(src, c1, prev, out err);
                     }
                 }
                 catch (Exception ex) { err = ex.Message; }
@@ -1035,7 +1039,7 @@ class CamForm : Form
                 {
                     panoBusy = false;
                     if (c1 == null || (mode == 2 && c2 == null)) { panoMsg = "No pude armar la panoramica: " + err; Log("panoramica canal " + t.Ch + ": " + err); UpdateState(); return; }
-                    pano[t.Ch] = new PanoCal { Mode = mode, C1 = c1, C2 = c2 }; SavePano(); panoMsg = "";
+                    pano[t.Ch] = new PanoCal { Mode = mode, C1 = c1, C2 = c2 ?? prev }; SavePano(); panoMsg = "";
                     Log("panoramica " + mode + " canal " + t.Ch + " en " + sw.ElapsedMilliseconds + " ms: " + Nums(c1) + (c2 != null ? " | " + Nums(c2) : ""));
                     Rebuild();
                 });
@@ -1139,6 +1143,13 @@ class CamForm : Form
                         double ang = c[5] + (ox + 0.5) / OW * (c[6] - c[5]), hgt = c[7] + (oy + 0.5) / OH * (c[8] - c[7]);
                         ray[0] = Math.Sin(ang); ray[1] = hgt; ray[2] = Math.Cos(ang);
                         if (lens.Project(ray, q)) { ax[ox] = q[0]; ay[ox] = q[1]; } else ax[ox] = -1e9;
+                        // Lens B is taken a little shifted here (fine bending, see Field).
+                        double du, dv; FieldAt(c, (ox + 0.5) / OW, (oy + 0.5) / OH, out du, out dv);
+                        if (du != 0 || dv != 0)
+                        {
+                            double angB = ang + du * (c[6] - c[5]), hgtB = hgt + dv * (c[8] - c[7]);
+                            ray[0] = Math.Sin(angB); ray[1] = hgtB; ray[2] = Math.Cos(angB);
+                        }
                         lens.ToB(ray, rb);
                         if (lens.Project(rb, q)) { bx[ox] = q[0]; by[ox] = q[1]; } else bx[ox] = -1e9;
                     }
@@ -1310,7 +1321,7 @@ class CamForm : Form
     //  2. Fit F, K, yaw, pitch, roll so B's points land on A's (Nelder-Mead, several starts, robust error).
     //  3. Cylinder: angles from A's left edge to B's right edge (or the other way), heights where both are complete.
     // Returns {F/width, K, yaw, pitch, roll, a0, a1, h0, h1}, or null with the reason.
-    static double[] Calibrate2(Bitmap src, double[] c1, out string err)
+    static double[] Calibrate2(Bitmap src, double[] c1, double[] prev, out string err)
     {
         err = null;
         int W = src.Width, H = src.Height / 2;
@@ -1366,15 +1377,18 @@ class CamForm : Form
         Func<double[], double> cost = pr =>
         {
             if (pr[0] < 0.15 * W || pr[0] > 3 * W || pr[1] < -0.4 || pr[1] > 0.5) return 1e9;
-            var L = new Lens(pr[0], pr[1], pr[2], pr[3], pr[4], W, H); double e = 0;
-            foreach (var m in ms)
+            var L = new Lens(pr[0], pr[1], pr[2], pr[3], pr[4], W, H);
+            var ds = new double[ms.Count];
+            for (int i = 0; i < ms.Count; i++)
             {
-                L.Unproject(m[2], m[3], rb); L.ToA(rb, ra);
-                if (!L.Project(ra, q)) { e += 1000; continue; }
-                double d = Math.Sqrt((q[0] - m[0]) * (q[0] - m[0]) + (q[1] - m[1]) * (q[1] - m[1]));
-                e += d < 3 ? d * d : 6 * d - 9;
+                var m = ms[i]; L.Unproject(m[2], m[3], rb); L.ToA(rb, ra);
+                ds[i] = L.Project(ra, q) ? Math.Sqrt((q[0] - m[0]) * (q[0] - m[0]) + (q[1] - m[1]) * (q[1] - m[1])) : 1000;
             }
-            return e / ms.Count;
+            // Only the best 70% count: points on near things (a ladder close to the camera) cannot fit, because the
+            // lenses are a few cm apart. The fine bending takes care of them afterwards.
+            Array.Sort(ds); int use = Math.Max(8, ds.Length * 7 / 10); double e = 0;
+            for (int i = 0; i < use; i++) e += ds[i] < 3 ? ds[i] * ds[i] : 6 * ds[i] - 9;
+            return e / use;
         };
         double[] bestP = null; double bestV = double.MaxValue;
         foreach (var f0 in new[] { 250.0, 350, 500 })
@@ -1385,10 +1399,20 @@ class CamForm : Form
                     double v; var pr = NelderMead(cost, new[] { f, k0, yaw0, 0, 0 }, new[] { 40.0 * W / 640, 0.05, 0.1, 0.03, 0.03 }, 1500, out v);
                     if (v < bestV) { bestV = v; bestP = pr; }
                 }
+        if (prev != null && prev.Length >= 5)
+        {
+            // Start from the last result; also try with its lens shape kept as it was (only the turn is fitted).
+            double v; var pr = NelderMead(cost, new[] { prev[0] * W, prev[1], prev[2], prev[3], prev[4] }, new[] { 20.0 * W / 640, 0.03, 0.05, 0.02, 0.02 }, 1500, out v);
+            if (v < bestV) { bestV = v; bestP = pr; }
+            double fk = prev[0] * W, kk = prev[1];
+            Func<double[], double> turn = r => cost(new[] { fk, kk, r[0], r[1], r[2] });
+            var pt = NelderMead(turn, new[] { prev[2], prev[3], prev[4] }, new[] { 0.05, 0.02, 0.02 }, 1000, out v);
+            if (v < bestV * 1.1) { bestV = Math.Min(v, bestV); bestP = new[] { fk, kk, pt[0], pt[1], pt[2] }; }
+        }
         var lens = new Lens(bestP[0], bestP[1], bestP[2], bestP[3], bestP[4], W, H);
         var errs = new List<double>();
         foreach (var m in ms) { lens.Unproject(m[2], m[3], rb); lens.ToA(rb, ra); if (lens.Project(ra, q)) errs.Add(Math.Sqrt((q[0] - m[0]) * (q[0] - m[0]) + (q[1] - m[1]) * (q[1] - m[1]))); }
-        errs.Sort(); double med = errs.Count > 0 ? errs[errs.Count / 2] : 99;
+        errs.Sort(); double med = errs.Count > 0 ? errs[errs.Count * 35 / 100] : 99;   // middle of the best 70%
         Log("panoramica 2: ajuste " + Nums(bestP) + ", error medio " + med.ToString("0.0") + " px");
         if (med > 6 * W / 640.0) { err = "no pude ajustar la forma de las lentes (error " + med.ToString("0.0") + " px)"; return null; }
         // 3. cylinder range: angles of the left and right edges of both pictures (middle row)
@@ -1421,7 +1445,128 @@ class CamForm : Form
         for (int gy = 0; gy < GH; ) { if (!good[gy]) { gy++; continue; } int e = gy; while (e < GH && good[e]) e++; if (e - gy > bl) { bl = e - gy; bs = gy; } gy = e; }
         if (bl < 10) { err = "la panoramica queda demasiado finita"; return null; }
         double h0 = -hs + 2 * hs * bs / (GH - 1), h1 = -hs + 2 * hs * (bs + bl - 1) / (GH - 1);
-        return new[] { bestP[0] / W, bestP[1], bestP[2], bestP[3], bestP[4], a0, a1, h0, h1 };
+        var basic = new[] { bestP[0] / W, bestP[1], bestP[2], bestP[3], bestP[4], a0, a1, h0, h1 };
+        var field = Field(A, B, W, H, lens, a0, a1, h0, h1);
+        var all = new double[basic.Length + field.Length]; basic.CopyTo(all, 0); field.CopyTo(all, basic.Length);
+        return all;
+    }
+
+    // Fine bending for the advanced panorama. The lenses are a few cm apart, so near things (the table edge) land in
+    // slightly different places in each lens; the lens model above cannot fix that. So: show both lenses on the
+    // cylinder, measure the leftover shift of lens B at many points of the shared strip (patch search), clean the
+    // measures, and fill the rest of the picture smoothly so the shift fades to zero over lens B's own part.
+    // Returns {NX, NY, gap across, gap down, du[NX*NY], dv[NX*NY]}: a grid over the picture; gaps and shifts as parts
+    // of the picture's width and height.
+    static double[] Field(double[] A, double[] B, int W, int H, Lens lens, double a0, double a1, double h0, double h1)
+    {
+        int ow = (int)(lens.F * (a1 - a0)), oh = (int)(ow * (h1 - h0) / (a1 - a0));
+        var ca = new double[ow * oh]; var cb = new double[ow * oh]; var va = new bool[ow * oh]; var vb = new bool[ow * oh];
+        var ray = new double[3]; var rb = new double[3]; var q = new double[2];
+        for (int y = 0; y < oh; y++) for (int x = 0; x < ow; x++)
+        {
+            double ang = a0 + (x + 0.5) / ow * (a1 - a0), hgt = h0 + (y + 0.5) / oh * (h1 - h0);
+            ray[0] = Math.Sin(ang); ray[1] = hgt; ray[2] = Math.Cos(ang);
+            int k = y * ow + x;
+            if (lens.Project(ray, q) && q[0] >= 0 && q[0] < W - 1 && q[1] >= 0 && q[1] < H - 1) { ca[k] = Bilinear(A, W, q[0], q[1]); va[k] = true; }
+            lens.ToB(ray, rb);
+            if (lens.Project(rb, q) && q[0] >= 0 && q[0] < W - 1 && q[1] >= 0 && q[1] < H - 1) { cb[k] = Bilinear(B, W, q[0], q[1]); vb[k] = true; }
+        }
+        int step = Math.Max(8, ow / 90), P = 8, S = Math.Max(10, ow / 60);
+        int NX = (ow - 1) / step + 1, NY = (oh - 1) / step + 1, N = NX * NY;
+        var du = new double[N]; var dv = new double[N]; var known = new bool[N]; var zero = new bool[N];
+        Func<bool[], int, int, bool> ok = (m, x, y) => x >= 0 && y >= 0 && x < ow && y < oh && m[y * ow + x];
+        int measured = 0; double maxShift = 0;
+        for (int gy = 0; gy < NY; gy++) for (int gx = 0; gx < NX; gx++)
+        {
+            int px = gx * step, py = gy * step, R = P + S;
+            if (!ok(va, px - P, py - P) || !ok(va, px + P, py + P) || !ok(va, px - P, py + P) || !ok(va, px + P, py - P)) continue;
+            if (!ok(vb, px - R, py - R) || !ok(vb, px + R, py + R) || !ok(vb, px - R, py + R) || !ok(vb, px + R, py - R)) continue;
+            double sa = 0, saa = 0; int n = 0;
+            for (int j = -P; j <= P; j++) for (int i = -P; i <= P; i++) { double a = ca[(py + j) * ow + px + i]; sa += a; saa += a * a; n++; }
+            double ma = sa / n, vA = saa / n - ma * ma;
+            if (vA < 40) continue;   // plain wall: nothing to measure
+            double best = -2, second = -2; int bx = 0, by = 0;
+            for (int dy = -S; dy <= S; dy++) for (int dx = -S; dx <= S; dx++)
+            {
+                double sb = 0, sbb = 0, sab = 0;
+                for (int j = -P; j <= P; j += 2) for (int i = -P; i <= P; i += 2)
+                {
+                    double a = ca[(py + j) * ow + px + i] - ma, b = cb[(py + dy + j) * ow + px + dx + i];
+                    sb += b; sbb += b * b; sab += a * b;
+                }
+                int m2 = (P + 1) * (P + 1);   // every second pixel
+                double vB = sbb / m2 - (sb / m2) * (sb / m2);
+                double v = vB > 1 ? (sab / m2) / Math.Sqrt(vA * vB) : -1;
+                bool far = Math.Abs(dx - bx) + Math.Abs(dy - by) > 2;
+                if (v > best) { if (far) second = best; best = v; bx = dx; by = dy; }
+                else if (v > second && far) second = v;
+            }
+            if (best < 0.7 || best - second < 0.03 || Math.Abs(bx) == S || Math.Abs(by) == S) continue;
+            int g = gy * NX + gx; known[g] = true; du[g] = bx; dv[g] = by; measured++;
+        }
+        // Clean: a measure far from the middle value of its neighbours is wrong (moving thing, repeated pattern).
+        var keep = new bool[N];
+        for (int gy = 0; gy < NY; gy++) for (int gx = 0; gx < NX; gx++)
+        {
+            int g = gy * NX + gx; if (!known[g]) continue;
+            var lx = new List<double>(); var ly = new List<double>();
+            for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++)
+            {
+                int x = gx + i, y = gy + j; if (x < 0 || y < 0 || x >= NX || y >= NY || !known[y * NX + x]) continue;
+                lx.Add(du[y * NX + x]); ly.Add(dv[y * NX + x]);
+            }
+            lx.Sort(); ly.Sort();
+            double mx = lx[lx.Count / 2], my = ly[ly.Count / 2];
+            if (lx.Count >= 3 && Math.Abs(du[g] - mx) <= 3 && Math.Abs(dv[g] - my) <= 3) { keep[g] = true; maxShift = Math.Max(maxShift, Math.Max(Math.Abs(mx), Math.Abs(my))); }
+        }
+        // Where only lens B shows, far enough from the shared strip, the bending is zero.
+        for (int gy = 0; gy < NY; gy++)
+        {
+            int lo = int.MaxValue, hi = -1;
+            for (int gx = 0; gx < NX; gx++) { int k = Math.Min(gy * step, oh - 1) * ow + Math.Min(gx * step, ow - 1); if (va[k] && vb[k]) { lo = Math.Min(lo, gx); hi = gx; } }
+            int fade = Math.Max(3, NX / 5);
+            for (int gx = 0; gx < NX; gx++)
+            {
+                int k = Math.Min(gy * step, oh - 1) * ow + Math.Min(gx * step, ow - 1);
+                if (vb[k] && !va[k] && (hi < 0 || gx > hi + fade || gx < lo - fade)) zero[gy * NX + gx] = true;
+            }
+        }
+        // Fill: each free point becomes the average of its neighbours, many times (smooth surface through the measures).
+        for (int g = 0; g < N; g++) if (!keep[g]) { du[g] = 0; dv[g] = 0; }
+        for (int it = 0; it < 3000; it++)
+            for (int gy = 0; gy < NY; gy++) for (int gx = 0; gx < NX; gx++)
+            {
+                int g = gy * NX + gx; if (keep[g] || zero[g]) continue;
+                double sx = 0, sy = 0; int c = 0;
+                if (gx > 0) { sx += du[g - 1]; sy += dv[g - 1]; c++; }
+                if (gx < NX - 1) { sx += du[g + 1]; sy += dv[g + 1]; c++; }
+                if (gy > 0) { sx += du[g - NX]; sy += dv[g - NX]; c++; }
+                if (gy < NY - 1) { sx += du[g + NX]; sy += dv[g + NX]; c++; }
+                du[g] = sx / c; dv[g] = sy / c;
+            }
+        int kept = 0; foreach (var b in keep) if (b) kept++;
+        Log("panoramica 2: ajuste fino " + measured + " medidas, " + kept + " buenas, corrimiento maximo " + maxShift.ToString("0") + " px, grilla " + NX + "x" + NY);
+        var r = new double[4 + 2 * N]; r[0] = NX; r[1] = NY; r[2] = (double)step / ow; r[3] = (double)step / oh;
+        for (int g = 0; g < N; g++) { r[4 + g] = du[g] / ow; r[4 + N + g] = dv[g] / oh; }
+        return r;
+    }
+
+    static double Bilinear(double[] img, int w, double x, double y)
+    {
+        int x0 = (int)x, y0 = (int)y; double fx = x - x0, fy = y - y0; int k = y0 * w + x0;
+        return (img[k] * (1 - fx) + img[k + 1] * fx) * (1 - fy) + (img[k + w] * (1 - fx) + img[k + w + 1] * fx) * fy;
+    }
+
+    // Fine bending at a point of the picture (u, v from 0 to 1): shift of lens B as parts of the picture size.
+    static void FieldAt(double[] c, double u, double v, out double du, out double dv)
+    {
+        du = dv = 0;
+        if (c.Length < 13) return;
+        int NX = (int)c[9], NY = (int)c[10], N = NX * NY; if (c.Length < 13 + 2 * N || NX < 2 || NY < 2) return;
+        double gx = Math.Max(0, Math.Min(NX - 1.001, u / c[11])), gy = Math.Max(0, Math.Min(NY - 1.001, v / c[12]));
+        int x0 = (int)gx, y0 = (int)gy; double fx = gx - x0, fy = gy - y0; int k = y0 * NX + x0;
+        Func<int, double> at = o => (c[o + k] * (1 - fx) + c[o + k + 1] * fx) * (1 - fy) + (c[o + k + NX] * (1 - fx) + c[o + k + NX + 1] * fx) * fy;
+        du = at(13); dv = at(13 + N);
     }
 
     static double[] NelderMead(Func<double[], double> fn, double[] x0, double[] step, int iters, out double bestV)

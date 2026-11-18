@@ -29,8 +29,10 @@ This app shows the cameras in about 10 seconds.
   of step. About half a CPU core on the sub stream, almost one in HD (i7 Q720).
   - Simple: size and place of lens B over lens A (search on edge images), hard seam in the middle of the shared strip.
   - Advanced: corners of B matched in A, then the lens shape (ray angle t lands at radius F*(t + K*t^3)) and the
-    turn of lens B are fitted to them (Nelder-Mead); shown on a cylinder with a soft seam. Very close things can
-    show twice (the lenses are a few cm apart).
+    turn of lens B are fitted to them (Nelder-Mead); shown on a cylinder with a soft seam. The fit uses the best 70% of the points and starts from the last
+    result (the lens shape does not change). The lenses are a few cm apart, so near things (a table edge) land in
+    different places: the leftover shift is measured all over the shared strip and lens B is bent locally to fit,
+    fading out over its own part (fine bending grid kept in `panoramica.txt`).
   If the lenses no longer see a shared strip, the phone says so.
 - When it cannot connect, it shows in big letters what to try: the other Wi-Fi network, or restarting the router.
 - Phone remote: a small web page on port 8080 (`puerto_web` in `camaras.ini`, 0 = off), only for the local network.
