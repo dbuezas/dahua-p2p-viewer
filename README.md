@@ -26,39 +26,28 @@ This app shows the cameras in about 10 seconds.
 - A split camera is played ONCE in every mode: the app takes the decoded frames and draws each half (or the
   panorama) itself, at the size it shows on screen, so both halves always show the same moment.
   Switching between halves and panorama keeps that video running and does not touch the other cameras.
-- Panorama of a split camera (phone: "Camaras 3 y 4 juntas: No / Simple / Avanzada"). It is worked out again each time it
-  is turned on, from a picture taken then (the moving lens may point elsewhere). Both lenses come from ONE decoded
-  stream (SDK decoded-frame callback, I420), pasted with a lookup table and drawn by the app, so they never get out
-  of step. About half a CPU core on the sub stream, almost one in HD (i7 Q720).
-  - Simple: size and place of lens B over lens A (search on edge images), hard seam in the middle of the shared strip.
-  - Advanced: corners of B matched in A, then the lens shape (ray angle t lands at radius F*(t + K*t^3)) and the
-    turn of lens B are fitted to them (Nelder-Mead); shown on a cylinder with a soft seam. The fit uses the best 70% of the points and starts from the last
-    result (the lens shape does not change). The lenses are a few cm apart, so near things (a table edge) land in
-    different places: the leftover shift is measured all over the shared strip and both lenses are bent locally
-    to fit (each takes half: A minus half, B plus half), fading out over each lens's own part (fine bending grid kept in `panoramica.txt`). Long straight edges count too
-    (the smallest shift that fits). The seam follows the path where both lenses look most alike (dynamic
-    programming, on edge strength so a lighter lens does not matter). With few shared points the known lens shape is kept and only the turn is fitted.
-    Nothing in it assumes a particular room: the only fixed knowledge is the camera itself (one lens above the
-    other, so the leftover shift is mostly up-down). The bending never folds the picture (neighbouring grid points
-    may differ by at most half their distance), and where it asks for a pixel outside a lens the lens is taken
-    unbent there.
-    Test without the TV: `Camaras.exe --pano picture.jpg out [last-numbers.txt]` writes both panoramas and the grid.
-  - Física (mode 3, worked out on the phone, `calib.js` in a Web Worker, built into the exe): the two lenses as two
-    real cameras 9 cm apart (lens B under lens A, on the PTZ motor). Fixed for the camera: lens shape and how lens A
-    sits on the body (found once from three pictures taken at different times). Per calibration only the pan and tilt
-    of lens B, and one number per grid point: the distance of what is there; a point can only slide along its line
-    between the lenses, so the picture cannot bend in ways no real scene does. Steps, each shown on the phone as it
-    runs: rough pan/tilt (edge pictures, wide search, so moving the PTZ is fine), shared corners, fine pan/tilt,
-    distances (A's patch fixed, B's slid along its line), seam, frame. Each lens is shown unbent from its own place;
-    they only have to agree on the seam, so the seam follows a path where they look alike, and each row of lens B is
-    taken at the distance of its seam point (B moves only up or down a little per row: straight lines stay straight).
-    The rough search can be fooled by a near thing both lenses see (a ladder), so its best few directions are each
-    tried for real (shared corners and fine fit) and the one where the most pairs fit wins; a result with few
-    fitting pairs or a big typical error is refused instead of sent. "Ver en 3D" shows the shared strip as points at
-    their measured distance (only near real measures), turned with the finger. A slider sets how much to cut: from everything
-    (black corners) to only picture. The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels,
-    the seam per row) as one binary WebSocket message; the PC keeps it in `panoramica3_<ch>.bin` and only draws it.
-  If the lenses no longer see a shared strip, the phone says so.
+- Panorama of a split camera (phone: "Camaras 3 y 4 juntas: No / Si / Calibrar"). Worked out on the phone
+  (`calib.js` in a Web Worker, built into the exe) and drawn by the PC. Both lenses come from ONE decoded stream
+  (SDK decoded-frame callback, I420), pasted with a lookup table and drawn by the app, so they never get out of step.
+  About half a CPU core on the sub stream, almost one in HD (i7 Q720).
+  - The model: the two lenses are two real cameras 9 cm apart (lens B under lens A, on the PTZ motor). Fixed for the
+    camera: lens shape (ray angle t lands at radius F*(t + K*t^3)) and how lens A sits on the body (found once from
+    three pictures taken at different times). Per calibration only the pan and tilt of lens B, and the distance of
+    things in the shared strip; a point can only slide along its line between the lenses, so the picture cannot bend
+    in ways no real scene does. Nothing assumes a particular room.
+  - Steps, each shown on the phone as it runs: first the person drags lens B's picture until both lenses roughly
+    line up (starting from the last calibration), then the phone refines: pan/tilt within ±10° on edge pictures
+    (the best few places each tried for real), shared corners (corners of B searched in A), fine pan/tilt (each pair
+    may be at any distance), distances (A's patch fixed, B's slid along its line), seam, frame. A result with few
+    fitting pairs or a big typical error is refused instead of sent.
+  - Each lens is shown unbent from its own place; they only have to agree on the seam, so the seam follows a path
+    where they look alike, and each row of lens B is taken at the distance of its seam point (B moves only up or
+    down a little per row: straight lines stay straight).
+  - A slider sets how much to cut: from everything (black corners) to only picture. "Ver en 3D" shows the shared strip
+    as points at their measured distance (only near real measures), turned with the finger.
+  - The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels, the seam per row) as one binary
+    WebSocket message; the PC keeps it in `panoramica3_<ch>.bin` and only draws it. After moving the PTZ, calibrate
+    again ("Calibrar").
   The panorama card on the phone shows, as a curiosity, the panorama with a straight grid of each lens bent the way the
   panorama bends it (light blue: camera 3, orange: camera 4).
 - When it cannot connect, it shows in big letters what to try: the other Wi-Fi network, or restarting the router.

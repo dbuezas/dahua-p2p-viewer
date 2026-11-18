@@ -144,14 +144,24 @@ var Calib = (function () {
       return (sab / n - sa / n * sb / n) / Math.sqrt(va * vb) * Math.sqrt(n / 400);   // like a z-score: same fit over more pixels is surer
     }
     if (o.debugRough) o.debugRough(rough);
-    var cand = [], best = { v: -2, pan: 0, tilt: 0 };
-    for (var pd = -100; pd <= 100; pd += 2) {
-      for (var td = -36; td <= 36; td += 2) { var v = rough(pd * D, td * D, 0); cand.push({ v: v, pan: pd * D, tilt: td * D }); if (v > best.v) best = cand[cand.length - 1]; }
-      if (pd % 10 === 0) show({ stage: 1, text: 'Buscando hacia donde mira la camara 4: ' + Math.round((pd + 100) / 2) + '%', frac: (pd + 100) / 200 * 0.15, rig: Rig(o, best.pan, best.tilt), mix: true });
+    var cand = [], best = { v: -2, pan: 0, tilt: 0 }, tops = [];
+    if (o.start) {
+      // The person lined the lenses up roughly by hand: search only around there (±10°), keep that place too.
+      for (var pd2 = -10; pd2 <= 10; pd2++) for (var td2 = -10; td2 <= 10; td2++) {
+        var pp = o.start.pan + pd2 * D, tt = o.start.tilt + td2 * D; cand.push({ v: rough(pp, tt, 0), pan: pp, tilt: tt });
+      }
+      cand.sort(function (a, b) { return b.v - a.v; });
+      tops.push({ v: 0, pan: o.start.pan, tilt: o.start.tilt });
+      cand.forEach(function (c) { if (tops.length < 5 && tops.every(function (t) { return Math.abs(t.pan - c.pan) > 3 * D || Math.abs(t.tilt - c.tilt) > 3 * D; })) tops.push(c); });
+      show({ stage: 1, text: 'Afinando cerca de donde la pusiste', frac: 0.1, rig: Rig(o, o.start.pan, o.start.tilt), mix: true });
+    } else {
+      for (var pd = -100; pd <= 100; pd += 2) {
+        for (var td = -36; td <= 36; td += 2) { var v = rough(pd * D, td * D, 0); cand.push({ v: v, pan: pd * D, tilt: td * D }); if (v > best.v) best = cand[cand.length - 1]; }
+        if (pd % 10 === 0) show({ stage: 1, text: 'Buscando hacia donde mira la camara 4: ' + Math.round((pd + 100) / 2) + '%', frac: (pd + 100) / 200 * 0.15, rig: Rig(o, best.pan, best.tilt), mix: true });
+      }
+      cand.sort(function (a, b) { return b.v - a.v; });
+      cand.forEach(function (c) { if (tops.length < 10 && tops.every(function (t) { return Math.abs(t.pan - c.pan) > 5 * D || Math.abs(t.tilt - c.tilt) > 5 * D; })) tops.push(c); });
     }
-    cand.sort(function (a, b) { return b.v - a.v; });
-    var tops = [];
-    cand.forEach(function (c) { if (tops.length < 10 && tops.every(function (t) { return Math.abs(t.pan - c.pan) > 5 * D || Math.abs(t.tilt - c.tilt) > 5 * D; })) tops.push(c); });
     // each of the few best places, refined on the sharper pictures
     tops = tops.map(function (c0) {
       var b0 = { v: rough(c0.pan, c0.tilt, 1), pan: c0.pan, tilt: c0.tilt };
@@ -160,7 +170,7 @@ var Calib = (function () {
         for (var pi = -2; pi <= 2; pi++) for (var ti = -2; ti <= 2; ti++) { var pan = bb.pan + pi * s * D, tilt = bb.tilt + ti * s * D, vv = rough(pan, tilt, 1); if (vv > b0.v) b0 = { v: vv, pan: pan, tilt: tilt }; }
       });
       return b0;
-    }).filter(function (t) { return t.v >= 0.5; }).sort(function (a, b) { return b.v - a.v; });
+    }).filter(function (t) { return o.start || t.v >= 0.5; }).sort(function (a, b) { return b.v - a.v; });
     if (!tops.length) throw new Error('las dos lentes no parecen ver la misma parte (la camara 4 mira muy lejos de la 3)');
 
     // -- 2. shared corners (corners of B, each searched in A near where a pan/tilt puts it) --
@@ -453,7 +463,11 @@ var Calib = (function () {
   // Before the frame exists: the whole cylinder of the rough/fine rig at infinity.
   function preview(st, PW, opt) {
     var g = opt.rig, inp = st.inp, c = st.cyl, fr = opt.frame || null;
-    if (!c || opt.stage < 4) { var keep = st.rig; st.rig = g; cylinder(st); c = st.cyl; st.rig = keep || g; }
+    if (opt.viewCyl) {
+      // hand alignment: one fixed, wider canvas, so lens A stays put while lens B is dragged around
+      if (!st.viewCyl) { var keep0 = st.rig; st.rig = g; cylinder(st); var vc = st.cyl, m = 0.35; st.viewCyl = { a0: vc.a0 - m, a1: vc.a1 + m, Fc: vc.Fc, h0: vc.h0 - 0.15, CW: Math.round(vc.CW + 2 * m * vc.Fc), CH: Math.round(vc.CH + 0.3 * vc.Fc) }; st.cyl = null; st.rig = keep0; }
+      c = st.viewCyl;
+    } else if (!c || opt.stage < 4) { var keep = st.rig; st.rig = g; cylinder(st); c = st.cyl; st.rig = keep || g; }
     var OW = fr ? fr.OW : c.CW, OH = fr ? fr.OH : c.CH, s = OW / PW, PH = Math.max(1, Math.round(OH / s));
     var img = new Uint8ClampedArray(PW * PH * 4), p = [0, 0], r = [0, 0, 0], qa = [0, 0], qb = [0, 0];
     for (var y = 0; y < PH; y++) for (var x = 0; x < PW; x++) {
@@ -483,7 +497,7 @@ var Calib = (function () {
     }
     var dots = [];
     if (opt.wdots && !fr) { var wd = opt.wdots; for (var i = 0; i < wd.known.length; i++) if (wd.known[i]) dots.push((i % wd.NX) * wd.step / s, Math.floor(i / wd.NX) * wd.step / s, wd.wv[i]); }
-    return { w: PW, h: PH, data: img, lines: lines, dots: dots };
+    return { w: PW, h: PH, data: img, lines: lines, dots: dots, rpp: s / c.Fc };   // rpp: radians per preview pixel
   }
   function colAt(img, x, y, ch) {
     var x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, k = (y0 * LW + x0) * 4 + ch;
@@ -503,7 +517,7 @@ var Calib = (function () {
     }
     return new Float32Array(out);
   }
-  return { run: run, cloud: cloud, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
+  return { CAM: CAM, run: run, cloud: cloud, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
 })();
 
 // ---- Web Worker side: the page sends the pictures; pictures of the work go back as it runs. ----
@@ -517,9 +531,15 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
   self.onmessage = function (e) {
     var m = e.data;
     try {
-      if (m.t === 'start') {
-        PW = m.pw || 720;
-        state = { inp: m.inp, o: m.o };
+      if (m.t === 'load') { PW = m.pw || 720; state = { inp: m.inp, o: m.o }; for (var kc in Calib.CAM) if (state.o[kc] === undefined) state.o[kc] = Calib.CAM[kc]; }
+      else if (m.t === 'view' && state) {
+        // hand alignment picture: both lenses half and half at this pan/tilt
+        var pv = Calib.preview(state, Math.min(PW, 640), { stage: 1, viewCyl: true, rig: Calib.Rig(state.o, m.pan, m.tilt) });
+        self.postMessage({ t: 'view', w: pv.w, h: pv.h, img: pv.data, rpp: pv.rpp }, [pv.data.buffer]);
+      }
+      else if (m.t === 'start') {
+        if (m.inp) { PW = m.pw || 720; state = { inp: m.inp, o: m.o }; }
+        state.o.start = m.start || null; state.cyl = null; state.viewCyl = null;
         Calib.run(state, function (opt) { post(opt, opt.frac === 1); });
         finish();
         var pc = Calib.cloud(state); self.postMessage({ t: 'cloud', pts: pc }, [pc.buffer]);
