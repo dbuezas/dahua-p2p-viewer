@@ -65,6 +65,7 @@ static class Win
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint flags);
     [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int cmd);   // async: does not hang on a frozen window
+    [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
 }
 
 class CamForm : Form
@@ -249,6 +250,17 @@ class CamForm : Form
         awake.Tick += (s, e) => KeepAwake();
         awake.Start();
         Shown += (s, e) => KeepAwake();
+        // Come to the front when started, also when started from the background (then Windows refuses a plain
+        // SetForegroundWindow; a tapped Alt key lifts that lock). Tried a few times in the first seconds.
+        int frontTries = 0;
+        var toFront = new System.Windows.Forms.Timer { Interval = 1500 };
+        toFront.Tick += (s, e) =>
+        {
+            if (Win.GetForegroundWindow() == Handle || ++frontTries > 6) { toFront.Stop(); if (frontTries > 0) Log(Win.GetForegroundWindow() == Handle ? "al frente" : "no pude ponerme al frente"); return; }
+            Win.keybd_event(0x12, 0, 0, UIntPtr.Zero); Win.keybd_event(0x12, 0, 2, UIntPtr.Zero);   // Alt down, up
+            TopMost = true; Activate(); Win.SetForegroundWindow(Handle); TopMost = false;
+        };
+        Shown += (s, e) => toFront.Start();
 
         var watchdog = new System.Windows.Forms.Timer { Interval = 5000 };
         watchdog.Tick += (s, e) => Watchdog();
@@ -1397,6 +1409,7 @@ body{margin:0;background:#111;color:#eee;font-family:sans-serif}
 header{position:sticky;top:0;background:#111;padding:10px;display:flex;gap:10px;align-items:center;z-index:1}
 h1{font-size:18px;margin:0;flex:1}
 button{font-size:16px;padding:10px 14px;border:0;border-radius:8px;background:#333;color:#eee}
+button:disabled{opacity:.35}
 #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;padding:10px}
 .cam{background:#000;border-radius:8px;overflow:hidden;border:3px solid transparent}
 .cam.big{border-color:#fc0}
@@ -1503,7 +1516,7 @@ document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)retur
 var calW=null,calMesh=null,calBox=document.getElementById('cal'),calCv=document.getElementById('calc'),calSl=document.getElementById('calclip'),calGo=document.getElementById('calgo');
 function calText(t,f){document.getElementById('calt').textContent=t;if(f!=null)document.getElementById('calp').style.width=Math.round(f*100)+'%'}
 function calOpen(){calBox.style.display='block';calRun()}
-function calRun(){calMesh=null;calGo.disabled=true;calSl.disabled=true;P3=null;c3b.disabled=true;if(c3s.on)c3b.click();calText('Sacando una foto de las camaras 3 y 4...',0);
+function calRun(){calQ=[];calBusy=false;calMesh=null;calGo.disabled=true;calSl.disabled=true;P3=null;c3b.disabled=true;if(c3s.on)c3b.click();calText('Sacando una foto de las camaras 3 y 4...',0);
  Promise.all([fetch('/calibsnap?t='+Date.now()).then(function(r){if(!r.ok)throw Error('no pude sacar la foto');return r.blob()}).then(function(bl){return createImageBitmap(bl)}),
   fetch('/calibprev?t='+Date.now()).then(function(r){return r.json()}).catch(function(){return {}})]).then(function(res){var bm=res[0],prev=res[1];
   // each lens as 640x360; shrink in two steps so fine detail does not shimmer
@@ -1527,17 +1540,42 @@ calCv.addEventListener('pointermove',function(e){if(!calDrag||!calHand)return;va
 function calDragEnd(){calDrag=null}
 calCv.addEventListener('pointerup',calDragEnd);calCv.addEventListener('pointercancel',calDragEnd);
 document.getElementById('calfine').addEventListener('click',function(){if(!calHand||!calW)return;var h=calHand;calHand=null;document.getElementById('calhand').style.display='none';
- calText('Afinando...',0.05);calW.postMessage({t:'start',start:{pan:h.pan,tilt:h.tilt}})});
+ calText('Afinando...',0.05);calQ=[];calBusy=false;calW.postMessage({t:'start',start:{pan:h.pan,tilt:h.tilt}})});
+// The worker sends one frame per step of its work, faster or slower than they should be seen: they wait in a queue
+// and play at their own pace (hold ms each), with cross-fades; lines, dots and the seam are drawn over each frame.
+var calQ=[],calBusy=false,calImg=document.createElement('canvas'),calOld=document.createElement('canvas');
 function calMsg(e){var m=e.data;
- if(m.t=='error'){calText('No pude: '+m.text);return}
- if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calSl.disabled=false;return}
- if(m.t=='cloud'){cal3Set(m.pts);return}
  if(m.t=='view'){if(!calHand)return;calHand.busy=false;calHand.rpp=m.rpp;calCv.width=m.w;calCv.height=m.h;calCv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(m.img),m.w,m.h),0,0);if(calHand.again){calHand.again=false;calView()}return}
- calText(m.text,m.frac);calCv.width=m.w;calCv.height=m.h;var g=calCv.getContext('2d');g.putImageData(new ImageData(new Uint8ClampedArray(m.img),m.w,m.h),0,0);
- var L=m.lines||[];g.lineWidth=Math.max(1,m.w/500);
- for(var i=0;i<L.length;i+=5){var er=L[i+4];g.strokeStyle=er<2?'#3f3':er<6?'#fc0':'#f33';g.beginPath();g.moveTo(L[i],L[i+1]);g.lineTo(L[i+2],L[i+3]);g.stroke();
-  g.fillStyle=g.strokeStyle;g.fillRect(L[i]-2,L[i+1]-2,4,4)}
- var D=m.dots||[];for(i=0;i<D.length;i+=3){var v=Math.min(255,Math.round(D[i+2]/3*255));g.fillStyle='rgb('+v+','+(255-v)+',255)';g.beginPath();g.arc(D[i],D[i+1],Math.max(2,m.w/300),0,7);g.fill()}}
+ calQ.push(m);if(!calBusy)calNext()}
+function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
+ if(m.t=='error'){calText('No pude: '+m.text);calQ=[];calBusy=false;return}
+ if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calSl.disabled=false;calNext();return}
+ if(m.t=='cloud'){cal3Set(m.pts);calNext();return}
+ calText(m.text,m.frac);
+ // a frame waiting long in the queue plays faster (never more than ~6 s behind the work)
+ var hold=m.hold*(calQ.length>60?0.4:calQ.length>30?0.7:1),fade=m.fade||0;
+ var same=calCv.width==m.w&&calCv.height==m.h;
+ if(fade&&same){calOld.width=m.w;calOld.height=m.h;calOld.getContext('2d').drawImage(calCv,0,0)}
+ calImg.width=m.w;calImg.height=m.h;calImg.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(m.img),m.w,m.h),0,0);
+ if(!same){calCv.width=m.w;calCv.height=m.h}
+ var t0=performance.now();
+ (function step(){var a=fade&&same?Math.min(1,(performance.now()-t0)/fade):1,g=calCv.getContext('2d');
+  if(a<1){g.globalAlpha=1;g.drawImage(calOld,0,0);g.globalAlpha=a*a*(3-2*a)}
+  g.drawImage(calImg,0,0);g.globalAlpha=1;calOver(g,m,a);
+  if(a<1)requestAnimationFrame(step);else setTimeout(calNext,Math.max(0,hold-(performance.now()-t0)))})()}
+function calOver(g,m,a){var W=m.w,lw=Math.max(1.5,W/400);
+ // measuring scan line
+ if(m.scan!=null){var gr=g.createLinearGradient(0,m.scan-W/40,0,m.scan);gr.addColorStop(0,'rgba(80,200,255,0)');gr.addColorStop(1,'rgba(80,200,255,0.5)');g.fillStyle=gr;g.fillRect(0,m.scan-W/40,W,W/40)}
+ // pairs: from where lens A shows a point to where lens B shows it (green = fits)
+ var L=m.lines||[];g.lineWidth=lw;
+ for(var i=0;i<L.length;i+=5){var er=L[i+4];g.strokeStyle=er<2?'rgba(60,255,60,.9)':er<6?'rgba(255,200,0,.9)':'rgba(255,60,60,.9)';g.beginPath();g.moveTo(L[i],L[i+1]);g.lineTo(L[i+2],L[i+3]);g.stroke();
+  g.fillStyle=g.strokeStyle;g.beginPath();g.arc(L[i],L[i+1],lw*1.3,0,7);g.fill()}
+ // distances: glowing dots, warm = near, cold = far
+ var D=m.dots||[];g.save();g.shadowBlur=W/90;
+ for(i=0;i<D.length;i+=3){var v=Math.min(1,D[i+2]/2.5),c='hsl('+Math.round(220-200*v)+',100%,'+Math.round(55+15*v)+'%)';g.fillStyle=c;g.shadowColor=c;g.beginPath();g.arc(D[i],D[i+1],Math.max(2,W/260),0,7);g.fill()}
+ g.restore();
+ // the seam, drawn from the top down
+ var S=m.seam||[];if(S.length>3){var n=Math.round(S.length/2*(m.reveal==null?1:m.reveal));g.save();g.strokeStyle='#fc0';g.lineWidth=lw*1.6;g.shadowColor='#fc0';g.shadowBlur=W/80;g.beginPath();g.moveTo(S[0],S[1]);for(i=1;i<n;i++)g.lineTo(S[2*i],S[2*i+1]);g.stroke();g.restore()}}
 calSl.addEventListener('change',function(){if(!calW||calSl.disabled)return;calGo.disabled=true;calText('Encuadrando...');calW.postMessage({t:'clip',clip:+calSl.value})});
 calGo.addEventListener('click',function(){if(!calMesh||!ws||ws.readyState!=1){calText('Sin conexion con la tele, proba de nuevo');return}
  ws.send(calMesh);calBox.style.display='none';st.pano=3;draw(st)});

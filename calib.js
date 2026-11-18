@@ -153,7 +153,7 @@ var Calib = (function () {
       cand.sort(function (a, b) { return b.v - a.v; });
       tops.push({ v: 0, pan: o.start.pan, tilt: o.start.tilt });
       cand.forEach(function (c) { if (tops.length < 5 && tops.every(function (t) { return Math.abs(t.pan - c.pan) > 3 * D || Math.abs(t.tilt - c.tilt) > 3 * D; })) tops.push(c); });
-      show({ stage: 1, text: 'Afinando cerca de donde la pusiste', frac: 0.1, rig: Rig(o, o.start.pan, o.start.tilt), mix: true });
+      show({ stage: 1, text: 'Afinando cerca de donde la pusiste', frac: 0.05, rig: Rig(o, o.start.pan, o.start.tilt), mix: true, hold: 400 });
     } else {
       for (var pd = -100; pd <= 100; pd += 2) {
         for (var td = -36; td <= 36; td += 2) { var v = rough(pd * D, td * D, 0); cand.push({ v: v, pan: pd * D, tilt: td * D }); if (v > best.v) best = cand[cand.length - 1]; }
@@ -233,32 +233,47 @@ var Calib = (function () {
     tops.slice(0, nT).forEach(function (t, k) {
       var ms = findMatches(Rig(o, t.pan, t.tilt), 250);
       var f = ms.length >= 8 ? fitRig(t, ms, 80) : { good: 0 };
-      show({ stage: 2, text: 'Probando direccion ' + (k + 1) + ' de ' + nT + ': ' + f.good + ' puntos encajan', frac: 0.15 + 0.1 * (k + 1) / nT, rig: f.g || Rig(o, t.pan, t.tilt), mix: true, matches: ms });
+      show({ stage: 2, text: 'Probando lugar ' + (k + 1) + ' de ' + nT + ': ' + f.good + ' puntos encajan', frac: 0.05 + 0.15 * (k + 1) / nT, rig: Rig(o, t.pan, t.tilt), mix: true, matches: ms, hold: 450 });
       if (f.good > 0 && (!win || f.good > win.good)) win = { good: f.good, t: t, pan: f.g.pan, tilt: f.g.tilt };
     });
     if (!win) throw new Error('no encontre puntos en comun entre las dos lentes');
     var g0 = Rig(o, win.t.pan, win.t.tilt);
-    var matches = findMatches(g0, 800, function (ms, n, tot) { show({ stage: 2, text: 'Puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.25 + 0.1 * n / tot, rig: g0, mix: true, matches: ms }); });
+    var matches = findMatches(g0, 800, function (ms, n, tot) { show({ stage: 2, text: 'Buscando puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.2 + 0.1 * n / tot, rig: g0, mix: true, matches: ms, hold: 160 }); });
     if (matches.length < 8) throw new Error('muy pocos puntos en comun (' + matches.length + ')');
-    var fr2 = fitRig(win, matches, 120, function (it, xv) {
-      if (it % 6 === 0) show({ stage: 3, text: 'Ajustando paneo/inclinacion: ' + (xv[0] / D).toFixed(2) + '°, ' + (xv[1] / D).toFixed(2) + '°', frac: 0.35 + 0.15 * it / 120, rig: Rig(o, xv[0], xv[1]), mix: true, matches: matches });
-    });
+    var fr2 = fitRig(win, matches, 120);
     var g = fr2.g;
     st.rig = g; st.matchErr = fr2.med; st.matches = matches;
-    show({ stage: 3, text: 'Paneo ' + (g.pan / D).toFixed(1) + '°, inclinacion ' + (g.tilt / D).toFixed(1) + '°; error tipico ' + st.matchErr.toFixed(1) + ' px, ' + fr2.good + ' de ' + matches.length + ' puntos encajan', frac: 0.5, rig: g, mix: true, matches: matches });
+    // The show: lens B slides from where it started into place (smooth, zoomed on the shared strip), the lines between
+    // pairs shrink and turn green, the double picture becomes one.
+    cylinder(st); st.view = { cyl: st.cyl, crop: stripBox(st) };
+    var p0 = o.start || win.t, NF = 40;
+    for (var fi = 0; fi <= NF; fi++) {
+      var e = fi / NF, ee = e * e * (3 - 2 * e), pn = p0.pan + (g.pan - p0.pan) * ee, tn = p0.tilt + (g.tilt - p0.tilt) * ee;
+      show({ stage: 3, text: 'Encajando las lentes: paneo ' + (pn / D).toFixed(1) + '°, inclinacion ' + (tn / D).toFixed(1) + '°', frac: 0.3 + 0.2 * e, rig: Rig(o, pn, tn), mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 70 });
+    }
+    show({ stage: 3, text: 'Encajadas: error tipico ' + st.matchErr.toFixed(1) + ' px, ' + fr2.good + ' de ' + matches.length + ' puntos encajan', frac: 0.5, rig: g, mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 900 });
     // a wrong result must not reach the TV
     if (fr2.good < 15 || fr2.med > 4) throw new Error('no pude encajar las lentes (error tipico ' + fr2.med.toFixed(1) + ' px, ' + fr2.good + ' puntos buenos). Proba de nuevo o mové la camara 4.');
 
     // -- 4. distances --
     cylinder(st);
     measure(st, show);
-    show({ stage: 5, text: 'Buscando la costura', frac: 0.9, rig: g, W: true });
     seam(st, show);
+    // the seam is drawn from top to bottom while lens B settles row by row, then the final picture fades in
+    for (var si = 1; si <= 14; si++) show({ stage: 5, text: 'Costura: por donde las dos lentes se ven igual', frac: 0.85 + 0.1 * si / 14, rig: g, mix: true, W: true, seamLine: true, reveal: si / 14, cylObj: st.view.cyl, crop: st.view.crop, hold: 90 });
     framing(st);
-    show({ stage: 7, text: 'Listo', frac: 1, rig: g, W: true, frame: st.fr, seam: true });
+    show({ stage: 7, text: 'Listo', frac: 1, rig: g, W: true, frame: st.fr, seam: true, hold: 300, fade: 900 });
     return st;
   }
 
+  // Box around the part both lenses see (cylinder pixels), wider on the sides: the show zooms on it.
+  function stripBox(st) {
+    var c = st.cyl, g = st.rig, r = [0, 0, 0], q = [0, 0], x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1;
+    for (var y = 0; y < c.CH; y += 4) for (var x = 0; x < c.CW; x += 4) { cylRay(c, x, y, r); if (toA(g, r, 0, q) && toB(g, r, 0, q)) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); } }
+    if (x1 < 0) return null;
+    var w = x1 - x0, h = y1 - y0, cx = (x0 + x1) / 2, ww = Math.max(w * 2.4, h * 1.2);
+    return { x0: Math.max(0, Math.round(cx - ww / 2)), x1: Math.min(c.CW, Math.round(cx + ww / 2)), y0: Math.max(0, Math.round(y0 - h * 0.05)), y1: Math.min(c.CH, Math.round(y1 + h * 0.05)) };
+  }
   // Cylinder around A's view: angle a0..a1 (both lenses), heights hA..hB (any picture at all). Canvas CW wide.
   function cylinder(st) {
     var g = st.rig, r = [0, 0, 0], q = [0, 0], angs = [], R = g.R;
@@ -307,7 +322,7 @@ var Calib = (function () {
         if (kk === NW) continue;
         wv[gi] = WMAX * kk / NW; known[gi] = 1; W[gi] = wv[gi];
       }
-      if (gy % 3 === 2 || gy === NY - 1) show({ stage: 4, text: 'Midiendo distancias: fila ' + (gy + 1) + ' de ' + NY, frac: 0.5 + 0.25 * (gy + 1) / NY, rig: g, W: null, wdots: { step: step, NX: NX, known: known, wv: wv } });
+      if (gy % 2 === 1 || gy === NY - 1) show({ stage: 4, text: 'Midiendo distancias (claro = cerca): fila ' + (gy + 1) + ' de ' + NY, frac: 0.5 + 0.3 * (gy + 1) / NY, rig: g, mix: true, wdots: { step: step, NX: NX, known: known, wv: wv }, scan: cy, cylObj: st.view && st.view.cyl, crop: st.view && st.view.crop, hold: 80 });
     }
     // clean: a measure needs 2 neighbours (in the 5x5 around) that agree with it
     var keep = known.slice(), tolW = function (m) { return 0.08 + 0.25 * m; };
@@ -334,7 +349,6 @@ var Calib = (function () {
         if (gx > 0) { s += W[gi - 1]; cnt++; } if (gx < NX - 1) { s += W[gi + 1]; cnt++; } if (gy > 0) { s += W[gi - NX]; cnt++; } if (gy < NY - 1) { s += W[gi + NX]; cnt++; }
         if (keep[gi]) { s += Pull * cnt * m0[gi]; cnt += Pull * cnt; } W[gi] = Math.max(0, s / cnt);
       }
-      if (it % 300 === 299) show({ stage: 4, text: 'Suavizando distancias', frac: 0.75 + 0.1 * it / 1500, rig: g, W: W, grid: st.grid });
     }
     var kc = 0; for (i = 0; i < N; i++) kc += keep[i];
     st.measured = kc; st.keep = keep;
@@ -463,16 +477,18 @@ var Calib = (function () {
   // Before the frame exists: the whole cylinder of the rough/fine rig at infinity.
   function preview(st, PW, opt) {
     var g = opt.rig, inp = st.inp, c = st.cyl, fr = opt.frame || null;
-    if (opt.viewCyl) {
+    if (opt.cylObj) c = opt.cylObj;
+    else if (opt.viewCyl) {
       // hand alignment: one fixed, wider canvas, so lens A stays put while lens B is dragged around
       if (!st.viewCyl) { var keep0 = st.rig; st.rig = g; cylinder(st); var vc = st.cyl, m = 0.35; st.viewCyl = { a0: vc.a0 - m, a1: vc.a1 + m, Fc: vc.Fc, h0: vc.h0 - 0.15, CW: Math.round(vc.CW + 2 * m * vc.Fc), CH: Math.round(vc.CH + 0.3 * vc.Fc) }; st.cyl = null; st.rig = keep0; }
       c = st.viewCyl;
     } else if (!c || opt.stage < 4) { var keep = st.rig; st.rig = g; cylinder(st); c = st.cyl; st.rig = keep || g; }
-    var OW = fr ? fr.OW : c.CW, OH = fr ? fr.OH : c.CH, s = OW / PW, PH = Math.max(1, Math.round(OH / s));
+    var cr = !fr && opt.crop ? opt.crop : null, cx0 = cr ? cr.x0 : 0, cy0 = cr ? cr.y0 : 0;
+    var OW = fr ? fr.OW : cr ? cr.x1 - cr.x0 : c.CW, OH = fr ? fr.OH : cr ? cr.y1 - cr.y0 : c.CH, s = OW / PW, PH = Math.max(1, Math.round(OH / s));
     var img = new Uint8ClampedArray(PW * PH * 4), p = [0, 0], r = [0, 0, 0], qa = [0, 0], qb = [0, 0];
     for (var y = 0; y < PH; y++) for (var x = 0; x < PW; x++) {
       var ox = (x + 0.5) * s, oy = (y + 0.5) * s;
-      if (fr) outToCyl(fr, ox, oy, p); else { p[0] = ox; p[1] = oy; }
+      if (fr) outToCyl(fr, ox, oy, p); else { p[0] = cx0 + ox; p[1] = cy0 + oy; }
       cylRay(c, p[0], p[1], r);
       var inA = toA(g, r, 0, qa), inB = opt.W && st.ws ? toBrow(st, r, p[1], qb) : toB(g, r, 0, qb), k = (y * PW + x) * 4, t;
       if (!inA && !inB) { img[k + 3] = 255; continue; }
@@ -492,12 +508,16 @@ var Calib = (function () {
         unproject(g.L, m[0], m[1], ra); unproject(g.L, m[2], m[3], rb);
         var d = [R[0] * rb[0] + R[3] * rb[1] + R[6] * rb[2], R[1] * rb[0] + R[4] * rb[1] + R[7] * rb[2], R[2] * rb[0] + R[5] * rb[1] + R[8] * rb[2]];
         var pa = cylOf(c, ra), pb = cylOf(c, d), e = epi(g, m[0], m[1], m[2], m[3]).e;
-        lines.push(pa[0] / s, pa[1] / s, pb[0] / s, pb[1] / s, e);
+        lines.push((pa[0] - cx0) / s, (pa[1] - cy0) / s, (pb[0] - cx0) / s, (pb[1] - cy0) / s, e);
       });
     }
     var dots = [];
-    if (opt.wdots && !fr) { var wd = opt.wdots; for (var i = 0; i < wd.known.length; i++) if (wd.known[i]) dots.push((i % wd.NX) * wd.step / s, Math.floor(i / wd.NX) * wd.step / s, wd.wv[i]); }
-    return { w: PW, h: PH, data: img, lines: lines, dots: dots, rpp: s / c.Fc };   // rpp: radians per preview pixel
+    if (opt.wdots && !fr) { var wd = opt.wdots; for (var i = 0; i < wd.known.length; i++) if (wd.known[i]) dots.push(((i % wd.NX) * wd.step - cx0) / s, (Math.floor(i / wd.NX) * wd.step - cy0) / s, wd.wv[i]); }
+    // the seam as a line (in preview pixels), and the measuring scan line
+    var seamPts = [];
+    if (opt.seamLine && st.ws) for (var yy = 0; yy < OH; yy += 3) { var cyy = fr ? fr.y0 + yy : cy0 + yy, sxc = st.ws.seam[Math.max(0, Math.min(c.CH - 1, Math.round(cyy)))]; if (sxc >= 0) seamPts.push((sxc - (fr ? fr.x0 : cx0)) / s, yy / s); }
+    var scan = opt.scan != null && !fr ? (opt.scan - cy0) / s : null;
+    return { w: PW, h: PH, data: img, lines: lines, dots: dots, rpp: s / c.Fc, seam: seamPts, scan: scan };   // rpp: radians per preview pixel
   }
   function colAt(img, x, y, ch) {
     var x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, k = (y0 * LW + x0) * 4 + ch;
@@ -523,10 +543,10 @@ var Calib = (function () {
 // ---- Web Worker side: the page sends the pictures; pictures of the work go back as it runs. ----
 if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
   var state = null, PW = 720, lastShow = 0;
-  var post = function (opt, force) {
-    var now = Date.now(); if (!force && now - lastShow < 250) return; lastShow = now;
+  // Every step of the work is one frame; the page plays them at their own pace (hold ms each, fade = cross-fade).
+  var post = function (opt) {
     var pv = Calib.preview(state, PW, opt);
-    self.postMessage({ t: 'show', text: opt.text, frac: opt.frac, w: pv.w, h: pv.h, img: pv.data, lines: pv.lines, dots: pv.dots }, [pv.data.buffer]);
+    self.postMessage({ t: 'show', text: opt.text, frac: opt.frac, w: pv.w, h: pv.h, img: pv.data, lines: pv.lines, dots: pv.dots, seam: pv.seam, reveal: opt.reveal, scan: pv.scan, hold: opt.hold || 120, fade: opt.fade || 0 }, [pv.data.buffer]);
   };
   self.onmessage = function (e) {
     var m = e.data;
@@ -540,7 +560,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
       else if (m.t === 'start') {
         if (m.inp) { PW = m.pw || 720; state = { inp: m.inp, o: m.o }; }
         state.o.start = m.start || null; state.cyl = null; state.viewCyl = null;
-        Calib.run(state, function (opt) { post(opt, opt.frac === 1); });
+        Calib.run(state, post);
         finish();
         var pc = Calib.cloud(state); self.postMessage({ t: 'cloud', pts: pc }, [pc.buffer]);
       } else if (m.t === 'clip' && state) {
