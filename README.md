@@ -33,8 +33,8 @@ This app shows the cameras in about 10 seconds.
   - Advanced: corners of B matched in A, then the lens shape (ray angle t lands at radius F*(t + K*t^3)) and the
     turn of lens B are fitted to them (Nelder-Mead); shown on a cylinder with a soft seam. The fit uses the best 70% of the points and starts from the last
     result (the lens shape does not change). The lenses are a few cm apart, so near things (a table edge) land in
-    different places: the leftover shift is measured all over the shared strip and lens B is bent locally to fit,
-    fading out over its own part (fine bending grid kept in `panoramica.txt`). Long straight edges count too
+    different places: the leftover shift is measured all over the shared strip and both lenses are bent locally
+    to fit (each takes half: A minus half, B plus half), fading out over each lens's own part (fine bending grid kept in `panoramica.txt`). Long straight edges count too
     (the smallest shift that fits). The seam follows the path where both lenses look most alike (dynamic
     programming). With few shared points the known lens shape is kept and only the turn is fitted.
     Test without the TV: `Camaras.exe --pano picture.jpg out [last-numbers.txt]` writes both panoramas and the grid.

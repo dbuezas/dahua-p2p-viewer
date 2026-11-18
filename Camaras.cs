@@ -1195,15 +1195,15 @@ class CamForm : Form
                     {
                         var c = Cal.C2;
                         double ang = c[5] + (ox + 0.5) / OW * (c[6] - c[5]), hgt = c[7] + (oy + 0.5) / OH * (c[8] - c[7]);
-                        ray[0] = Math.Sin(ang); ray[1] = hgt; ray[2] = Math.Cos(ang);
-                        if (lens.Project(ray, q)) { ax[ox] = q[0]; ay[ox] = q[1]; } else ax[ox] = -1e9;
-                        // Lens B is taken a little shifted here (fine bending, see Field).
+                        // Fine bending (see Field): lens B is taken shifted by the bending, or, in newer calibrations,
+                        // lens A by minus half of it and lens B by plus half, so each lens bends only half as much.
                         double du, dv; FieldAt(c, (ox + 0.5) / OW, (oy + 0.5) / OH, out du, out dv);
-                        if (du != 0 || dv != 0)
-                        {
-                            double angB = ang + du * (c[6] - c[5]), hgtB = hgt + dv * (c[8] - c[7]);
-                            ray[0] = Math.Sin(angB); ray[1] = hgtB; ray[2] = Math.Cos(angB);
-                        }
+                        double fa = FieldBoth(c) ? -0.5 : 0, fb = FieldBoth(c) ? 0.5 : 1;
+                        double angA = ang + fa * du * (c[6] - c[5]), hgtA = hgt + fa * dv * (c[8] - c[7]);
+                        ray[0] = Math.Sin(angA); ray[1] = hgtA; ray[2] = Math.Cos(angA);
+                        if (lens.Project(ray, q)) { ax[ox] = q[0]; ay[ox] = q[1]; } else ax[ox] = -1e9;
+                        double angB = ang + fb * du * (c[6] - c[5]), hgtB = hgt + fb * dv * (c[8] - c[7]);
+                        ray[0] = Math.Sin(angB); ray[1] = hgtB; ray[2] = Math.Cos(angB);
                         lens.ToB(ray, rb);
                         if (lens.Project(rb, q)) { bx[ox] = q[0]; by[ox] = q[1]; } else bx[ox] = -1e9;
                     }
@@ -1316,7 +1316,9 @@ class CamForm : Form
                         lens.Unproject(x, y, r); if (lensNo == 1) { lens.ToA(r, ra); Array.Copy(ra, r, 3); }
                         double ang = Math.Atan2(r[0], r[2]), hgt = r[1] / Math.Sqrt(r[0] * r[0] + r[2] * r[2]);
                         u = (ang - c[5]) / (c[6] - c[5]); v = (hgt - c[7]) / (c[8] - c[7]);
-                        if (lensNo == 1) { double du, dv; FieldAt(c, u, v, out du, out dv); u -= du; v -= dv; }
+                        double du, dv; FieldAt(c, u, v, out du, out dv);
+                        double f = FieldBoth(c) ? (lensNo == 1 ? 0.5 : -0.5) : (lensNo == 1 ? 1 : 0);
+                        u -= f * du; v -= f * dv;
                     }
                     else
                     {
@@ -1574,7 +1576,8 @@ class CamForm : Form
     // Fine bending for the advanced panorama. The lenses are a few cm apart, so near things (the table edge) land in
     // slightly different places in each lens; the lens model above cannot fix that. So: show both lenses on the
     // cylinder, measure the leftover shift of lens B at many points of the shared strip (patch search), clean the
-    // measures, and fill the rest of the picture smoothly so the shift fades to zero over lens B's own part.
+    // measures, and fill the rest of the picture smoothly so the shift fades to zero over each lens's own part.
+    // Each lens then takes half of the shift (A minus half, B plus half), so neither bends much.
     // Returns {NX, NY, gap across, gap down, du[NX*NY], dv[NX*NY]}: a grid over the picture; gaps and shifts as parts
     // of the picture's width and height.
     static double[] Field(double[] A, double[] B, int W, int H, Lens lens, double a0, double a1, double h0, double h1)
@@ -1653,7 +1656,7 @@ class CamForm : Form
             for (int gx = 0; gx < NX; gx++)
             {
                 int k = Math.Min(gy * step, oh - 1) * ow + Math.Min(gx * step, ow - 1);
-                if (vb[k] && !va[k] && (hi < 0 || gx > hi + fade || gx < lo - fade)) zero[gy * NX + gx] = true;
+                if (va[k] != vb[k] && (hi < 0 || gx > hi + fade || gx < lo - fade)) zero[gy * NX + gx] = true;   // only one lens, far from the strip
             }
         }
         // Fill: each free point becomes the average of its neighbours, many times (smooth surface through the measures).
@@ -1688,11 +1691,12 @@ class CamForm : Form
             for (int x = 0; x < ow; x++)
             {
                 D[x] = INF;
-                if (!va[y * ow + x]) continue;
-                double sx = x + grid(du, x, y), sy = y + grid(dv, x, y);
-                if (sx < 0 || sy < 0 || sx >= ow - 1 || sy >= oh - 1) continue;
+                double hx = grid(du, x, y) / 2, hy = grid(dv, x, y) / 2;
+                double axp = x - hx, ayp = y - hy, sx = x + hx, sy = y + hy;
+                if (axp < 0 || ayp < 0 || axp >= ow - 1 || ayp >= oh - 1 || sx < 0 || sy < 0 || sx >= ow - 1 || sy >= oh - 1) continue;
+                int ka = (int)ayp * ow + (int)axp; if (!va[ka] || !va[ka + 1] || !va[ka + ow] || !va[ka + ow + 1]) continue;
                 int k = (int)sy * ow + (int)sx; if (!vb[k] || !vb[k + 1] || !vb[k + ow] || !vb[k + ow + 1]) continue;
-                D[x] = Math.Abs(ca[y * ow + x] - Bilinear(cb, ow, sx, sy)); any = true;
+                D[x] = Math.Abs(Bilinear(ca, ow, axp, ayp) - Bilinear(cb, ow, sx, sy)); any = true;
             }
             for (int x = 0; x < ow; x++)
             {
@@ -1721,7 +1725,7 @@ class CamForm : Form
             }
         }
         Log("panoramica 2: union " + (nS > 0 ? "por el camino mas parecido" : "en el medio"));
-        var r = new double[4 + 2 * N + 1 + nS]; r[0] = NX; r[1] = NY; r[2] = (double)step / ow; r[3] = (double)step / oh;
+        var r = new double[4 + 2 * N + 1 + nS]; r[0] = -NX; r[1] = NY;   // minus: both lenses take half r[2] = (double)step / ow; r[3] = (double)step / oh;
         for (int g = 0; g < N; g++) { r[4 + g] = du[g] / ow; r[4 + N + g] = dv[g] / oh; }
         r[4 + 2 * N] = nS; for (int k = 0; k < nS; k++) r[5 + 2 * N + k] = seamU[k];
         return r;
@@ -1733,11 +1737,14 @@ class CamForm : Form
         return (img[k] * (1 - fx) + img[k + 1] * fx) * (1 - fy) + (img[k + w] * (1 - fx) + img[k + w + 1] * fx) * fy;
     }
 
+    // True when both lenses take half of the fine bending (older calibrations bend lens B only).
+    static bool FieldBoth(double[] c) { return c.Length >= 13 && c[9] < 0; }
+
     // Seam column (0 to 1) at height v of the picture, or -1 when the calibration has none.
     static double SeamAt(double[] c, double v)
     {
         if (c.Length < 13) return -1;
-        int N = (int)c[9] * (int)c[10], o = 13 + 2 * N; if (c.Length <= o) return -1;
+        int N = (int)Math.Abs(c[9]) * (int)c[10], o = 13 + 2 * N; if (c.Length <= o) return -1;
         int nS = (int)c[o]; if (nS < 2 || c.Length < o + 1 + nS) return -1;
         double t = Math.Max(0, Math.Min(nS - 1.001, v * (nS - 1))); int i = (int)t; double f = t - i;
         return c[o + 1 + i] * (1 - f) + c[o + 2 + i] * f;
@@ -1748,7 +1755,7 @@ class CamForm : Form
     {
         du = dv = 0;
         if (c.Length < 13) return;
-        int NX = (int)c[9], NY = (int)c[10], N = NX * NY; if (c.Length < 13 + 2 * N || NX < 2 || NY < 2) return;
+        int NX = (int)Math.Abs(c[9]), NY = (int)c[10], N = NX * NY; if (c.Length < 13 + 2 * N || NX < 2 || NY < 2) return;
         double gx = Math.Max(0, Math.Min(NX - 1.001, u / c[11])), gy = Math.Max(0, Math.Min(NY - 1.001, v / c[12]));
         int x0 = (int)gx, y0 = (int)gy; double fx = gx - x0, fy = gy - y0; int k = y0 * NX + x0;
         Func<int, double> at = o => (c[o + k] * (1 - fx) + c[o + k + 1] * fx) * (1 - fy) + (c[o + k + NX] * (1 - fx) + c[o + k + NX + 1] * fx) * fy;
