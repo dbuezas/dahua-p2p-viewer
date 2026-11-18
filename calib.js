@@ -233,12 +233,13 @@ var Calib = (function () {
     tops.slice(0, nT).forEach(function (t, k) {
       var ms = findMatches(Rig(o, t.pan, t.tilt), 250);
       var f = ms.length >= 8 ? fitRig(t, ms, 80) : { good: 0 };
-      show({ stage: 2, text: 'Probando lugar ' + (k + 1) + ' de ' + nT + ': ' + f.good + ' puntos encajan', frac: 0.05 + 0.15 * (k + 1) / nT, rig: Rig(o, t.pan, t.tilt), mix: true, matches: ms, hold: 450 });
+      // the picture stays where the person left it (jumping to each try looks like it is getting worse)
+      show({ stage: 2, text: 'Probando lugar ' + (k + 1) + ' de ' + nT + ': ' + f.good + ' puntos encajan', frac: 0.05 + 0.15 * (k + 1) / nT, rig: Rig(o, (o.start || t).pan, (o.start || t).tilt), mix: true, hold: 350 });
       if (f.good > 0 && (!win || f.good > win.good)) win = { good: f.good, t: t, pan: f.g.pan, tilt: f.g.tilt };
     });
     if (!win) throw new Error('no encontre puntos en comun entre las dos lentes');
     var g0 = Rig(o, win.t.pan, win.t.tilt);
-    var matches = findMatches(g0, 800, function (ms, n, tot) { show({ stage: 2, text: 'Buscando puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.2 + 0.1 * n / tot, rig: g0, mix: true, matches: ms, hold: 160 }); });
+    var matches = findMatches(g0, 800, function (ms, n, tot) { show({ stage: 2, text: 'Buscando puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.2 + 0.1 * n / tot, rig: o.start ? Rig(o, o.start.pan, o.start.tilt) : g0, mix: true, matches: ms, hold: 160 }); });
     if (matches.length < 8) throw new Error('muy pocos puntos en comun (' + matches.length + ')');
     var fr2 = fitRig(win, matches, 120);
     var g = fr2.g;
@@ -246,7 +247,12 @@ var Calib = (function () {
     // The show: lens B slides from where it started into place (smooth, zoomed on the shared strip), the lines between
     // pairs shrink and turn green, the double picture becomes one.
     cylinder(st); st.view = { cyl: st.cyl, crop: stripBox(st) };
-    var p0 = o.start || win.t, NF = 40;
+    var p0 = o.start || win.t, NF = 40, vc = st.view.cyl, vb = st.view.crop;
+    // first a smooth zoom from the whole picture onto the shared strip, the lenses still where they started
+    for (var zi = 0; zi <= 10 && vb; zi++) {
+      var z = zi / 10, zz = z * z * (3 - 2 * z), zc = { x0: Math.round(vb.x0 * zz), y0: Math.round(vb.y0 * zz), x1: Math.round(vc.CW + (vb.x1 - vc.CW) * zz), y1: Math.round(vc.CH + (vb.y1 - vc.CH) * zz) };
+      show({ stage: 3, text: matches.length + ' puntos en comun', frac: 0.3, rig: Rig(o, p0.pan, p0.tilt), mix: true, matches: matches, cylObj: vc, crop: zc, hold: 60 });
+    }
     for (var fi = 0; fi <= NF; fi++) {
       var e = fi / NF, ee = e * e * (3 - 2 * e), pn = p0.pan + (g.pan - p0.pan) * ee, tn = p0.tilt + (g.tilt - p0.tilt) * ee;
       show({ stage: 3, text: 'Encajando las lentes: paneo ' + (pn / D).toFixed(1) + '°, inclinacion ' + (tn / D).toFixed(1) + '°', frac: 0.3 + 0.2 * e, rig: Rig(o, pn, tn), mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 70 });
