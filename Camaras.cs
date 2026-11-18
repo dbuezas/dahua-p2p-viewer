@@ -1051,7 +1051,7 @@ class CamForm : Form
                     string f = null;
                     for (int tries = 0; f == null && tries < 16; tries++) { if (tries > 0) Thread.Sleep(500); lock (snapLock) f = CaptureFile(play, "camaras_pano"); }
                     if (f == null) err = "no pude sacar la foto";
-                    else using (var src = new Bitmap(f))
+                    else using (var big = new Bitmap(f)) using (var src = CalibSize(big))
                     {
                         c1 = Calibrate(src, out err);
                         if (c1 != null && mode == 2) c2 = Calibrate2(src, c1, prev, out err);
@@ -1488,10 +1488,10 @@ class CamForm : Form
                     if (v > best) { if (far) second = best; best = v; bax = x; bay = y; }
                     else if (v > second && far) second = v;
                 }
-            if (best > 0.85 && best - second > 0.05) ms.Add(new double[] { bax, bay, bxp, byp });
+            if (best > 0.8 && best - second > 0.03) ms.Add(new double[] { bax, bay, bxp, byp });
         }
         Log("panoramica 2: " + cs.Count + " esquinas, " + ms.Count + " puntos en comun");
-        if (ms.Count < 12) { err = "muy pocos puntos en comun entre las dos lentes (" + ms.Count + ")"; return null; }
+        if (ms.Count < (prev != null ? 6 : 10)) { err = "muy pocos puntos en comun entre las dos lentes (" + ms.Count + ")"; return null; }
         // 2. fit
         var ra = new double[3]; var rb = new double[3]; var q = new double[2];
         Func<double[], double> cost = pr =>
@@ -1762,6 +1762,17 @@ class CamForm : Form
         du = at(13); dv = at(13 + N);
     }
 
+    // The calibration works on a picture 640 pixels wide: its patch sizes are made for that, and the result is in
+    // units of the picture size, so it fits HD too.
+    static Bitmap CalibSize(Bitmap src)
+    {
+        if (src.Width <= 640) return (Bitmap)src.Clone();
+        int h = (int)Math.Round(src.Height * 640.0 / src.Width / 2) * 2;
+        var b = new Bitmap(640, h, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+        using (var g = Graphics.FromImage(b)) { g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic; g.DrawImage(src, new Rectangle(0, 0, 640, h)); }
+        return b;
+    }
+
     static void PanoTest(string inFile, string outBase, string prevFile)
     {
         LogFile = outBase + ".log";
@@ -1772,9 +1783,13 @@ class CamForm : Form
         {
             string err;
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            var c1 = Calibrate(src, out err);
-            if (c1 == null) { Log("modo 1: " + err); return; }
-            var c2 = Calibrate2(src, c1, prev, out err);
+            double[] c1, c2;
+            using (var small = CalibSize(src))
+            {
+                c1 = Calibrate(small, out err);
+                if (c1 == null) { Log("modo 1: " + err); return; }
+                c2 = Calibrate2(small, c1, prev, out err);
+            }
             Log("calculo " + sw.ElapsedMilliseconds + " ms" + (c2 == null ? ", modo 2: " + err : ""));
             if (c2 != null) File.WriteAllText(outBase + "_c2.txt", Nums(c2));
             // The picture as an I420 frame, like the SDK gives it.
