@@ -1441,11 +1441,11 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
  <div id=calhand style='display:none;margin:10px 0'><button id=calfine style='width:100%;background:#fc0;color:#000;font-weight:bold'>Listo, afinar</button></div>
  <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button><button id=calmix style='flex:1;display:none'>Ver superpuestas</button></div>
 </div>
-<div id=pano style='display:none;padding:0 10px 6px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=3>Si</button> <button id=calbtn>Calibrar</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4.</p></div>
 <p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
 <p class=tip id=msg style='color:#fc0'></p>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=grid></div><img id=ghost>
+<div id=pano style='display:none;padding:0 10px 14px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=3>Si</button> <button id=calbtn>Calibrar</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4.</p></div>
 <script>
 var st={big:-1,cams:[]};
 // ONE connection that stays open (WebSocket) for everything; if it drops, connect again at once.
