@@ -23,6 +23,11 @@ This app shows the cameras in about 10 seconds.
 - Right click a camera: switch it between low quality (sub stream, fast) and HD (main stream). A red "HD"
   shows on HD cameras. The choice is saved in `hd.txt`. Too many HD cameras at once can hit the NVR's stream limit.
 - Drag a camera onto another one: they swap places. The order is saved in `orden.txt`.
+- Panorama of a split camera (button "Panoramica" on the phone): the app takes one picture of the channel, finds where
+  the two lenses see the same strip (edge images, coarse then fine search of size and place), and shows both lenses
+  as one wide picture, pasted at the middle of that strip. No lens or perspective correction yet: lines can bend at
+  the seam. Only digital zoom and pan on it. The pasting is kept in `panoramica.txt`; press again for both lenses.
+  If the moving lens points somewhere else, the strip is gone and the phone says so.
 - When it cannot connect, it shows in big letters what to try: the other Wi-Fi network, or restarting the router.
 - Phone remote: a small web page on port 8080 (`puerto_web` in `camaras.ini`, 0 = off), only for the local network.
   One WebSocket connection carries everything (opening new connections is what fails on a weak Wi-Fi).

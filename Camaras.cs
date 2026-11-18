@@ -77,8 +77,17 @@ class CamForm : Form
     Dictionary<string, string> cfg = new Dictionary<string, string>();
 
     // One square on screen. Half: 0 = whole picture, 1 = top half, 2 = bottom half
-    // (for a channel whose picture is two cameras stacked; it is played twice and each square shows one half).
-    class Tile { public Panel Box, Video; public Label Tag; public int Ch, Half; public long Play, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1, PanX, PanY; }
+    // (for a channel whose picture is two cameras stacked; it is played twice and each square shows one half),
+    // 3 = panorama: both halves side by side in one square (Clip holds lens A in Video and lens B in Video2 inside ClipB).
+    class Tile { public Panel Box, Video, Clip, ClipB, Video2; public Label Tag; public int Ch, Half; public long Play, Play2, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1, PanX, PanY; }
+
+    // Panorama of a split channel: ch -> {s, dx, dy}. Lens B (bottom half) placed over lens A (top half):
+    // a point (x, y) of B lands on (dx + s*x, dy + s*y) of A. Units: A's width = 1 (both pictures are 16:9).
+    // Found by Calibrate when the panorama is turned on; kept in panoramica.txt.
+    Dictionary<int, double[]> pano = new Dictionary<int, double[]>();
+    static string PanoFile = Path.Combine(Dir, "panoramica.txt");
+    volatile string panoMsg = "";
+    const double LensH = 9.0 / 16;
     List<Tile> tiles = new List<Tile>();
     Tile big = null;
     Panel[] frame = new Panel[4];   // yellow frame around the camera a dragged camera will swap with
@@ -118,6 +127,16 @@ class CamForm : Form
         // Dahua's video library puts its own window over each square and that window takes the clicks and keys.
         // So read the mouse button and Esc directly, every 40 ms, while this app is in front.
         try { foreach (var c in File.ReadAllText(HdFile).Split(',')) { int ch; if (int.TryParse(c.Trim(), out ch)) hd.Add(ch); } } catch { }
+        try
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            foreach (var line in File.ReadAllLines(PanoFile))
+            {
+                var f = line.Split(' ');
+                if (f.Length == 4) pano[int.Parse(f[0])] = new[] { double.Parse(f[1], inv), double.Parse(f[2], inv), double.Parse(f[3], inv) };
+            }
+        }
+        catch { }
         bool wasDown = false, rightWas = false, escWas = false, pressOk = false, dragging = false;
         Tile ptzTile = null, panTile = null; double panX0 = 0, panY0 = 0;
         int zoomWas = 0; DateTime zoomStep = DateTime.MinValue;
@@ -234,7 +253,7 @@ class CamForm : Form
     // Channels whose camera can really be moved (PTZ). The recorder sends every PTZ command to its one PTZ camera,
     // whatever channel is asked, so only these channels get commands. Setting "ptz" in camaras.ini, e.g. ptz=2.
     // A split camera can list one lens only: "2.2" = bottom half of channel 2 ("2" = both halves).
-    bool CanPtz(Tile t) { foreach (var c in C("ptz", "").Split(',')) { string s = c.Trim(); if (s.Length > 0 && (s == Key(t) || s == t.Ch.ToString())) return true; } return false; }
+    bool CanPtz(Tile t) { if (t.Half == 3) return false; foreach (var c in C("ptz", "").Split(',')) { string s = c.Trim(); if (s.Length > 0 && (s == Key(t) || s == t.Ch.ToString())) return true; } return false; }
 
     // Channels whose picture is two cameras stacked (top + bottom). Default: channel 2 ("Device1").
     HashSet<int> SplitChannels()
@@ -247,17 +266,28 @@ class CamForm : Form
     // Must run on the UI thread. Replaces all squares with one per camera, then starts the video.
     void BuildTiles(List<int> chans)
     {
-        foreach (var t in tiles) { if (t.Play != 0) { Native.CLIENT_StopRealPlayEx(t.Play); lock (bytesPerPlay) bytesPerPlay.Remove(t.Play); } Controls.Remove(t.Box); t.Box.Dispose(); }
+        foreach (var t in tiles) { StopPlay(t); Controls.Remove(t.Box); t.Box.Dispose(); }
         tiles.Clear();
         big = null;
         var split = SplitChannels();
         foreach (var ch in chans)
-            foreach (var half in split.Contains(ch) ? new[] { 1, 2 } : new[] { 0 })
+            foreach (var half in !split.Contains(ch) ? new[] { 0 } : pano.ContainsKey(ch) ? new[] { 3 } : new[] { 1, 2 })
             {
                 var t = new Tile { Ch = ch, Half = half };
                 t.Box = new Panel { BackColor = Color.Black };
                 t.Video = new Panel { BackColor = Color.Black };
-                t.Box.Controls.Add(t.Video);
+                if (half == 3)
+                {
+                    t.Clip = new Panel { BackColor = Color.Black };
+                    t.ClipB = new Panel { BackColor = Color.Black };
+                    t.Video2 = new Panel { BackColor = Color.Black };
+                    t.Box.Controls.Add(t.Clip);
+                    t.Clip.Controls.Add(t.Video);
+                    t.ClipB.Controls.Add(t.Video2);
+                    t.Clip.Controls.Add(t.ClipB);
+                    t.ClipB.BringToFront();   // lens B covers lens A from the seam on
+                }
+                else t.Box.Controls.Add(t.Video);
                 t.Tag = new Label { Text = "HD", ForeColor = Color.White, BackColor = Color.FromArgb(200, 0, 0), AutoSize = true, Font = new Font("Segoe UI", 18, FontStyle.Bold), Location = new Point(24, 24), Visible = hd.Contains(ch) };
                 t.Box.Controls.Add(t.Tag);
                 t.Tag.BringToFront();
@@ -268,9 +298,17 @@ class CamForm : Form
         var order = new List<string>();
         try { order.AddRange(File.ReadAllText(OrderFile).Split(',')); } catch { }
         var orig = new List<Tile>(tiles);
+        // The panorama takes the place of its first lens, and back.
+        Func<Tile, int> pos = t =>
+        {
+            int i = order.IndexOf(Key(t));
+            if (i < 0 && t.Half == 3) i = order.IndexOf(t.Ch + ".1");
+            if (i < 0 && (t.Half == 1 || t.Half == 2)) i = order.IndexOf(t.Ch + ".3");
+            return i;
+        };
         tiles.Sort((a, b) =>
         {
-            int ia = order.IndexOf(Key(a)), ib = order.IndexOf(Key(b));
+            int ia = pos(a), ib = pos(b);
             if (ia < 0) ia = 1000 + orig.IndexOf(a);
             if (ib < 0) ib = 1000 + orig.IndexOf(b);
             return ia.CompareTo(ib);
@@ -283,16 +321,25 @@ class CamForm : Form
     // (Re)starts the video of one square and counts its bytes, so the watchdog can see if it stops.
     void PlayTile(Tile t)
     {
-        if (t.Play != 0) { Native.CLIENT_StopRealPlayEx(t.Play); lock (bytesPerPlay) bytesPerPlay.Remove(t.Play); }
+        StopPlay(t);
         t.PlayingHd = WantHd(t);
         t.Play = Native.CLIENT_RealPlayEx(login, t.Ch, t.Video.Handle, t.PlayingHd ? 0 : int.Parse(C("flujo", "3")));   // 0 = main stream (HD)
+        // The panorama plays the channel a second time for lens B.
+        if (t.Video2 != null) t.Play2 = Native.CLIENT_RealPlayEx(login, t.Ch, t.Video2.Handle, t.PlayingHd ? 0 : int.Parse(C("flujo", "3")));
         UpdateState();   // new stream number for the phone pictures
         // The SDK reuses the numbers of stopped streams: start counting this one from zero.
-        lock (bytesPerPlay) bytesPerPlay.Remove(t.Play);
+        lock (bytesPerPlay) { bytesPerPlay.Remove(t.Play); bytesPerPlay.Remove(t.Play2); }
         if (t.Play != 0) Native.CLIENT_SetRealDataCallBackEx2(t.Play, dataCb, IntPtr.Zero, 1);
+        if (t.Play2 != 0) Native.CLIENT_SetRealDataCallBackEx2(t.Play2, dataCb, IntPtr.Zero, 1);
         t.LastBytes = 0;
         t.LastData = DateTime.Now;
-        Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : " (abajo)") : "") + (t.PlayingHd ? " HD" : "") + " -> " + t.Play + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
+        Log("RealPlay canal " + t.Ch + (t.Half > 0 ? (t.Half == 1 ? " (arriba)" : t.Half == 2 ? " (abajo)" : " (panoramica, " + t.Play2 + ")") : "") + (t.PlayingHd ? " HD" : "") + " -> " + t.Play + (t.Play == 0 ? " err 0x" + Native.CLIENT_GetLastError().ToString("X") : ""));
+    }
+
+    static void StopPlay(Tile t)
+    {
+        foreach (var h in new[] { t.Play, t.Play2 }) if (h != 0) { Native.CLIENT_StopRealPlayEx(h); lock (bytesPerPlay) bytesPerPlay.Remove(h); }
+        t.Play = t.Play2 = 0;
     }
 
     static long BytesOf(long play) { long b = 0; if (play != 0) lock (bytesPerPlay) bytesPerPlay.TryGetValue(play, out b); return b; }
@@ -300,13 +347,15 @@ class CamForm : Form
     // Watchdog, every 5 s: a square without new video for 20 s gets its video restarted.
     // If no square got video for 90 s (tunnel or login lost), the whole app starts again.
     DateTime lastAnyData = DateTime.Now;
+    // Channels that sent video since the app started (a square built again a moment ago has no bytes yet).
+    HashSet<int> gotVideo = new HashSet<int>();
     void Watchdog()
     {
         if (login == 0 || tiles.Count == 0) return;
         foreach (var t in tiles)
         {
-            long b = BytesOf(t.Play);
-            if (b > t.LastBytes) { t.LastBytes = b; t.LastData = DateTime.Now; lastAnyData = DateTime.Now; }
+            long b = BytesOf(t.Play) + BytesOf(t.Play2);
+            if (b > t.LastBytes) { t.LastBytes = b; t.LastData = DateTime.Now; lastAnyData = DateTime.Now; gotVideo.Add(t.Ch); }
             else if ((DateTime.Now - t.LastData).TotalSeconds > 20) { Log("sin video 20 s, reinicio canal " + t.Ch); PlayTile(t); }
         }
         if ((DateTime.Now - lastAnyData).TotalSeconds > 90) Restart("ninguna camara con video por 90 s");
@@ -356,20 +405,52 @@ class CamForm : Form
             if (addrLabel != null) addrLabel.BringToFront();
             if (qrBox != null) qrBox.BringToFront();
             int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
+            if (t != big) { t.Zoom = 1; t.PanX = t.PanY = 0; }
+            if (t.Half == 3) { LayoutPano(t, bw, bh); continue; }
             // A half square holds a video panel twice as tall, shifted so only its half shows.
             var vr = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
-            // Digital zoom (full screen only): the video panel grows around the middle of the square; the square cuts it.
-            if (t != big) { t.Zoom = 1; t.PanX = t.PanY = 0; }
-            if (t.Zoom > 1)
-            {
-                double cx = bw / 2.0, cy = bh / 2.0, z = t.Zoom;
-                // Digital pan: PanX/PanY from -1 to 1 move the cut-out to the left/top or right/bottom edge.
-                double sx = -t.PanX * bw * (z - 1) / 2, sy = -t.PanY * bh * (z - 1) / 2;
-                vr = new Rectangle((int)(cx - (cx - vr.X) * z + sx), (int)(cy - (cy - vr.Y) * z + sy), (int)(vr.Width * z), (int)(vr.Height * z));
-            }
-            else t.PanX = t.PanY = 0;
-            t.Video.Bounds = vr;
+            t.Video.Bounds = Zoomed(t, vr, bw, bh);
         }
+    }
+
+    // Digital zoom (full screen only): the rectangle grows around the middle of the square; the square cuts it.
+    static Rectangle Zoomed(Tile t, Rectangle vr, int bw, int bh)
+    {
+        if (t.Zoom <= 1) { t.PanX = t.PanY = 0; return vr; }
+        double cx = bw / 2.0, cy = bh / 2.0, z = t.Zoom;
+        // Digital pan: PanX/PanY from -1 to 1 move the cut-out to the left/top or right/bottom edge.
+        double sx = -t.PanX * bw * (z - 1) / 2, sy = -t.PanY * bh * (z - 1) / 2;
+        return new Rectangle((int)(cx - (cx - vr.X) * z + sx), (int)(cy - (cy - vr.Y) * z + sy), (int)(vr.Width * z), (int)(vr.Height * z));
+    }
+
+    // Panorama geometry in units of lens A's width: the whole width of both lenses, and only the rows both have.
+    // The seam is in the middle of the part both lenses see (each lens bends less near its own middle).
+    static void PanoBox(double[] c, out double x0, out double x1, out double y0, out double y1, out double seam)
+    {
+        double s = c[0], dx = c[1], dy = c[2];
+        x0 = Math.Min(0, dx); x1 = Math.Max(1, dx + s);
+        y0 = Math.Max(0, dy); y1 = Math.Min(LensH, dy + s * LensH);
+        seam = (Math.Max(0, dx) + Math.Min(1, dx + s)) / 2;
+    }
+
+    // Panorama square: lens A, and lens B on top of it from the seam on (no bending, only size and place).
+    void LayoutPano(Tile t, int bw, int bh)
+    {
+        double[] c; if (!pano.TryGetValue(t.Ch, out c)) return;
+        double x0, x1, y0, y1, seam; PanoBox(c, out x0, out x1, out y0, out y1, out seam);
+        double s = c[0], dx = c[1], dy = c[2], pw = x1 - x0, ph = y1 - y0;
+        double fit = Math.Min(bw / pw, bh / ph);
+        var vr = Zoomed(t, new Rectangle((int)((bw - pw * fit) / 2), (int)((bh - ph * fit) / 2), (int)(pw * fit), (int)(ph * fit)), bw, bh);
+        t.Clip.Bounds = vr;
+        double u = vr.Width / pw;   // pixels per unit
+        // Lens A is the top half: its panel is twice as tall, the bottom half falls outside the clip.
+        t.Video.Bounds = new Rectangle((int)Math.Round(-x0 * u), (int)Math.Round(-y0 * u), (int)Math.Round(u), (int)Math.Round(u * LensH * 2));
+        bool bRight = dx >= 0;
+        double cx0 = bRight ? seam : x0, cx1 = bRight ? x1 : seam;
+        t.ClipB.Bounds = new Rectangle((int)Math.Round((cx0 - x0) * u), 0, (int)Math.Round((cx1 - cx0) * u) + 1, vr.Height);
+        // Lens B is the bottom half: its panel is twice as tall and shifted up by one picture.
+        double bh2 = s * u * LensH;
+        t.Video2.Bounds = new Rectangle((int)Math.Round((dx - cx0) * u), (int)Math.Round((dy - y0) * u - bh2), (int)Math.Round(s * u), (int)Math.Round(bh2 * 2));
     }
 
     // One camera full screen (biggest 16:9 rectangle, centered). The others float over its bottom edge as small
@@ -594,14 +675,16 @@ class CamForm : Form
     volatile string stateJson = "{\"big\":-1,\"cams\":[]}";
     volatile long[] playHandles = new long[0];
     volatile int[] halves = new int[0];
+    volatile double[][] panoCal = new double[0][];
     void UpdateState()
     {
-        var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"cams\":[");
+        var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"split\":" + (SplitChannels().Count > 0 ? "true" : "false")
+            + ",\"pano\":" + (pano.Count > 0 ? "true" : "false") + ",\"msg\":\"" + panoMsg.Replace("\"", "'") + "\",\"cams\":[");
         for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"k\":\"" + Key(tiles[k]) + "\",\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + ",\"ptz\":" + (CanPtz(tiles[k]) ? "true" : "false") + "}");
         stateJson = sb.Append("]}").ToString();
-        var ph = new long[tiles.Count]; var hv = new int[tiles.Count];
-        for (int k = 0; k < tiles.Count; k++) { ph[k] = tiles[k].Play; hv[k] = tiles[k].Half; }
-        playHandles = ph; halves = hv;
+        var ph = new long[tiles.Count]; var hv = new int[tiles.Count]; var pc = new double[tiles.Count][];
+        for (int k = 0; k < tiles.Count; k++) { ph[k] = tiles[k].Play; hv[k] = tiles[k].Half; double[] c; if (pano.TryGetValue(tiles[k].Ch, out c)) pc[k] = c; }
+        playHandles = ph; halves = hv; panoCal = pc;
     }
 
     // Sets HD on or off for the channel of a camera. Doing it twice does nothing more (the phone may repeat a request).
@@ -807,6 +890,8 @@ class CamForm : Form
             }
             else if (p[0] == "ptz" && t != null && CanPtz(t) && p.Length > 3) { int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy); PtzDrag(t.Ch, dx * 2, dy * 2); }
             else if (p[0] == "ptzstop") PtzStop();
+            // Panorama of the split camera: "pano 1" (finds the pasting, then shows it), "pano 0" (both lenses again).
+            else if (p[0] == "pano" && p.Length > 1) { if (p[1] == "1") PanoOn(); else PanoOff(); }
             // Phone zoom buttons: "zoom i 1" (in) / "zoom i -1" (out): one digital zoom step each.
             else if (p[0] == "zoom" && t != null && p.Length > 2) ZoomStep(t, p[2] == "1" ? 1 : -1);
             // Test: "ptzraw channel cmd speed" moves a recorder channel directly ("ptzstop" stops it).
@@ -859,24 +944,17 @@ class CamForm : Form
     // Current picture of camera i as a small JPEG (only its half for a split channel).
     byte[] Snapshot(int i)
     {
-        long play = 0; int half = 0;
-        var ph = playHandles; var hv = halves;   // ready copies: no waiting for the screen thread
-        if (i >= 0 && i < ph.Length) { play = ph[i]; half = hv[i]; }
+        long play = 0; int half = 0; double[] pc = null;
+        var ph = playHandles; var hv = halves; var pcs = panoCal;   // ready copies: no waiting for the screen thread
+        if (i >= 0 && i < ph.Length) { play = ph[i]; half = hv[i]; if (i < pcs.Length) pc = pcs[i]; }
         if (play == 0) return null;
-        string f = Path.Combine(Path.GetTempPath(), "camaras_snap_" + i + ".jpg");
         lock (snapLock)
         {
-            try { File.Delete(f); } catch { }
-            // JPEG first; some SDK builds only write BMP (CLIENT_CapturePicture). Bitmap reads both.
-            if (!Native.CLIENT_CapturePictureEx(play, f, 1) || !File.Exists(f))
-            {
-                string e1 = Native.CLIENT_GetLastError().ToString("X");
-                f = Path.ChangeExtension(f, ".bmp");
-                try { File.Delete(f); } catch { }
-                if (!Native.CLIENT_CapturePicture(play, f) || !File.Exists(f)) { Log("foto camara " + i + ": error 0x" + e1 + " / 0x" + Native.CLIENT_GetLastError().ToString("X")); return null; }
-            }
+            string f = CaptureFile(play, "camaras_snap_" + i);
+            if (f == null) return null;
             using (var src = new Bitmap(f))
             {
+                if (half == 3 && pc != null) return PanoJpeg(src, pc);
                 int h = half == 0 ? src.Height : src.Height / 2, y = half == 2 ? src.Height / 2 : 0;
                 int w = 480, oh = Math.Max(1, h * w / src.Width);
                 using (var dst = new Bitmap(w, oh))
@@ -893,6 +971,171 @@ class CamForm : Form
     }
     static object snapLock = new object();
 
+    // Saves the current full picture of a stream to a temp file. JPEG first; some SDK builds only write BMP.
+    static string CaptureFile(long play, string name)
+    {
+        string f = Path.Combine(Path.GetTempPath(), name + ".jpg");
+        try { File.Delete(f); } catch { }
+        if (Native.CLIENT_CapturePictureEx(play, f, 1) && File.Exists(f)) return f;
+        string e1 = Native.CLIENT_GetLastError().ToString("X");
+        f = Path.ChangeExtension(f, ".bmp");
+        try { File.Delete(f); } catch { }
+        if (Native.CLIENT_CapturePicture(play, f) && File.Exists(f)) return f;
+        Log("foto " + name + ": error 0x" + e1 + " / 0x" + Native.CLIENT_GetLastError().ToString("X"));
+        return null;
+    }
+
+    // Phone picture of a panorama: the same pasting as on the TV, 480 pixels wide.
+    static byte[] PanoJpeg(Bitmap src, double[] c)
+    {
+        double x0, x1, y0, y1, seam; PanoBox(c, out x0, out x1, out y0, out y1, out seam);
+        double s = c[0], dx = c[1], dy = c[2], u = 480 / (x1 - x0);
+        int hh = src.Height / 2;
+        using (var dst = new Bitmap(480, Math.Max(1, (int)((y1 - y0) * u))))
+        using (var g = Graphics.FromImage(dst))
+        using (var ms = new MemoryStream())
+        {
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+            g.DrawImage(src, new RectangleF((float)(-x0 * u), (float)(-y0 * u), (float)u, (float)(u * LensH)), new RectangleF(0, 0, src.Width, hh), GraphicsUnit.Pixel);
+            bool bRight = dx >= 0;
+            double cx0 = bRight ? seam : x0, cx1 = bRight ? x1 : seam;
+            g.SetClip(new RectangleF((float)((cx0 - x0) * u), 0, (float)((cx1 - cx0) * u), dst.Height));
+            g.DrawImage(src, new RectangleF((float)((dx - x0) * u), (float)((dy - y0) * u), (float)(s * u), (float)(s * u * LensH)), new RectangleF(0, hh, src.Width, hh), GraphicsUnit.Pixel);
+            dst.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+            return ms.ToArray();
+        }
+    }
+
+    // ---- Panorama: find where lens B sits over lens A, from one picture of the channel. ----
+    // Both lenses see a strip of the same scene. Search size and place of B that make that strip match best
+    // (on edge images, so different brightness does not matter): first coarse on small pictures, then fine.
+    void PanoOn()
+    {
+        var split = SplitChannels();
+        var todo = new List<Tile>();
+        foreach (var t in tiles) if (t.Half == 1 && split.Contains(t.Ch) && !pano.ContainsKey(t.Ch) && t.Play != 0) todo.Add(t);
+        if (todo.Count == 0) return;
+        panoMsg = "Calculando la panoramica..."; UpdateState();
+        foreach (var t0 in todo)
+        {
+            var t = t0; long play = t.Play;
+            new Thread(() =>
+            {
+                double[] c = null; string err = null;
+                try
+                {
+                    string f; lock (snapLock) f = CaptureFile(play, "camaras_pano");
+                    if (f == null) err = "no pude sacar la foto";
+                    else using (var src = new Bitmap(f)) c = Calibrate(src, out err);
+                }
+                catch (Exception ex) { err = ex.Message; }
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    if (c == null) { panoMsg = "No pude armar la panoramica: " + err; Log("panoramica canal " + t.Ch + ": " + err); UpdateState(); return; }
+                    pano[t.Ch] = c; SavePano(); panoMsg = "";
+                    Log("panoramica canal " + t.Ch + ": s " + c[0].ToString("0.000") + " dx " + c[1].ToString("0.000") + " dy " + c[2].ToString("0.000"));
+                    Rebuild();
+                });
+            }) { IsBackground = true }.Start();
+        }
+    }
+
+    void PanoOff()
+    {
+        panoMsg = "";
+        if (pano.Count == 0) { UpdateState(); return; }
+        pano.Clear(); SavePano(); Rebuild();
+    }
+
+    void SavePano()
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture; var lines = new List<string>();
+        foreach (var kv in pano) lines.Add(kv.Key + " " + kv.Value[0].ToString(inv) + " " + kv.Value[1].ToString(inv) + " " + kv.Value[2].ToString(inv));
+        try { File.WriteAllLines(PanoFile, lines.ToArray()); } catch { }
+    }
+
+    // Builds all squares again with the same cameras (the order file keeps their places).
+    void Rebuild()
+    {
+        var chans = new List<int>(); foreach (var t in tiles) if (!chans.Contains(t.Ch)) chans.Add(t.Ch);
+        chans.Sort();
+        BuildTiles(chans);
+    }
+
+    class Gray { public int W, H; public double[] G; }
+
+    // Gray picture of part of a bitmap, w pixels wide, then turned into edge strength.
+    static Gray Edges(Bitmap src, Rectangle part, int w)
+    {
+        int h = Math.Max(3, part.Height * w / part.Width);
+        var g = new Gray { W = w, H = h, G = new double[w * h] };
+        using (var b = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+        {
+            using (var gr = Graphics.FromImage(b)) { gr.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear; gr.DrawImage(src, new Rectangle(0, 0, w, h), part, GraphicsUnit.Pixel); }
+            var d = b.LockBits(new Rectangle(0, 0, w, h), System.Drawing.Imaging.ImageLockMode.ReadOnly, b.PixelFormat);
+            var raw = new byte[d.Stride * h]; Marshal.Copy(d.Scan0, raw, 0, raw.Length); b.UnlockBits(d);
+            var l = new double[w * h];
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int i = y * d.Stride + x * 3; l[y * w + x] = 0.114 * raw[i] + 0.587 * raw[i + 1] + 0.299 * raw[i + 2]; }
+            for (int y = 1; y < h - 1; y++) for (int x = 1; x < w - 1; x++)
+            {
+                int i = y * w + x; double gx = l[i + 1] - l[i - 1], gy = l[i + w] - l[i - w];
+                g.G[i] = Math.Sqrt(gx * gx + gy * gy);
+            }
+        }
+        return g;
+    }
+
+    // How well B (size s, at dx, dy in A's pixels) matches A where both have picture: correlation from -1 to 1.
+    // Rows near the top and bottom are left out (the date and the camera name are written there).
+    static double Match(Gray A, Gray B, double s, double dx, double dy, double minPart)
+    {
+        int n = 0, m = (int)(A.H * 0.12); double sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+        for (int y = m; y < A.H - m; y++)
+        {
+            double by = (y - dy) / s; if (by < m || by >= B.H - m) continue;
+            int bRow = (int)by * B.W;
+            for (int x = 2; x < A.W - 2; x++)
+            {
+                double bx = (x - dx) / s; if (bx < 2 || bx >= B.W - 2) continue;
+                double a = A.G[y * A.W + x], b = B.G[bRow + (int)bx];
+                n++; sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b;
+            }
+        }
+        if (n < minPart * A.W * A.H) return -2;
+        double cov = sab / n - sa / n * sb / n, va = saa / n - sa / n * sa / n, vb = sbb / n - sb / n * sb / n;
+        return va > 0 && vb > 0 ? cov / Math.Sqrt(va * vb) : -2;
+    }
+
+    // Returns {s, dx, dy} (units: A's width), or null with the reason.
+    static double[] Calibrate(Bitmap src, out string err)
+    {
+        err = null;
+        int hh = src.Height / 2;
+        var rA = new Rectangle(0, 0, src.Width, hh); var rB = new Rectangle(0, hh, src.Width, hh);
+        var A = Edges(src, rA, 96); var B = Edges(src, rB, 96);
+        double best = -3, bs = 1, bdx = 0, bdy = 0;
+        for (double s = 0.7; s <= 1.4; s *= 1.04)
+            for (double dx = -A.W * 0.92; dx <= A.W * 0.92; dx++)
+                for (double dy = -A.H * 0.4; dy <= A.H * 0.4; dy++)
+                {
+                    double v = Match(A, B, s, dx, dy, 0.12);
+                    if (v > best) { best = v; bs = s; bdx = dx / A.W; bdy = dy / A.W; }
+                }
+        Log("panoramica: busqueda gruesa " + best.ToString("0.00"));
+        if (best < 0.25) { err = "las dos lentes no ven una parte en comun (la camara que se mueve apunta a otro lado?)"; return null; }
+        A = Edges(src, rA, 320); B = Edges(src, rB, 320);
+        double fbest = -3, fs = bs, fdx = bdx, fdy = bdy;
+        for (double s = bs * 0.95; s <= bs * 1.05; s *= 1.005)
+            for (double dx = bdx * A.W - 5; dx <= bdx * A.W + 5; dx += 0.5)
+                for (double dy = bdy * A.W - 5; dy <= bdy * A.W + 5; dy += 0.5)
+                {
+                    double v = Match(A, B, s, dx, dy, 0.08);
+                    if (v > fbest) { fbest = v; fs = s; fdx = dx / A.W; fdy = dy / A.W; }
+                }
+        Log("panoramica: busqueda fina " + fbest.ToString("0.00"));
+        return new[] { fs, fdx, fdy };
+    }
+
     const string Page = @"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Camaras</title><style>
 body{margin:0;background:#111;color:#eee;font-family:sans-serif}
@@ -908,13 +1151,15 @@ button{font-size:16px;padding:10px 14px;border:0;border-radius:8px;background:#3
 p.tip{color:#888;font-size:13px;margin:0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px}
 .hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
+#pano.on{background:#fc0;color:#000;font-weight:bold}
 #ptz{display:none;align-items:center;justify-content:center;gap:24px;padding:10px}
 #pad{width:170px;height:170px;border-radius:50%;background:#222;border:2px solid #555;position:relative;touch-action:none}
 #knob{width:60px;height:60px;border-radius:50%;background:#fc0;position:absolute;left:55px;top:55px;pointer-events:none}
 #zoom{display:flex;flex-direction:column;gap:14px}#zoom button{width:64px;height:64px;font-size:28px;touch-action:none}
 </style></head><body>
-<header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
+<header><h1>Camaras</h1><span id=net></span><button id=pano style=display:none>Panoramica</button><button data-all=1>Ver todas</button></header>
 <p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
+<p class=tip id=msg style='color:#fc0'></p>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=grid></div><img id=ghost>
 <script>
@@ -941,7 +1186,10 @@ function draw(s){st=s;var g=document.getElementById('grid');
  while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
   d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd data-hd='+i+'>HD</button></div>';g.appendChild(d)}
  while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
- s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd)});
+ s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd);
+  d.querySelector('img').style.objectFit=/\.3$/.test(c.k)?'contain':'cover'});
+ var pb=document.getElementById('pano');pb.style.display=s.split?'':'none';pb.classList.toggle('on',!!s.pano);
+ document.getElementById('msg').textContent=s.msg||'';
  var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none'}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
 var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
@@ -977,6 +1225,7 @@ function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='no
   var x=st.cams[d.i];st.cams[d.i]=st.cams[j];st.cams[j]=x;draw(st);cmd('order '+st.cams.map(function(c){return c.k}).join(','))}}
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
 document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)return;
+ if(b.id=='pano'){var on=!st.pano;st.pano=on;st.msg=on?'Calculando la panoramica...':'';draw(st);cmd('pano '+(on?1:0));return}
  if(b.dataset.all){setBig(-1);return}
  if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
 connect();
@@ -1100,7 +1349,11 @@ connect();
             else Status("Buscando camaras...");
             var found = DiscoverCameras(nChan, new HashSet<int>(cached));
             // Cameras already on screen count as found if their square got video meanwhile.
-            Invoke((MethodInvoker)delegate { foreach (var t in tiles) if (BytesOf(t.Play) > 20000 && !found.Contains(t.Ch)) found.Add(t.Ch); });
+            Invoke((MethodInvoker)delegate
+            {
+                foreach (var t in tiles) if (BytesOf(t.Play) > 20000 && !found.Contains(t.Ch)) found.Add(t.Ch);
+                foreach (var ch in gotVideo) if (!found.Contains(ch)) found.Add(ch);
+            });
             found.Sort();
             if (found.Count == 0) { if (cached.Count == 0) Status("No encontre camaras con video (ver camaras.log)"); return; }
             if (string.Join(",", found) != string.Join(",", cached))
@@ -1160,7 +1413,7 @@ connect();
         Status(msg + ", reintento en " + (wait / 1000) + " s");
         BeginInvoke((MethodInvoker)delegate {
             status.ForeColor = Color.White; status.Font = new Font("Segoe UI", 28);
-            status.Text = "No hay conexion con las camaras.\n\nProba esto:\n  1. Conectar la PC a la otra red Wi-Fi.\n  2. O reiniciar el router:\n      desenchufarlo, esperar 10 segundos y enchufarlo.\n\n"
+            status.Text = "No hay conexion con las camaras.\n\nProba esto:\n  1. Conectar la PC a la otra red Wi-Fi.\n  2. O reiniciar el router: desenchufarlo y volver a enchufarlo.\n\n"
                 + msg + ". Reintento en " + (wait / 1000) + " s.";
         });
         Thread.Sleep(wait);
