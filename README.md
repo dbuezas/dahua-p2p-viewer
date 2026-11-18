@@ -23,6 +23,7 @@ This app shows the cameras in about 10 seconds.
 - Right click a camera: switch it between low quality (sub stream, fast) and HD (main stream). A red "HD"
   shows on HD cameras. The choice is saved in `hd.txt`. Too many HD cameras at once can hit the NVR's stream limit.
 - Drag a camera onto another one: they swap places. The order is saved in `orden.txt`.
+- When it cannot connect, it shows in big letters what to try: the other Wi-Fi network, or restarting the router.
 - Phone remote: a small web page on port 8080 (`puerto_web` in `camaras.ini`, 0 = off), only for the local network.
   One WebSocket connection carries everything (opening new connections is what fails on a weak Wi-Fi).
   It shows a picture of each camera: tap one to make it big (tap again for all), drag one onto another to swap

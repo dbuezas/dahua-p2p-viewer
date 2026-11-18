@@ -1156,7 +1156,13 @@ connect();
     void RetryLater(string msg, string why)
     {
         int wait = retryMs;
+        // Usually the Wi-Fi is the problem: tell what to do, in big letters.
         Status(msg + ", reintento en " + (wait / 1000) + " s");
+        BeginInvoke((MethodInvoker)delegate {
+            status.ForeColor = Color.White; status.Font = new Font("Segoe UI", 28);
+            status.Text = "No hay conexion con las camaras.\n\nProba esto:\n  1. Conectar la PC a la otra red Wi-Fi.\n  2. O reiniciar el router:\n      desenchufarlo, esperar 10 segundos y enchufarlo.\n\n"
+                + msg + ". Reintento en " + (wait / 1000) + " s.";
+        });
         Thread.Sleep(wait);
         BeginInvoke((MethodInvoker)delegate { Restart(why, Math.Min(wait * 2, 15000)); });
     }
