@@ -1206,7 +1206,7 @@ class CamForm : Form
         int[] ia, ib, ua, ub; byte[] wa;   // per output pixel: Y and U/V index in lens A and B (-1 = none), share of A (0-255)
         // Two-band seam: details blend over a narrow width (wa), colours and light over a wide one (wb); per row, the
         // columns where that is done (bx0..bx1) and the blur radius for the "colours" part.
-        byte[] wb; int[] bx0, bx1; int blurR; float[] tA3, tB3, sA3, sB3;
+        byte[] wb, wc; int[] bx0, bx1; int blurR; float[] tA3, tB3, sA3, sB3;   // wc: share of A's colour (a much wider seam)
         int[] pix; GCHandle pin; byte[] bmi;
 
         // Width / height of the picture, from the calibration alone (the layout needs it before the first frame).
@@ -1257,7 +1257,9 @@ class CamForm : Form
             double band = m3.Band > 0 ? m3.Band * (double)OW / m3.OW : Math.Max(2, OW / 200.0);
             // two bands: details over a narrow seam, colours and light over a wide one (hides a lighter lens)
             double narrow = Math.Max(1.5, OW / 600.0), wide = Math.Max(band, OW / 45.0);
-            blurR = Math.Max(3, (int)(wide / 2)); wb = new byte[n]; bx0 = new int[OH]; bx1 = new int[OH];
+            blurR = Math.Max(3, (int)(wide / 2)); wb = new byte[n]; wc = new byte[n]; bx0 = new int[OH]; bx1 = new int[OH];
+            // colour blends over a much wider width: one lens may already be in night black and white, the other not
+            double chroma = Math.Max(wide * 3, OW / 14.0);
             for (int oy = 0; oy < OH; oy++)
             {
                 int minA = int.MaxValue, maxA = -1, minB = int.MaxValue, maxB = -1;
@@ -1282,14 +1284,17 @@ class CamForm : Form
                 if (su >= 0) seamX = su * OW - 0.5;
                 bRight = m3.ALeft;
                 bx0[oy] = int.MaxValue; bx1[oy] = -1;
+                // the colour blend fits inside the part both lenses see in this row (else its end is a step again)
+                double cw = lo <= hi ? Math.Max(wide, Math.Min(chroma, Math.Min(seamX - lo, hi - seamX))) : wide;
                 for (int ox = 0; ox < OW; ox++)
                 {
                     int k = oy * OW + ox;
                     double d = bRight ? seamX - ox : ox - seamX;
                     double share = !inB[ox] ? 1 : !inA[ox] ? 0 : Math.Max(0, Math.Min(1, 0.5 + d / (2 * narrow)));
                     double shareW = !inB[ox] ? 1 : !inA[ox] ? 0 : Math.Max(0, Math.Min(1, 0.5 + d / (2 * wide)));
-                    wa[k] = (byte)Math.Round(share * 255); wb[k] = (byte)Math.Round(shareW * 255);
-                    if (inA[ox] && inB[ox] && Math.Abs(ox - seamX) <= wide + blurR) { bx0[oy] = Math.Min(bx0[oy], ox); bx1[oy] = ox; }
+                    double shareC = !inB[ox] ? 1 : !inA[ox] ? 0 : Math.Max(0, Math.Min(1, 0.5 + d / (2 * cw)));
+                    wa[k] = (byte)Math.Round(share * 255); wb[k] = (byte)Math.Round(shareW * 255); wc[k] = (byte)Math.Round(shareC * 255);
+                    if (inA[ox] && inB[ox] && Math.Abs(ox - seamX) <= Math.Max(wide + blurR, chroma)) { bx0[oy] = Math.Min(bx0[oy], ox); bx1[oy] = ox; }
                     if (inA[ox]) { int px = (int)(ax[ox] + 0.5), py = (int)(ay[ox] + 0.5); ia[k] = py * w + px; ua[k] = (py / 2) * (w / 2) + px / 2; } else ia[k] = -1;
                     if (inB[ox]) { int px = (int)(bx[ox] + 0.5), py = (int)(by[ox] + 0.5) + lh; ib[k] = py * w + px; ub[k] = (py / 2) * (w / 2) + px / 2; } else ib[k] = -1;
                 }
@@ -1347,40 +1352,38 @@ class CamForm : Form
                         {
                             int x0 = bx0[oy], x1 = bx1[oy], len = x1 - x0 + 1; if (len < 3) continue;
                             if (tA3 == null || tA3.Length < len * 3) { tA3 = new float[len * 3 + 64]; tB3 = new float[len * 3 + 64]; sA3 = new float[len * 3 + 64]; sB3 = new float[len * 3 + 64]; }
+                            // per lens: brightness Y (0) and colour U (1), V (2), raw
                             for (int i = 0; i < len; i++)
                             {
                                 int k = oy * OW + x0 + i, a = pa[k], b = pb[k], ca = qa[k], cb = qb[k];
                                 // a column with only one lens inside the band: that lens for both
                                 if (a < 0) { a = b; ca = cb; } else if (b < 0) { b = a; cb = ca; }
-                                if (a < 0) continue;
-                                int yy = cy[Y[a]], u = U[ca], v = V[ca];
-                                tA3[i * 3] = cl[((yy + crv[v] + 128) >> 8) + 384]; tA3[i * 3 + 1] = cl[((yy + cgu[u] + cgv[v] + 128) >> 8) + 384]; tA3[i * 3 + 2] = cl[((yy + cbu[u] + 128) >> 8) + 384];
-                                yy = cy[Y[b]]; u = U[cb]; v = V[cb];
-                                tB3[i * 3] = cl[((yy + crv[v] + 128) >> 8) + 384]; tB3[i * 3 + 1] = cl[((yy + cgu[u] + cgv[v] + 128) >> 8) + 384]; tB3[i * 3 + 2] = cl[((yy + cbu[u] + 128) >> 8) + 384];
+                                if (a < 0) { a = 0; ca = 0; b = 0; cb = 0; }
+                                tA3[i * 3] = Y[a]; tA3[i * 3 + 1] = U[ca]; tA3[i * 3 + 2] = V[ca];
+                                tB3[i * 3] = Y[b]; tB3[i * 3 + 1] = U[cb]; tB3[i * 3 + 2] = V[cb];
                             }
-                            // box blur along the row (running sums), radius blurR, edges clamped
-                            for (int c = 0; c < 3; c++)
+                            // blurred brightness along the row (running sums), radius blurR, edges clamped
                             {
                                 float accA = 0, accB = 0; int cnt = 0;
-                                for (int i = -blurR; i <= blurR; i++) { int j = Math.Max(0, Math.Min(len - 1, i)); accA += tA3[j * 3 + c]; accB += tB3[j * 3 + c]; cnt++; }
+                                for (int i = -blurR; i <= blurR; i++) { int j = Math.Max(0, Math.Min(len - 1, i)); accA += tA3[j * 3]; accB += tB3[j * 3]; cnt++; }
                                 for (int i = 0; i < len; i++)
                                 {
-                                    sA3[i * 3 + c] = accA / cnt; sB3[i * 3 + c] = accB / cnt;
+                                    sA3[i] = accA / cnt; sB3[i] = accB / cnt;
                                     int jo = Math.Max(0, Math.Min(len - 1, i - blurR)), ji = Math.Max(0, Math.Min(len - 1, i + blurR + 1));
-                                    accA += tA3[ji * 3 + c] - tA3[jo * 3 + c]; accB += tB3[ji * 3 + c] - tB3[jo * 3 + c];
+                                    accA += tA3[ji * 3] - tA3[jo * 3]; accB += tB3[ji * 3] - tB3[jo * 3];
                                 }
                             }
                             for (int i = 0; i < len; i++)
                             {
-                                int k = oy * OW + x0 + i; float sn = sh[k] / 255f, sw = wb[k] / 255f; int rgb = 0;
-                                for (int c = 0; c < 3; c++)
-                                {
-                                    float lowA = sA3[i * 3 + c], lowB = sB3[i * 3 + c];
-                                    float val = sw * lowA + (1 - sw) * lowB + sn * (tA3[i * 3 + c] - lowA) + (1 - sn) * (tB3[i * 3 + c] - lowB);
-                                    int iv = (int)(val + 0.5f); iv = iv < 0 ? 0 : iv > 255 ? 255 : iv;
-                                    rgb = (rgb << 8) | iv;
-                                }
-                                o[k] = rgb;
+                                int k = oy * OW + x0 + i; if (pa[k] < 0 && pb[k] < 0) continue;
+                                float sn = sh[k] / 255f, sw = wb[k] / 255f, sc = wc[k] / 255f;
+                                float lowA = sA3[i], lowB = sB3[i];
+                                float yv = sw * lowA + (1 - sw) * lowB + sn * (tA3[i * 3] - lowA) + (1 - sn) * (tB3[i * 3] - lowB);
+                                float uv = sc * tA3[i * 3 + 1] + (1 - sc) * tB3[i * 3 + 1], vv = sc * tA3[i * 3 + 2] + (1 - sc) * tB3[i * 3 + 2];
+                                int yi = (int)(yv + 0.5f), ui = (int)(uv + 0.5f), vi = (int)(vv + 0.5f);
+                                yi = yi < 0 ? 0 : yi > 255 ? 255 : yi; ui = ui < 0 ? 0 : ui > 255 ? 255 : ui; vi = vi < 0 ? 0 : vi > 255 ? 255 : vi;
+                                int yy = cy[yi];
+                                o[k] = (cl[((yy + crv[vi] + 128) >> 8) + 384] << 16) | (cl[((yy + cgu[ui] + cgv[vi] + 128) >> 8) + 384] << 8) | cl[((yy + cbu[ui] + 128) >> 8) + 384];
                             }
                         }
                 }

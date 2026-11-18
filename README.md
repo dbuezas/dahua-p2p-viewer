@@ -62,6 +62,8 @@ This app shows the cameras in about 10 seconds.
   - The PC blends the seam in two bands: each lens's picture is split into a blurred part (colours, light) and the
     rest (details); the blurred parts blend over a wide width (hides a lighter or darker lens) and the details over a
     narrow one (no doubles). Only the columns around the seam are worked, row by row.
+    Colour blends over a much wider width (as much of the shared part as there is): at dusk one lens may already be in
+    night black and white while the other is still in colour.
   - The result is shown zoomed on the seam, cut to only picture. "Ver superpuestas" shows both lenses half and half at the end (the seam hides errors; this does not). If the
     per-row distances do not make the shared part match better than none, none are used.
   - The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels, the seam per row) as one binary
