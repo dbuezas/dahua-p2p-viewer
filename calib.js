@@ -652,9 +652,10 @@ var Calib = (function () {
   // In a band of +-HB pixels around the seam, what is left between both lenses is measured (patches of A searched in
   // B, both as drawn), cleaned, smoothed, and kept gentle (neighbours differ by little, so nothing folds). Each lens
   // then bends half of it toward the other, fully in the middle of the band and fading to nothing at its edges.
-  var HB = 32;
+  // HB 128: the whole shared part bends (not only next to the seam), so far things line up in it too.
+  var HB = 128;
   function seamWarp(st, show) {
-    var c = st.cyl, g = st.rig, ws = st.ws, R = 8, P = 4, step = 6, r = [0, 0, 0], q = [0, 0], y, x, i, j;
+    var c = st.cyl, g = st.rig, ws = st.ws, R = 16, P = 4, step = 6, r = [0, 0, 0], q = [0, 0], y, x, i, j;
     st.warp = null;
     if (!ws) return;
     var lo = 1e9, hi = -1; for (y = 0; y < c.CH; y++) if (ws.seam[y] >= 0) { lo = Math.min(lo, ws.seam[y]); hi = Math.max(hi, ws.seam[y]); }
@@ -694,18 +695,19 @@ var Calib = (function () {
       for (j = -2; j <= 2; j++) for (i = -2; i <= 2; i++) { var xx = gx + i, yy = gy + j; if (xx < 0 || yy < 0 || xx >= NX || yy >= NY || !has[yy * NX + xx]) continue; lx.push(mdx[yy * NX + xx]); ly.push(mdy[yy * NX + xx]); }
       if (lx.length < 4) { keep[gi] = 0; continue; } lx.sort(function (a2, b2) { return a2 - b2; }); ly.sort(function (a2, b2) { return a2 - b2; });
       if (Math.abs(mdx[gi] - lx[lx.length >> 1]) > 2.5 || Math.abs(mdy[gi] - ly[ly.length >> 1]) > 2.5) keep[gi] = 0; }
-    // fill: smooth surface pulled to the measures, zero outside the band
+    // fill: smooth surface pulled hard to the measures (free at the band's edges: warpAt fades it there)
     var fx = new Float32Array(N), fy = new Float32Array(N);
     for (var it = 0; it < 600; it++) for (gy = 0; gy < NY; gy++) for (gx = 0; gx < NX; gx++) {
-      gi = gy * NX + gx; if (out[gi]) { fx[gi] = 0; fy[gi] = 0; continue; }
+      gi = gy * NX + gx;
       var s1 = 0, s2 = 0, cn = 0;
       if (gx > 0) { s1 += fx[gi - 1]; s2 += fy[gi - 1]; cn++; } if (gx < NX - 1) { s1 += fx[gi + 1]; s2 += fy[gi + 1]; cn++; }
       if (gy > 0) { s1 += fx[gi - NX]; s2 += fy[gi - NX]; cn++; } if (gy < NY - 1) { s1 += fx[gi + NX]; s2 += fy[gi + NX]; cn++; }
-      if (keep[gi]) { s1 += cn * mdx[gi]; s2 += cn * mdy[gi]; cn *= 2; }
+      // a measure counts 8 times its neighbours: the bending reaches what was measured (it is faded later, by warpAt)
+      if (keep[gi]) { s1 += 8 * cn * mdx[gi]; s2 += 8 * cn * mdy[gi]; cn *= 9; }
       fx[gi] = s1 / cn; fy[gi] = s2 / cn;
     }
-    // gentle: neighbouring nodes differ by at most a quarter of their distance (nothing folds or smears)
-    var lim = step * 0.25;
+    // gentle: neighbouring nodes differ by at most half their distance (nothing folds)
+    var lim = step * 0.5;
     for (var pass = 0; pass < 50; pass++) { var chg = false;
       for (gy = 0; gy < NY; gy++) for (gx = 0; gx < NX; gx++) { gi = gy * NX + gx;
         [gx + 1 < NX ? gi + 1 : -1, gy + 1 < NY ? gi + NX : -1].forEach(function (h2) { if (h2 < 0) return; [fx, fy].forEach(function (f) { var d = f[h2] - f[gi]; if (Math.abs(d) > lim) { var fix = (Math.abs(d) - lim) / 2 * Math.sign(d); f[gi] += fix; f[h2] -= fix; chg = true; } }); }); }
