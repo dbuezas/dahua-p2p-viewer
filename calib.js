@@ -17,9 +17,10 @@
 'use strict';
 var Calib = (function () {
   var LW = 640, LH = 360;
-  // The camera itself (same for every calibration): lens shape, how lens A sits on the body, lens distance.
-  // Found once from three pictures taken at different times (see README).
-  var CAM = { F: 671.58, K: -0.2496, tA: -0.02703, base: 0.09 };
+  // The camera itself (same for every calibration): lens shape, how lens A sits on the body (tilt tA), and where
+  // lens B is from lens A: 9 cm (only scales the distances, the picture does not change with it), leaned ax
+  // sideways and az forward from straight down (0: straight down). Found once from three pictures.
+  var CAM = { F: 671.58, K: -0.2496, tA: -0.02703, base: 0.09, ax: 0, az: 0 };
   function mul(a, b) { var r = [0, 0, 0, 0, 0, 0, 0, 0, 0]; for (var i = 0; i < 3; i++) for (var j = 0; j < 3; j++) for (var k = 0; k < 3; k++) r[i * 3 + j] += a[i * 3 + k] * b[k * 3 + j]; return r; }
   function tr(a) { return [a[0], a[3], a[6], a[1], a[4], a[7], a[2], a[5], a[8]]; }
   // Rz(roll) * Rx(pitch) * Ry(yaw), like the PC's Lens
@@ -44,7 +45,8 @@ var Calib = (function () {
   function Rig(o, pan, tilt) {
     var MA = rot(0, o.tA, 0);
     var R = mul(rot(0, tilt, 0), mul(rot(pan, 0, 0), tr(MA)));
-    var h = [MA[1] * o.base / 2, MA[4] * o.base / 2, MA[7] * o.base / 2];
+    var ax = o.ax || 0, az = o.az || 0, d = [Math.sin(ax), Math.cos(ax) * Math.cos(az), Math.sin(az)];
+    var h = [0, 1, 2].map(function (i) { return (MA[i * 3] * d[0] + MA[i * 3 + 1] * d[1] + MA[i * 3 + 2] * d[2]) * o.base / 2; });
     return { L: { F: o.F, K: o.K }, R: R, h: h, pan: pan, tilt: tilt };
   }
   function inside(q) { return q[0] >= 0 && q[1] >= 0 && q[0] < LW - 1 && q[1] < LH - 1; }
@@ -271,13 +273,9 @@ var Calib = (function () {
     // the seam is drawn from top to bottom while lens B settles row by row, then the final picture fades in
     show({ stage: 5, text: 'Costura: por donde las dos lentes se ven igual', frac: 0.92, rig: g, mix: true, W: true, seamLine: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 1900, anim: 1700, fade: 400 });
     framing(st);
-    // everything first (black corners), then the cut closes in (a darkening outside the kept box), then the result
-    setClip(st, 0); var f0 = st.fr, e = st.edges, sc0 = f0.OW / (st.o.pw || 720);
-    var box = [(e.x0 - f0.x0) / sc0, (e.iT - f0.y0) / sc0, (e.x1 + 1 - f0.x0) / sc0, (e.iB - f0.y0) / sc0];
-    show({ stage: 6, text: 'Todo lo que ven las dos camaras', frac: 0.97, rig: g, W: true, frame: f0, seam: true, hold: 900, fade: 700 });
-    show({ stage: 6, text: 'Recortando los bordes', frac: 0.98, rig: g, W: true, frame: f0, seam: true, hold: 1300, anim: 1200, cut: box });
-    setClip(st, 1);
-    show({ stage: 7, text: 'Listo', frac: 1, rig: g, W: true, frame: st.fr, seam: true, hold: 300 });
+    // the result, zoomed on the seam (that is where one can see whether it fits): about 25 degrees wide around it
+    st.view.final = seamBox(st);
+    show({ stage: 7, text: 'Listo', frac: 1, rig: g, W: true, seam: true, cylObj: st.view.cyl, crop: st.view.final, hold: 300, fade: 700 });
     return st;
   }
 
@@ -296,6 +294,16 @@ var Calib = (function () {
       st.viewCrop = { x0: Math.max(0, Math.round(mid - half)), x1: Math.min(V.CW, Math.round(mid + half)), y0: Math.max(0, by0 - 10), y1: Math.min(V.CH, by1 + 10) };
     }
     st.cyl = keepC; st.rig = keep0;
+  }
+  // Box on the show's canvas centred on the seam, about 25 degrees wide, over the rows where both lenses see.
+  function seamBox(st) {
+    var V = st.view.cyl, cr = st.view.crop, r = [0, 0, 0], xs = [];
+    if (!st.ws) return cr;
+    for (var y = 0; y < st.cyl.CH; y += 4) { var sx = st.ws.seam[y]; if (sx < 0) continue; cylRay(st.cyl, sx, y, r); var p = cylOf(V, r); if (p[1] >= cr.y0 && p[1] <= cr.y1) xs.push(p[0]); }
+    if (!xs.length) return cr;
+    xs.sort(function (a, b) { return a - b; });
+    var mid = xs[xs.length >> 1], half = Math.max(0.22 * V.Fc, (xs[xs.length - 1] - xs[0]) * 0.7);
+    return { x0: Math.max(0, Math.round(mid - half)), x1: Math.min(V.CW, Math.round(mid + half)), y0: cr.y0, y1: cr.y1 };
   }
   // Box around the part both lenses see (cylinder pixels of c), wider on the sides: the show zooms on it.
   function stripBox(st, c, g) {
@@ -353,7 +361,7 @@ var Calib = (function () {
         if (kk === NW) continue;
         wv[gi] = WMAX * kk / NW; known[gi] = 1; W[gi] = wv[gi];
       }
-      if (gy === NY - 1) show({ stage: 4, text: 'Midiendo distancias (claro = cerca)', frac: 0.8, rig: g, mix: true, wdots: { step: step, NX: NX, known: known, wv: wv }, scanAnim: true, cylObj: st.view && st.view.cyl, crop: st.view && st.view.crop, hold: 3200, anim: 3000 });
+      if (gy === NY - 1) show({ stage: 4, text: 'Distancias medidas (calido = cerca)', frac: 0.8, rig: g, mix: true, wdots: { step: step, NX: NX, known: known, wv: wv }, dotsFade: true, cylObj: st.view && st.view.cyl, crop: st.view && st.view.crop, hold: 1300, anim: 400 });
     }
     // clean: a measure needs 2 neighbours (in the 5x5 around) that agree with it
     var keep = known.slice(), tolW = function (m) { return 0.08 + 0.25 * m; };
@@ -646,7 +654,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
       return;
     }
     var pv = Calib.preview(state, PW, opt);
-    self.postMessage({ t: 'show', text: opt.text, frac: opt.frac, w: pv.w, h: pv.h, img: pv.data, lines: pv.lines, dots: pv.dots, seam: pv.seam, reveal: opt.reveal, scan: pv.scan, hold: opt.hold || 120, fade: opt.fade || 0, anim: opt.anim || 0, cut: opt.cut || null, scanAnim: !!opt.scanAnim }, [pv.data.buffer]);
+    self.postMessage({ t: 'show', text: opt.text, frac: opt.frac, w: pv.w, h: pv.h, img: pv.data, lines: pv.lines, dots: pv.dots, seam: pv.seam, reveal: opt.reveal, scan: pv.scan, hold: opt.hold || 120, fade: opt.fade || 0, anim: opt.anim || 0, dotsFade: !!opt.dotsFade }, [pv.data.buffer]);
   };
   self.onmessage = function (e) {
     var m = e.data;
@@ -668,7 +676,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
   };
   var finish = function () {
     var ms = Calib.mesh(state), buf = Calib.pack(ms);
-    post({ stage: 7, text: 'Listo: paneo ' + (state.rig.pan * 180 / Math.PI).toFixed(1) + '°, inclinacion ' + (state.rig.tilt * 180 / Math.PI).toFixed(1) + '°, error tipico ' + state.matchErr.toFixed(1) + ' px, ' + state.matches.length + ' puntos, ' + state.measured + ' distancias', frac: 1, rig: state.rig, W: true, frame: state.fr, seam: true }, true);
+    post({ stage: 7, cylObj: state.view.cyl, crop: state.view.final || state.view.crop, text: 'Listo: paneo ' + (state.rig.pan * 180 / Math.PI).toFixed(1) + '°, inclinacion ' + (state.rig.tilt * 180 / Math.PI).toFixed(1) + '°, error tipico ' + state.matchErr.toFixed(1) + ' px, ' + state.matches.length + ' puntos, ' + state.measured + ' distancias', frac: 1, rig: state.rig, W: true, seam: true }, true);
     self.postMessage({ t: 'done', mesh: buf, OW: ms.head.OW, OH: ms.head.OH }, [buf]);
   };
 }

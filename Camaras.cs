@@ -813,10 +813,15 @@ class CamForm : Form
         int port = int.Parse(C("puerto_web", "8080"));
         if (port <= 0) return;
         var srv = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Any, port);
-        try { srv.Start(); } catch (Exception ex) { Log("web: no pude abrir el puerto " + port + ": " + ex.Message); return; }
-        Log("web: control remoto en puerto " + port + " (" + string.Join(", ", LocalIps()) + ")");
         new Thread(() =>
         {
+            // Right after a restart the old copy may still hold the port for a few seconds: keep trying.
+            for (int tries = 0; ; tries++)
+            {
+                try { srv.Start(); break; }
+                catch (Exception ex) { if (tries == 0 || tries % 30 == 0) Log("web: no pude abrir el puerto " + port + " (intento " + (tries + 1) + "): " + ex.Message); Thread.Sleep(2000); }
+            }
+            Log("web: control remoto en puerto " + port + " (" + string.Join(", ", LocalIps()) + ")");
             while (true)
             {
                 try
@@ -1601,6 +1606,7 @@ function calOver(g,m,a){var W=m.w,H=m.h,lw=Math.max(1.5,W/400);
   g.fillStyle=g.strokeStyle;g.beginPath();g.arc(L[i],L[i+1],lw*1.3,0,7);g.fill()}
  // distances: glowing dots, warm = near, cold = far
  var D=m.dots||[];g.save();g.shadowBlur=W/90;
+ if(m.dotsFade)g.globalAlpha=a;
  for(i=0;i<D.length;i+=3){if(scanY!=null&&D[i+1]>scanY)continue;var v=Math.min(1,D[i+2]/2.5),c='hsl('+Math.round(220-200*v)+',100%,'+Math.round(55+15*v)+'%)';g.fillStyle=c;g.shadowColor=c;g.beginPath();g.arc(D[i],D[i+1],Math.max(2,W/260),0,7);g.fill()}
  g.restore();
  // the seam, drawn from the top down
