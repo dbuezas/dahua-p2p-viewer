@@ -395,7 +395,7 @@ var Calib = (function () {
       show({ textOnly: true, text: 'Vuelta ' + round + ': costo ' + before.toFixed(2) + ' -> ' + vb.toFixed(2), frac: 0.44 });
       if (round > 1 && vb > before * 0.99) break;   // this round did not help: done
     }
-    if (o.joint2 !== false) { st.rig = rigX(xb); cylinder(st); st.rowKnots = null; var msJ = matches; xb = jointDescent(st, xb, rigX, show, showBest, D, function (v) { return pairCost(v.slice(0, 6), msJ); }); }
+    if (o.joint2 !== false) { st.rig = rigX(xb); cylinder(st); st.rowKnots = null; var msJ = matches; xb = jointDescent(st, xb, rigX, show, showBest, D, function (v) { return pairCost(v.slice(0, 6), msJ); }); shown = rigX(xb); }
     var gF = rigX(xb), esF = matches.map(function (m) { return epi(gF, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
     st.fitX = xb;
     fr2 = { g: gF, x: xb, good: esF.filter(function (e) { return e < 2.5; }).length, med: esF[esF.length >> 1] };
@@ -405,8 +405,8 @@ var Calib = (function () {
     cylinder(st);
     st.view = { cyl: st.viewCyl, crop: stripBox(st, st.viewCyl, g) || st.viewCrop };
     show({ stage: 3, text: 'Encajando las lentes', frac: 0.48, rig: g, mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 1300,
-      slide: { from: shown, to: g, c: st.view.cyl, crop0: st.viewCrop || st.view.crop, crop1: st.view.crop, matches: matches, dur: 1200 } });
-    show({ stage: 3, text: 'Encajadas: error tipico ' + st.matchErr.toFixed(1) + ' px, ' + fr2.good + ' de ' + matches.length + ' puntos encajan', frac: 0.5, rig: g, mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 900 });
+      slide: { from: shown, to: g, c: st.view.cyl, crop0: st.viewCrop || st.view.crop, crop1: st.view.crop, matches: matches, knots: st.rowKnots, dur: 1200 } });
+    show({ stage: 3, text: 'Encajadas: error tipico ' + st.matchErr.toFixed(1) + ' px, ' + fr2.good + ' de ' + matches.length + ' puntos encajan', frac: 0.5, rig: g, mix: true, matches: matches, knots: st.rowKnots, cylObj: st.view.cyl, crop: st.view.crop, hold: 900 });
     // a wrong result must not reach the TV
     if (fr2.good < 15 || fr2.med > 4) throw new Error('no pude encajar las lentes (error tipico ' + fr2.med.toFixed(1) + ' px, ' + fr2.good + ' puntos buenos). Proba de nuevo o mové la camara 4.');
 
@@ -417,7 +417,8 @@ var Calib = (function () {
     if (stripMatch(st, true) < stripMatch(st, false)) seam(st, show, true);
     if (o.warp !== false) seamWarp(st, show);
     // lens B was shown as if everything were far; now each row settles at its band's distance (smoothly)
-    show({ stage: 5, text: 'Ajustando la camara 4 a la distancia de cada cosa', frac: 0.88, rig: g, mix: true, W: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 1500,
+    // (when the descent already moved the rows, they are already in place: nothing to settle)
+    if (!st.rowKnots) show({ stage: 5, text: 'Ajustando la camara 4 a la distancia de cada cosa', frac: 0.88, rig: g, mix: true, W: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 1500,
       slide: { rows: true, to: g, c: st.view.cyl, crop1: st.view.crop, dur: 1400 } });
     // then the bending grows smoothly from none to all (it used to pop in with the seam)
     if (st.warp) {
@@ -612,6 +613,8 @@ var Calib = (function () {
   function outToCyl(fr, ox, oy, p) { p[0] = fr.x0 + ox; p[1] = fr.y0 + oy; }
 
   // Row distance curve of the joint descent: knots over the work canvas height, straight lines between them.
+  // distance of lens B at ray r by a row curve's knots (for the show: rows as the descent has them now)
+  function knotWr(st, k, r) { var y = cylOf(st.cyl, r)[1], n = k.length, f = Math.max(0, Math.min(n - 1.0001, y / (st.cyl.CH - 1) * (n - 1))), i = f | 0; return k[i] + (k[i + 1] - k[i]) * (f - i); }
   function rowW(st, y) {
     var k = st.rowKnots, n = k.length, f = Math.max(0, Math.min(n - 1.0001, y / (st.cyl.CH - 1) * (n - 1))), i = f | 0;
     return k[i] + (k[i + 1] - k[i]) * (f - i);
@@ -653,8 +656,10 @@ var Calib = (function () {
         var improved = false;
         for (var p = 0; p < v.length; p++) for (var sg = -1; sg <= 1; sg += 2) {
           var t = v.slice(); t[p] += sg * step0[p] * sc; var sv = score(t); it++;
-          if (sv > best) { best = sv; v = t; improved = true; if (p < 6) showBest('Todo junto (' + names[p] + '), coincidencia ' + best.toFixed(3), 0.47, v, 90); }
+          if (sv > best) { best = sv; v = t; improved = true; }
         }
+        // what the descent has now, all of it (direction, lens, where B sits and the row curve) in one picture
+        if (improved && show) show({ stage: 2, text: 'Todo junto: paso ' + sc + ', vuelta ' + (pass + 1) + ', coincidencia ' + best.toFixed(3), frac: 0.47, rig: rigX(v), knots: v.slice(6), mix: true, cylObj: st.viewCyl, crop: st.viewCrop, hold: 110, fade: 90 });
         if (show) show({ textOnly: true, text: 'Todo junto: paso ' + sc + ', vuelta ' + (pass + 1) + ', ' + it + ' pruebas, coincidencia ' + best.toFixed(3), frac: 0.47 });
         if (!improved) break;
       }
@@ -803,7 +808,7 @@ var Calib = (function () {
       if ((opt.W || opt.seam) && st.ws) pw = other ? cylOf(wc, r) : p;
       var inA, inB, k = (y * PW + x) * 4, t;
       if (opt.W && st.ws && st.warp && g === st.rig) { var fl = sampleAB(st, pw[0], pw[1], qa, qb); inA = !!(fl & 1); inB = !!(fl & 2); }
-      else { inA = toA(g, r, 0, qa); inB = opt.W && st.ws ? toBrow(st, r, pw[1], qb) : toB(g, r, 0, qb); }
+      else { inA = toA(g, r, 0, qa); inB = opt.W && st.ws ? toBrow(st, r, pw[1], qb) : opt.knots ? toB(g, r, 2 * knotWr(st, opt.knots, r), qb) : toB(g, r, 0, qb); }
       if (!inA && !inB) { img[k + 3] = 255; continue; }
       if (opt.seam && st.ws && inA && inB) { var sxx = st.ws.seam[Math.max(0, Math.min(wc.CH - 1, Math.round(pw[1])))], bw = st.warp ? HB / 2 : 0.5, dd = st.aLeft ? pw[0] - sxx : sxx - pw[0]; t = Math.max(0, Math.min(1, 0.5 + dd / (2 * bw))); }
       else t = inA && inB ? 0.5 : inB ? 1 : 0;
@@ -855,7 +860,7 @@ var Calib = (function () {
     for (var y = 0; y < LHp; y++) for (var x = 0; x < LWp; x++) {
       cylRay(c, U.x0 + (x + 0.5) * sc, U.y0 + (y + 0.5) * sc, r); var k = (y * LWp + x) * 4;
       if (toA(g, r, 0, qa)) { for (var ch = 0; ch < 3; ch++) la[k + ch] = colAt(st.inp.Ac, qa[0], qa[1], ch); la[k + 3] = 255; }
-      if (toB(g, r, 0, qb)) { for (ch = 0; ch < 3; ch++) lb[k + ch] = colAt(st.inp.Bc, qb[0], qb[1], ch); lb[k + 3] = 255; }
+      if (toB(g, r, sl.knots ? 2 * knotWr(st, sl.knots, r) : 0, qb)) { for (ch = 0; ch < 3; ch++) lb[k + ch] = colAt(st.inp.Bc, qb[0], qb[1], ch); lb[k + 3] = 255; }
     }
     var L = function (v, o0) { return (v - o0) / sc; };
     var lines = [];

@@ -1438,6 +1438,14 @@ class CamForm : Form
                                 }
                             above = row;
                         }
+                        // the seam, as the phone chose it (white, with a dark edge so it shows on bright places too)
+                        if (m3.Seam != null)
+                            for (int y = 0; y < oh; y++)
+                            {
+                                double su = m3.Seam[Math.Min(m3.OH - 1, (int)((y + 0.5) * m3.OH / oh))]; if (su < 0) continue;
+                                int sx = (int)(su * w);
+                                for (int d = -2; d <= 2; d++) { int xx = sx + d; if (xx < 0 || xx >= w) continue; dst.SetPixel(xx, y, Math.Abs(d) == 2 ? Color.Black : Color.White); }
+                            }
                     }
                     dst.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
                     return ms.ToArray();
@@ -1502,7 +1510,7 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 <p class=tip id=msg style='color:#fc0'></p>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=grid></div><img id=ghost>
-<div id=pano style='display:none;padding:0 10px 14px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=3>Si</button> <button id=calbtn>Calibrar</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4.</p></div>
+<div id=pano style='display:none;padding:0 10px 14px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=3>Si</button> <button id=calbtn>Calibrar</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4, linea blanca = costura.</p></div>
 <script>
 var st={big:-1,cams:[]};
 // ONE connection that stays open (WebSocket) for everything; if it drops, connect again at once.
