@@ -1925,6 +1925,7 @@ button{font-size:16px;padding:10px 14px;border:0;border-radius:8px;background:#3
 .cam.big{border-color:#fc0}
 .cam img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#222;touch-action:none;-webkit-user-drag:none;user-select:none}
 .cam.target{border-color:#4af}.cam.drag{opacity:.5}
+.cam.wide{grid-column:1/-1}.cam.wide img{aspect-ratio:16/5;object-fit:contain}
 #ghost{position:fixed;width:140px;pointer-events:none;opacity:.8;border-radius:6px;display:none;z-index:9}
 p.tip{color:#888;font-size:13px;margin:0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px}
@@ -1966,7 +1967,7 @@ function draw(s){st=s;var g=document.getElementById('grid');
   d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd data-hd='+i+'>HD</button></div>';g.appendChild(d)}
  while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
  s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd);
-  d.querySelector('img').style.objectFit=/\.3$/.test(c.k)?'contain':'cover'});
+  d.classList.toggle('wide',/\.3$/.test(c.k))});
  var pb=document.getElementById('pano');pb.style.display=s.split?'':'none';
  [].forEach.call(pb.querySelectorAll('button'),function(b){b.classList.toggle('on',+b.dataset.pano==(+s.pano||0))});
  document.getElementById('msg').textContent=s.msg||'';
