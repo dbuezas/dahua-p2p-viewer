@@ -334,15 +334,34 @@ var Calib = (function () {
       if (it - lastShown < 3) return;
       lastShown = it; lastX = x4.slice(); showBest(label + ': ' + D2(x4), 0.42, x4, 110);
     }; };
-    fr2 = fitRig(win.t, matches, 120, eachFit('Afinando con ' + matches.length + ' puntos en comun'));
-    for (var round = 0; round < (o.rounds || 0); round++) {
-      var ms2 = findMatches(fr2.g, 800);
-      if (ms2.length < 8) break;
-      lastShown = -1;
-      var fr3 = fitRig({ pan: fr2.g.pan, tilt: fr2.g.tilt, F: fr2.g.L.F, K: fr2.g.L.K }, ms2, 120, eachFit('Vuelta ' + (round + 2) + ', ' + ms2.length + ' puntos'));
-      if (fr3.good < fr2.good * 0.9) break;
-      matches = ms2; fr2 = fr3;
+    // Rounds that take turns: shared corners searched again with the current model, then the direction (pan,
+    // tilt) with the lens kept, then the lens (F, K) with the direction kept; until a round no longer helps.
+    // (Each part can move the best of the other, so they take turns rather than one after the other once.)
+    function pairCost(x, ms) {
+      var gg = rigX(x), es = ms.map(function (m) { return epi(gg, m[0], m[1], m[2], m[3], lam).c; }).sort(function (a, b) { return a - b; });
+      var use = Math.max(6, Math.floor(es.length * 0.9)), e = 0;
+      for (var i2 = 0; i2 < use; i2++) e += es[i2] < 2 ? es[i2] * es[i2] : 4 * es[i2] - 4;
+      // the lens stays near the camera's known shape (loosely: a picture this narrow says little about it)
+      return e / use + Math.pow((x[2] - o.F) / 20, 2) + Math.pow((x[3] - o.K) / 0.05, 2);
     }
+    function part(x, ms, which, label) {
+      var idx = which === 'dir' ? [0, 1] : [2, 3], stp = which === 'dir' ? [0.5 * D, 0.3 * D] : [6, 0.02];
+      var f = nelder(function (v) { var y = x.slice(); y[idx[0]] = v[0]; y[idx[1]] = v[1]; return pairCost(y, ms); }, [x[idx[0]], x[idx[1]]], stp, 60, function (it, v) {
+        var y = x.slice(); y[idx[0]] = v[0]; y[idx[1]] = v[1]; eachFit(label)(it, y);
+      });
+      var y2 = x.slice(); y2[idx[0]] = f.x[0]; y2[idx[1]] = f.x[1]; return { x: y2, v: f.v };
+    }
+    var xb = [win.t.pan, win.t.tilt, win.t.F || o.F, win.t.K != null ? win.t.K : o.K], vb = pairCost(xb, matches);
+    for (var round = 1; round <= 5; round++) {
+      if (round > 1) { var ms2 = findMatches(rigX(xb), 800, function (ms, n, tot) { show({ textOnly: true, text: 'Vuelta ' + round + ': buscando puntos en comun ' + ms.length + ' (de ' + n + ')', frac: 0.42 }); }); if (ms2.length >= 8) { matches = ms2; vb = pairCost(xb, matches); } }
+      var before = vb;
+      lastShown = -1; var pd = part(xb, matches, 'dir', 'Vuelta ' + round + ', ' + matches.length + ' puntos: direccion'); if (pd.v < vb) { xb = pd.x; vb = pd.v; }
+      lastShown = -1; var pl = part(xb, matches, 'lens', 'Vuelta ' + round + ', ' + matches.length + ' puntos: lente'); if (pl.v < vb) { xb = pl.x; vb = pl.v; }
+      show({ textOnly: true, text: 'Vuelta ' + round + ': costo ' + before.toFixed(2) + ' -> ' + vb.toFixed(2), frac: 0.44 });
+      if (round > 1 && vb > before * 0.99) break;   // this round did not help: done
+    }
+    var gF = rigX(xb), esF = matches.map(function (m) { return epi(gF, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
+    fr2 = { g: gF, x: xb, good: esF.filter(function (e) { return e < 2.5; }).length, med: esF[esF.length >> 1] };
     var g = fr2.g;
     st.rig = g; st.matchErr = fr2.med; st.matches = matches;
     // zoom onto the shared strip, lens B gliding the last bit into place
