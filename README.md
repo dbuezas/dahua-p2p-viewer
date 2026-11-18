@@ -62,10 +62,6 @@ This app shows the cameras in about 10 seconds.
   - The PC blends the seam in two bands: each lens's picture is split into a blurred part (colours, light) and the
     rest (details); the blurred parts blend over a wide width (hides a lighter or darker lens) and the details over a
     narrow one (no doubles). Only the columns around the seam are worked, row by row.
-    Live seam: on every second picture the PC measures, every 8 rows along the seam, how far lens B still is from
-    lens A (a person walking by is nearer than the wall the calibration fitted), and both lenses bend half of it
-    toward each other, fading out 40 px from the seam. Places without detail go back to no bending. A file named
-    `sin_costura_vivo` next to the program turns it off.
     Colour blends over a much wider width (as much of the shared part as there is): at dusk one lens may already be in
     night black and white while the other is still in colour.
   - The result is shown zoomed on the seam, cut to only picture. "Ver superpuestas" shows both lenses half and half at the end (the seam hides errors; this does not). If the

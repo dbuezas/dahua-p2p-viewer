@@ -1206,12 +1206,7 @@ class CamForm : Form
         int[] ia, ib, ua, ub; byte[] wa;   // per output pixel: Y and U/V index in lens A and B (-1 = none), share of A (0-255)
         // Two-band seam: details blend over a narrow width (wa), colours and light over a wide one (wb); per row, the
         // columns where that is done (bx0..bx1) and the blur radius for the "colours" part.
-        byte[] wb, wc; int[] bx0, bx1; int blurR; float[] tA3, tB3, sA3, sB3;
-        // Live seam: what is still off between both lenses at the seam, measured on every picture (a person walking
-        // by is nearer than the wall the calibration fitted), per node every LSTEP rows; both lenses bend half of it
-        // toward each other near the seam. seamRow: the seam's column per output row.
-        const int LSTEP = 8, LFADE = 40;
-        float[] seamRow, liveX, liveY, liveSX, liveSY; long liveTicks, liveFrames, liveTick; bool liveOff; double liveSum; int lvOk, lvBad, lvFlat, lvNo;   // wc: share of A's colour (a much wider seam)
+        byte[] wb, wc; int[] bx0, bx1; int blurR; float[] tA3, tB3, sA3, sB3;   // wc: share of A's colour (a much wider seam)
         int[] pix; GCHandle pin; byte[] bmi;
 
         // Width / height of the picture, from the calibration alone (the layout needs it before the first frame).
@@ -1263,7 +1258,6 @@ class CamForm : Form
             // two bands: details over a narrow seam, colours and light over a wide one (hides a lighter lens)
             double narrow = Math.Max(1.5, OW / 600.0), wide = Math.Max(band, OW / 45.0);
             blurR = Math.Max(3, (int)(wide / 2)); wb = new byte[n]; wc = new byte[n]; bx0 = new int[OH]; bx1 = new int[OH];
-            seamRow = new float[OH]; int ln = OH / LSTEP + 2; liveX = new float[ln]; liveY = new float[ln]; liveSX = new float[ln]; liveSY = new float[ln];
             // colour blends over a much wider width: one lens may already be in night black and white, the other not
             double chroma = Math.Max(wide * 3, OW / 14.0);
             for (int oy = 0; oy < OH; oy++)
@@ -1289,7 +1283,7 @@ class CamForm : Form
                 double su = m3.Seam[Math.Min(m3.OH - 1, (int)((oy + 0.5) * m3.OH / OH))];
                 if (su >= 0) seamX = su * OW - 0.5;
                 bRight = m3.ALeft;
-                bx0[oy] = int.MaxValue; bx1[oy] = -1; seamRow[oy] = (float)seamX;
+                bx0[oy] = int.MaxValue; bx1[oy] = -1;
                 // the colour blend fits inside the part both lenses see in this row (else its end is a step again)
                 double cw = lo <= hi ? Math.Max(wide, Math.Min(chroma, Math.Min(seamX - lo, hi - seamX))) : wide;
                 for (int ox = 0; ox < OW; ox++)
@@ -1320,76 +1314,6 @@ class CamForm : Form
         {
             for (int i = 0; i < 256; i++) { tY[i] = 298 * (i - 16); tRV[i] = 409 * (i - 128); tGU[i] = -100 * (i - 128); tGV[i] = -208 * (i - 128); tBU[i] = 516 * (i - 128); }
             for (int i = 0; i < 1024; i++) clamp[i] = (byte)Math.Max(0, Math.Min(255, i - 384));
-        }
-
-        // Measures, at nodes along the seam, how far lens B's picture is from lens A's (patch search, brightness
-        // differences between lenses removed), and moves the live shift toward it; nodes without detail go back to 0.
-        unsafe void LiveMeasure(byte* Y, int* pa, int* pb)
-        {
-            if ((++liveTick & 1) == 1) return;   // every second picture is enough
-            // switch: a file "sin_costura_vivo" next to the program turns it off (checked every few seconds)
-            if ((liveTick & 127) == 0) liveOff = System.IO.File.Exists(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sin_costura_vivo"));
-            if (liveOff) { for (int j = 0; j < liveSX.Length; j++) { liveSX[j] = 0; liveSY[j] = 0; } return; }
-            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-            const int PR = 3, PC = 8, SX = 10, SY = 3, NP = (2 * PR + 1) * (2 * PC + 1), BW = 2 * (PC + SX) + 1, BH = 2 * (PR + SY) + 1;
-            int ln = liveX.Length; int* av = stackalloc int[NP]; int* bv = stackalloc int[BW * BH]; int* colS = stackalloc int[BW];
-            for (int j = 0; j < ln; j++)
-            {
-                int oy = j * LSTEP + LSTEP / 2; bool ok = false; float mx = 0, my = 0;
-                if (oy - PR - SY >= 0 && oy + PR + SY < OH)
-                {
-                    int sx = (int)Math.Round(seamRow[oy]);
-                    if (sx - PC - SX >= 0 && sx + PC + SX < OW)
-                    {
-                        int sa = 0, m = 0; bool full = true;
-                        for (int r = -PR; r <= PR && full; r++) for (int c = -PC; c <= PC; c++) { int ia2 = pa[(oy + r) * OW + sx + c]; if (ia2 < 0) { full = false; break; } av[m] = Y[ia2]; sa += av[m]; m++; }
-                        // lens B over the whole search box, read once
-                        for (int r = 0; r < BH && full; r++) { int row = (oy - PR - SY + r) * OW + sx - PC - SX; for (int c = 0; c < BW; c++) { int ib2 = pb[row + c]; if (ib2 < 0) { full = false; break; } bv[r * BW + c] = Y[ib2]; } }
-                        if (!full) lvNo++;
-                        else
-                        {
-                            int meanA = sa / NP, tex = 0; for (int q = 0; q < NP; q++) { av[q] -= meanA; tex += Math.Abs(av[q]); }
-                            if (tex <= NP * 3) lvFlat++;
-                            else
-                            {
-                                int best = int.MaxValue, second = int.MaxValue, bxs = 0, bys = 0;
-                                for (int dy = -SY; dy <= SY; dy++)
-                                {
-                                    for (int c = 0; c < BW; c++) { int t = 0; for (int r = 0; r < 2 * PR + 1; r++) t += bv[(r + dy + SY) * BW + c]; colS[c] = t; }
-                                    for (int dx = -SX; dx <= SX; dx++)
-                                    {
-                                        int sb = 0; for (int c = 0; c < 2 * PC + 1; c++) sb += colS[c + dx + SX];
-                                        int meanB = sb / NP, sad = 0, q = 0;
-                                        for (int r = 0; r < 2 * PR + 1; r++) { int* rowp = bv + (r + dy + SY) * BW + dx + SX; for (int c = 0; c < 2 * PC + 1; c++) { int d = rowp[c] - meanB - av[q++]; sad += d < 0 ? -d : d; } }
-                                        if (sad < best) { if (Math.Abs(dx - bxs) + Math.Abs(dy - bys) > 1) second = best; best = sad; bxs = dx; bys = dy; }
-                                        else if (sad < second && Math.Abs(dx - bxs) + Math.Abs(dy - bys) > 1) second = sad;
-                                    }
-                                }
-                                // a clear winner, below the texture, not at the search's edge
-                                if (best < tex * 0.8 && best < second * 0.85 && Math.Abs(bxs) < SX && Math.Abs(bys) < SY) { ok = true; mx = bxs; my = bys; lvOk++; } else lvBad++;
-                            }
-                        }
-                    }
-                    else lvNo++;
-                }
-                if (ok) { liveX[j] += 0.35f * (mx - liveX[j]); liveY[j] += 0.35f * (my - liveY[j]); }
-                else { liveX[j] *= 0.9f; liveY[j] *= 0.9f; }
-            }
-            // middle value of 3 neighbours (one wrong node does not bend)
-            for (int j = 0; j < ln; j++)
-            {
-                float a1 = liveX[Math.Max(0, j - 1)], a2 = liveX[j], a3 = liveX[Math.Min(ln - 1, j + 1)];
-                float b1 = liveY[Math.Max(0, j - 1)], b2 = liveY[j], b3 = liveY[Math.Min(ln - 1, j + 1)];
-                liveSX[j] = Math.Max(Math.Min(a1, a2), Math.Min(Math.Max(a1, a2), a3));
-                liveSY[j] = Math.Max(Math.Min(b1, b2), Math.Min(Math.Max(b1, b2), b3));
-            }
-            liveTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0; liveFrames++;
-            for (int j = 0; j < ln; j++) liveSum += Math.Abs(liveSX[j]) + Math.Abs(liveSY[j]);
-            if (liveFrames == 150)
-            {
-                Log("costura en vivo: " + (liveTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency / liveFrames).ToString("0.00") + " ms por medida, corrimiento medio " + (liveSum / liveFrames / ln).ToString("0.00") + " px; puntos medidos " + lvOk + ", dudosos " + lvBad + ", lisos " + lvFlat + ", fuera " + lvNo);
-                liveTicks = 0; liveFrames = 0; liveSum = 0; lvOk = lvBad = lvFlat = lvNo = 0;
-            }
         }
 
         public unsafe void Frame(IntPtr buf, int w, int h)
@@ -1423,32 +1347,15 @@ class CamForm : Form
                     // Two-band seam: on the columns around the seam, each lens's picture is split into its blurred
                     // part (colours, light) and the rest (details); blurred parts blend over the wide width, details
                     // over the narrow one. A row at a time, a blur along the row (the seam runs top to bottom).
-                    if (wb != null && Half == 0) LiveMeasure(Y, pa, pb);
                     if (wb != null && Half == 0)
                         for (int oy = 0; oy < OH; oy++)
                         {
-                            // live seam shift for this row (between nodes), faded with the distance to the seam
-                            float lf = (oy - LSTEP / 2f) / LSTEP; int l0 = Math.Max(0, Math.Min(liveSX.Length - 2, (int)Math.Floor(lf))); float lt = Math.Max(0, Math.Min(1, lf - l0));
-                            float ldx = liveSX[l0] + (liveSX[l0 + 1] - liveSX[l0]) * lt, ldy = liveSY[l0] + (liveSY[l0 + 1] - liveSY[l0]) * lt, sxr = seamRow[oy];
-                            bool live = Math.Abs(ldx) + Math.Abs(ldy) > 0.3f;
                             int x0 = bx0[oy], x1 = bx1[oy], len = x1 - x0 + 1; if (len < 3) continue;
                             if (tA3 == null || tA3.Length < len * 3) { tA3 = new float[len * 3 + 64]; tB3 = new float[len * 3 + 64]; sA3 = new float[len * 3 + 64]; sB3 = new float[len * 3 + 64]; }
                             // per lens: brightness Y (0) and colour U (1), V (2), raw
                             for (int i = 0; i < len; i++)
                             {
                                 int k = oy * OW + x0 + i, a = pa[k], b = pb[k], ca = qa[k], cb = qb[k];
-                                if (live)
-                                {
-                                    float dd = Math.Abs(x0 + i - sxr) / LFADE;
-                                    if (dd < 1)
-                                    {
-                                        float f = 1 - dd; f = f * f * (3 - 2 * f);
-                                        int hx = (int)Math.Round(ldx * f / 2), hy = (int)Math.Round(ldy * f / 2);
-                                        int kA = k - hx - hy * OW, kB = k + hx + hy * OW;
-                                        if (kA >= 0 && kA < n && pa[kA] >= 0 && a >= 0) { a = pa[kA]; ca = qa[kA]; }
-                                        if (kB >= 0 && kB < n && pb[kB] >= 0 && b >= 0) { b = pb[kB]; cb = qb[kB]; }
-                                    }
-                                }
                                 // a column with only one lens inside the band: that lens for both
                                 if (a < 0) { a = b; ca = cb; } else if (b < 0) { b = a; cb = ca; }
                                 if (a < 0) { a = 0; ca = 0; b = 0; cb = 0; }
