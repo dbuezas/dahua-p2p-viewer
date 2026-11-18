@@ -241,7 +241,9 @@ var Calib = (function () {
     if (!win) throw new Error('no encontre puntos en comun entre las dos lentes');
     var g0 = Rig(o, win.t.pan, win.t.tilt);
     // from the last try, glide to the best one (no jump back)
-    for (var gi = 1; gi <= 12; gi++) { var ge = gi / 12, gs = ge * ge * (3 - 2 * ge); show({ stage: 2, text: 'El mejor: el lugar ' + (tops.indexOf(win.t) + 1) + ' (' + win.good + ' puntos encajan)', frac: 0.2, rig: Rig(o, last.pan + (win.t.pan - last.pan) * gs, last.tilt + (win.t.tilt - last.tilt) * gs), mix: true, viewCyl: true, hold: 60 }); }
+    if (!st.viewCyl) makeView(st, win.t);
+    show({ stage: 2, text: 'El mejor: el lugar ' + (tops.indexOf(win.t) + 1) + ' (' + win.good + ' puntos encajan)', frac: 0.2, rig: Rig(o, win.t.pan, win.t.tilt), mix: true, viewCyl: true, hold: 1000,
+      slide: { from: Rig(o, last.pan, last.tilt), to: Rig(o, win.t.pan, win.t.tilt), c: st.viewCyl, crop0: st.viewCrop, crop1: st.viewCrop, dur: 900 } });
     var matches = findMatches(g0, 800, function (ms, n, tot) { show({ stage: 2, text: 'Buscando puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.2 + 0.1 * n / tot, rig: g0, mix: true, matches: ms, viewCyl: true, hold: 160 }); });
     if (matches.length < 8) throw new Error('muy pocos puntos en comun (' + matches.length + ')');
     var fr2 = fitRig(win, matches, 120);
@@ -252,13 +254,9 @@ var Calib = (function () {
     cylinder(st);
     if (!st.viewCyl) makeView(st, win.t);
     st.view = { cyl: st.viewCyl, crop: stripBox(st, st.viewCyl, g) || st.viewCrop };
-    var p0 = win.t, NF = 40, c0 = st.viewCrop || st.view.crop, c1 = st.view.crop;
-    for (var fi = 0; fi <= NF; fi++) {
-      // lens B slides from the best try into place while the view zooms onto the shared strip
-      var e = fi / NF, ee = e * e * (3 - 2 * e), pn = p0.pan + (g.pan - p0.pan) * ee, tn = p0.tilt + (g.tilt - p0.tilt) * ee;
-      var zc = c0 && c1 ? { x0: Math.round(c0.x0 + (c1.x0 - c0.x0) * ee), y0: Math.round(c0.y0 + (c1.y0 - c0.y0) * ee), x1: Math.round(c0.x1 + (c1.x1 - c0.x1) * ee), y1: Math.round(c0.y1 + (c1.y1 - c0.y1) * ee) } : c1;
-      show({ stage: 3, text: 'Encajando las lentes: paneo ' + (pn / D).toFixed(1) + '°, inclinacion ' + (tn / D).toFixed(1) + '°', frac: 0.3 + 0.2 * e, rig: Rig(o, pn, tn), mix: true, matches: matches, cylObj: st.view.cyl, crop: zc, hold: 70 });
-    }
+    // lens B slides from the best try into place while the view zooms onto the shared strip (the phone animates it)
+    show({ stage: 3, text: 'Encajando las lentes', frac: 0.4, rig: g, mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 2600,
+      slide: { from: Rig(o, win.t.pan, win.t.tilt), to: g, c: st.view.cyl, crop0: st.viewCrop || st.view.crop, crop1: st.view.crop, matches: matches, dur: 2500 } });
     show({ stage: 3, text: 'Encajadas: error tipico ' + st.matchErr.toFixed(1) + ' px, ' + fr2.good + ' de ' + matches.length + ' puntos encajan', frac: 0.5, rig: g, mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 900 });
     // a wrong result must not reach the TV
     if (fr2.good < 15 || fr2.med > 4) throw new Error('no pude encajar las lentes (error tipico ' + fr2.med.toFixed(1) + ' px, ' + fr2.good + ' puntos buenos). Proba de nuevo o mové la camara 4.');
@@ -268,7 +266,7 @@ var Calib = (function () {
     measure(st, show);
     seam(st, show);
     // the seam is drawn from top to bottom while lens B settles row by row, then the final picture fades in
-    for (var si = 1; si <= 14; si++) show({ stage: 5, text: 'Costura: por donde las dos lentes se ven igual', frac: 0.85 + 0.1 * si / 14, rig: g, mix: true, W: true, seamLine: true, reveal: si / 14, cylObj: st.view.cyl, crop: st.view.crop, hold: 90 });
+    show({ stage: 5, text: 'Costura: por donde las dos lentes se ven igual', frac: 0.92, rig: g, mix: true, W: true, seamLine: true, cylObj: st.view.cyl, crop: st.view.crop, hold: 1900, anim: 1700, fade: 400 });
     framing(st);
     // everything first (black corners), then the cut closes in (a darkening outside the kept box), then the result
     setClip(st, 0); var f0 = st.fr, e = st.edges, sc0 = f0.OW / (st.o.pw || 720);
@@ -352,7 +350,7 @@ var Calib = (function () {
         if (kk === NW) continue;
         wv[gi] = WMAX * kk / NW; known[gi] = 1; W[gi] = wv[gi];
       }
-      if (gy % 2 === 1 || gy === NY - 1) show({ stage: 4, text: 'Midiendo distancias (claro = cerca): fila ' + (gy + 1) + ' de ' + NY, frac: 0.5 + 0.3 * (gy + 1) / NY, rig: g, mix: true, wdots: { step: step, NX: NX, known: known, wv: wv }, scan: cy, cylObj: st.view && st.view.cyl, crop: st.view && st.view.crop, hold: 80 });
+      if (gy === NY - 1) show({ stage: 4, text: 'Midiendo distancias (claro = cerca)', frac: 0.8, rig: g, mix: true, wdots: { step: step, NX: NX, known: known, wv: wv }, scanAnim: true, cylObj: st.view && st.view.cyl, crop: st.view && st.view.crop, hold: 3200, anim: 3000 });
     }
     // clean: a measure needs 2 neighbours (in the 5x5 around) that agree with it
     var keep = known.slice(), tolW = function (m) { return 0.08 + 0.25 * m; };
@@ -558,6 +556,36 @@ var Calib = (function () {
     if (opt.scan != null && !fr) { cylRay(c, cx0 + OW / 2, cy0 + OH / 2, r); var mx = other ? cylOf(wc, r)[0] : cx0 + OW / 2; scan = (wv2(mx, opt.scan)[1] - cy0) / s; }
     return { w: PW, h: PH, data: img, lines: lines, dots: dots, rpp: s / c.Fc, seam: seamPts, scan: scan };   // rpp: radians per preview pixel
   }
+  // For a slide (lens B moving from rig 'from' to rig 'to'), the phone gets two layers once (lens A, and lens B at
+  // 'to', each with see-through where that lens has no picture) and moves lens B's layer itself, every screen frame.
+  // On the narrow zoomed view a small pan/tilt change is almost a plain shift, so the shift of the view's middle is
+  // used. Also the zoom (crop0 -> crop1) and the pair lines (both ends) for in between.
+  function slideData(st, PW, sl) {
+    var c = sl.c, g = sl.to, f = sl.from, c0 = sl.crop0 || sl.crop1, c1 = sl.crop1 || c0, r = [0, 0, 0], q = [0, 0], rb = [0, 0, 0];
+    // where the middle of the final view's lens B picture showed with 'from'
+    cylRay(c, (c1.x0 + c1.x1) / 2, (c1.y0 + c1.y1) / 2, r); var off = [0, 0];
+    if (toB(g, r, 0, q)) { unproject(g.L, q[0], q[1], rb); var R = f.R, d = [R[0] * rb[0] + R[3] * rb[1] + R[6] * rb[2], R[1] * rb[0] + R[4] * rb[1] + R[7] * rb[2], R[2] * rb[0] + R[5] * rb[1] + R[8] * rb[2]], pf = cylOf(c, d); off = [pf[0] - (c1.x0 + c1.x1) / 2, pf[1] - (c1.y0 + c1.y1) / 2]; }
+    var pad = 8, U = { x0: Math.max(0, Math.min(c0.x0, c1.x0) - Math.abs(off[0]) - pad), y0: Math.max(0, Math.min(c0.y0, c1.y0) - Math.abs(off[1]) - pad) };
+    U.x1 = Math.min(c.CW, Math.max(c0.x1, c1.x1) + Math.abs(off[0]) + pad); U.y1 = Math.min(c.CH, Math.max(c0.y1, c1.y1) + Math.abs(off[1]) + pad);
+    // layer size: the final view at about PW wide (the zoom must stay sharp), at most 1800 wide
+    var sc = Math.max((c1.x1 - c1.x0) / PW, (U.x1 - U.x0) / 1800), LWp = Math.max(1, Math.round((U.x1 - U.x0) / sc)), LHp = Math.max(1, Math.round((U.y1 - U.y0) / sc));
+    var la = new Uint8ClampedArray(LWp * LHp * 4), lb = new Uint8ClampedArray(LWp * LHp * 4), qa = [0, 0], qb = [0, 0];
+    for (var y = 0; y < LHp; y++) for (var x = 0; x < LWp; x++) {
+      cylRay(c, U.x0 + (x + 0.5) * sc, U.y0 + (y + 0.5) * sc, r); var k = (y * LWp + x) * 4;
+      if (toA(g, r, 0, qa)) { for (var ch = 0; ch < 3; ch++) la[k + ch] = colAt(st.inp.Ac, qa[0], qa[1], ch); la[k + 3] = 255; }
+      if (toB(g, r, 0, qb)) { for (ch = 0; ch < 3; ch++) lb[k + ch] = colAt(st.inp.Bc, qb[0], qb[1], ch); lb[k + 3] = 255; }
+    }
+    var L = function (v, o0) { return (v - o0) / sc; };
+    var lines = [];
+    (sl.matches || []).forEach(function (m) {
+      var ra = [0, 0, 0], rbb = [0, 0, 0]; unproject(g.L, m[0], m[1], ra); unproject(g.L, m[2], m[3], rbb);
+      var ends = [f, g].map(function (rg) { var R2 = rg.R, d2 = [R2[0] * rbb[0] + R2[3] * rbb[1] + R2[6] * rbb[2], R2[1] * rbb[0] + R2[4] * rbb[1] + R2[7] * rbb[2], R2[2] * rbb[0] + R2[5] * rbb[1] + R2[8] * rbb[2]]; return cylOf(c, d2); });
+      var pa = cylOf(c, ra);
+      lines.push(L(pa[0], U.x0), L(pa[1], U.y0), L(ends[0][0], U.x0), L(ends[0][1], U.y0), L(ends[1][0], U.x0), L(ends[1][1], U.y0), epi(f, m[0], m[1], m[2], m[3]).e, epi(g, m[0], m[1], m[2], m[3]).e);
+    });
+    var cr = function (cc) { return [L(cc.x0, U.x0), L(cc.y0, U.y0), L(cc.x1, U.x0), L(cc.y1, U.y0)]; };
+    return { w: LWp, h: LHp, A: la, B: lb, off: [off[0] / sc, off[1] / sc], crop0: cr(c0), crop1: cr(c1), lines: lines, outW: PW, outH: Math.round(PW * (c1.y1 - c1.y0) / (c1.x1 - c1.x0)) };
+  }
   function colAt(img, x, y, ch) {
     var x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, k = (y0 * LW + x0) * 4 + ch;
     return (img[k] * (1 - fx) + img[k + 4] * fx) * (1 - fy) + (img[k + LW * 4] * (1 - fx) + img[k + LW * 4 + 4] * fx) * fy;
@@ -576,7 +604,7 @@ var Calib = (function () {
     }
     return new Float32Array(out);
   }
-  return { CAM: CAM, run: run, cloud: cloud, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
+  return { CAM: CAM, slideData: slideData, run: run, cloud: cloud, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
 })();
 
 // ---- Web Worker side: the page sends the pictures; pictures of the work go back as it runs. ----
@@ -584,8 +612,13 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
   var state = null, PW = 720, lastShow = 0;
   // Every step of the work is one frame; the page plays them at their own pace (hold ms each, fade = cross-fade).
   var post = function (opt) {
+    if (opt.slide) {
+      var sd = Calib.slideData(state, PW, opt.slide);
+      self.postMessage({ t: 'show', kind: 'slide', text: opt.text, frac: opt.frac, w: sd.w, h: sd.h, A: sd.A, B: sd.B, off: sd.off, crop0: sd.crop0, crop1: sd.crop1, lines: sd.lines, outW: sd.outW, outH: sd.outH, hold: opt.hold || 1000, dur: opt.slide.dur || 1000 }, [sd.A.buffer, sd.B.buffer]);
+      return;
+    }
     var pv = Calib.preview(state, PW, opt);
-    self.postMessage({ t: 'show', text: opt.text, frac: opt.frac, w: pv.w, h: pv.h, img: pv.data, lines: pv.lines, dots: pv.dots, seam: pv.seam, reveal: opt.reveal, scan: pv.scan, hold: opt.hold || 120, fade: opt.fade || 0, anim: opt.anim || 0, cut: opt.cut || null }, [pv.data.buffer]);
+    self.postMessage({ t: 'show', text: opt.text, frac: opt.frac, w: pv.w, h: pv.h, img: pv.data, lines: pv.lines, dots: pv.dots, seam: pv.seam, reveal: opt.reveal, scan: pv.scan, hold: opt.hold || 120, fade: opt.fade || 0, anim: opt.anim || 0, cut: opt.cut || null, scanAnim: !!opt.scanAnim }, [pv.data.buffer]);
   };
   self.onmessage = function (e) {
     var m = e.data;

@@ -1551,6 +1551,7 @@ function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
  if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calNext();return}
  if(m.t=='cloud'){cal3Set(m.pts);calNext();return}
  calText(m.text,m.frac);
+ if(m.kind=='slide'){calSlide(m);return}
  // a frame waiting long in the queue plays faster (never more than ~6 s behind the work)
  var hold=m.hold*(calQ.length>60?0.4:calQ.length>30?0.7:1),fade=m.fade||0;
  var same=calCv.width==m.w&&calCv.height==m.h;
@@ -1563,11 +1564,30 @@ function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
   if(a<1){g.globalAlpha=1;g.drawImage(calOld,0,0);g.globalAlpha=a*a*(3-2*a)}
   g.drawImage(calImg,0,0);g.globalAlpha=1;calOver(g,m,p);
   if(a<1||p<1)requestAnimationFrame(step);else setTimeout(calNext,Math.max(0,hold-el))})()}
+// Lens B sliding into place: two layers composed every screen frame (A; B where A has nothing; B half over A),
+// while the view zooms from crop0 to crop1 and the pair lines move with lens B.
+var calLA=document.createElement('canvas'),calLB=document.createElement('canvas'),calComp=document.createElement('canvas');
+function calSlide(m){var W=m.outW,H=m.outH;
+ [[calLA,m.A],[calLB,m.B]].forEach(function(x){x[0].width=m.w;x[0].height=m.h;x[0].getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(x[1]),m.w,m.h),0,0)});
+ calComp.width=m.w;calComp.height=m.h;calCv.width=W;calCv.height=H;var t0=performance.now();
+ (function step(){var el=performance.now()-t0,p=Math.min(1,el/m.dur),e=p*p*(3-2*p),dx=m.off[0]*(1-e),dy=m.off[1]*(1-e),k=calComp.getContext('2d');
+  k.globalCompositeOperation='source-over';k.globalAlpha=1;k.clearRect(0,0,m.w,m.h);k.drawImage(calLA,0,0);
+  k.globalCompositeOperation='destination-over';k.drawImage(calLB,dx,dy);
+  k.globalCompositeOperation='source-atop';k.globalAlpha=0.5;k.drawImage(calLB,dx,dy);
+  // view: from crop0 to crop1, with the output's shape (centre and width move, height follows)
+  var c0=m.crop0,c1=m.crop1,cx=(c0[0]+c0[2])/2*(1-e)+(c1[0]+c1[2])/2*e,cy=(c0[1]+c0[3])/2*(1-e)+(c1[1]+c1[3])/2*e,sw=(c0[2]-c0[0])*(1-e)+(c1[2]-c1[0])*e,sh=sw*H/W;
+  var g=calCv.getContext('2d');g.fillStyle='#000';g.fillRect(0,0,W,H);g.drawImage(calComp,cx-sw/2,cy-sh/2,sw,sh,0,0,W,H);
+  var f=W/sw,ox=cx-sw/2,oy=cy-sh/2,L=m.lines||[],lw=Math.max(1.5,W/400);g.lineWidth=lw;
+  for(var i=0;i<L.length;i+=8){var bx=L[i+2]*(1-e)+L[i+4]*e,by=L[i+3]*(1-e)+L[i+5]*e,er=L[i+6]*(1-e)+L[i+7]*e;
+   g.strokeStyle=er<2?'rgba(60,255,60,.9)':er<6?'rgba(255,200,0,.9)':'rgba(255,60,60,.9)';g.beginPath();g.moveTo((L[i]-ox)*f,(L[i+1]-oy)*f);g.lineTo((bx-ox)*f,(by-oy)*f);g.stroke();
+   g.fillStyle=g.strokeStyle;g.beginPath();g.arc((L[i]-ox)*f,(L[i+1]-oy)*f,lw*1.3,0,7);g.fill()}
+  if(p<1)requestAnimationFrame(step);else setTimeout(calNext,Math.max(0,m.hold-el))})()}
 function calOver(g,m,a){var W=m.w,H=m.h,lw=Math.max(1.5,W/400);
  // the final cut closing in: everything outside the kept box darkens, the box frame moves in from the edges
  if(m.cut){var e=a*a*(3-2*a),c=m.cut,x0=c[0]*e,y0=c[1]*e,x1=W+(c[2]-W)*e,y1=H+(c[3]-H)*e;g.save();g.fillStyle='rgba(0,0,0,'+(0.75*e)+')';
   g.fillRect(0,0,W,y0);g.fillRect(0,y1,W,H-y1);g.fillRect(0,y0,x0,y1-y0);g.fillRect(x1,y0,W-x1,y1-y0);g.strokeStyle='#fc0';g.lineWidth=lw*1.5;g.strokeRect(x0,y0,x1-x0,y1-y0);g.restore()}
- // measuring scan line
+ // measuring scan line (animated top to bottom when scanAnim; dots appear as it passes)
+ var scanY=m.scanAnim?a*H:null;if(scanY!=null)m.scan=scanY;
  if(m.scan!=null){var gr=g.createLinearGradient(0,m.scan-W/40,0,m.scan);gr.addColorStop(0,'rgba(80,200,255,0)');gr.addColorStop(1,'rgba(80,200,255,0.5)');g.fillStyle=gr;g.fillRect(0,m.scan-W/40,W,W/40)}
  // pairs: from where lens A shows a point to where lens B shows it (green = fits)
  var L=m.lines||[];g.lineWidth=lw;
@@ -1575,10 +1595,10 @@ function calOver(g,m,a){var W=m.w,H=m.h,lw=Math.max(1.5,W/400);
   g.fillStyle=g.strokeStyle;g.beginPath();g.arc(L[i],L[i+1],lw*1.3,0,7);g.fill()}
  // distances: glowing dots, warm = near, cold = far
  var D=m.dots||[];g.save();g.shadowBlur=W/90;
- for(i=0;i<D.length;i+=3){var v=Math.min(1,D[i+2]/2.5),c='hsl('+Math.round(220-200*v)+',100%,'+Math.round(55+15*v)+'%)';g.fillStyle=c;g.shadowColor=c;g.beginPath();g.arc(D[i],D[i+1],Math.max(2,W/260),0,7);g.fill()}
+ for(i=0;i<D.length;i+=3){if(scanY!=null&&D[i+1]>scanY)continue;var v=Math.min(1,D[i+2]/2.5),c='hsl('+Math.round(220-200*v)+',100%,'+Math.round(55+15*v)+'%)';g.fillStyle=c;g.shadowColor=c;g.beginPath();g.arc(D[i],D[i+1],Math.max(2,W/260),0,7);g.fill()}
  g.restore();
  // the seam, drawn from the top down
- var S=m.seam||[];if(S.length>3){var n=Math.round(S.length/2*(m.reveal==null?1:m.reveal));g.save();g.strokeStyle='#fc0';g.lineWidth=lw*1.6;g.shadowColor='#fc0';g.shadowBlur=W/80;g.beginPath();g.moveTo(S[0],S[1]);for(i=1;i<n;i++)g.lineTo(S[2*i],S[2*i+1]);g.stroke();g.restore()}}
+ var S=m.seam||[];if(S.length>3){var n=Math.round(S.length/2*(m.reveal!=null?m.reveal:m.anim&&!m.cut?a:1));g.save();g.strokeStyle='#fc0';g.lineWidth=lw*1.6;g.shadowColor='#fc0';g.shadowBlur=W/80;g.beginPath();g.moveTo(S[0],S[1]);for(i=1;i<n;i++)g.lineTo(S[2*i],S[2*i+1]);g.stroke();g.restore()}}
 calGo.addEventListener('click',function(){if(!calMesh||!ws||ws.readyState!=1){calText('Sin conexion con la tele, proba de nuevo');return}
  ws.send(calMesh);calBox.style.display='none';st.pano=3;draw(st)});
 document.getElementById('calre').addEventListener('click',calRun);
