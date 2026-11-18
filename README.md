@@ -14,7 +14,7 @@ This app shows the cameras in about 10 seconds.
 - Click a camera: it gets full screen, and the others float over its bottom edge as small pictures
   (10% of the screen width each).
   Click a small one to make it big instead. Click the big one or Esc: all cameras. Esc with all cameras: close.
-- PTZ cameras (`ptz` in `camaras.ini`): with the camera full screen, drag on it to move it like a joystick
+- PTZ cameras (`ptz` in `camaras.ini`, e.g. `ptz=2`, or `ptz=2.2` for only the bottom lens of a split camera): with the camera full screen, drag on it to move it like a joystick
   (direction and speed follow the drag; it stops when you let go). From the phone: the round joystick above the
   cameras. My recorder sends every PTZ command to its one PTZ camera, whatever channel is asked, so only the listed
   channels get commands. `ptz_invertir_pan=1` turns left/right around, `ptz_velocidad` sets the speed in percent (below the slowest real speed it moves in short pulses).

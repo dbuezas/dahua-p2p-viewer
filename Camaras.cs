@@ -136,8 +136,8 @@ class CamForm : Form
                 pressOk = Win.GetAncestor(Win.WindowFromPoint(Cursor.Position), 2) == Handle;   // 2 = the top window
                 pressAt = pos; dragging = false;
                 dragFrom = pressOk && big == null ? TileAt(pos) : null;
-                ptzTile = pressOk && big != null && TileAt(pos) == big && CanPtz(big.Ch) ? big : null;
-                panTile = pressOk && big != null && TileAt(pos) == big && !CanPtz(big.Ch) && big.Zoom > 1 ? big : null;
+                ptzTile = pressOk && big != null && TileAt(pos) == big && CanPtz(big) ? big : null;
+                panTile = pressOk && big != null && TileAt(pos) == big && !CanPtz(big) && big.Zoom > 1 ? big : null;
                 if (panTile != null) { panX0 = panTile.PanX; panY0 = panTile.PanY; }
             }
             else if (down && panTile != null)
@@ -233,7 +233,8 @@ class CamForm : Form
 
     // Channels whose camera can really be moved (PTZ). The recorder sends every PTZ command to its one PTZ camera,
     // whatever channel is asked, so only these channels get commands. Setting "ptz" in camaras.ini, e.g. ptz=2.
-    bool CanPtz(int ch) { foreach (var c in C("ptz", "").Split(',')) { int n; if (int.TryParse(c.Trim(), out n) && n == ch) return true; } return false; }
+    // A split camera can list one lens only: "2.2" = bottom half of channel 2 ("2" = both halves).
+    bool CanPtz(Tile t) { foreach (var c in C("ptz", "").Split(',')) { string s = c.Trim(); if (s.Length > 0 && (s == Key(t) || s == t.Ch.ToString())) return true; } return false; }
 
     // Channels whose picture is two cameras stacked (top + bottom). Default: channel 2 ("Device1").
     HashSet<int> SplitChannels()
@@ -312,11 +313,16 @@ class CamForm : Form
     }
 
     // Starts the app again from zero (new P2P tunnel, new login).
-    void Restart(string why)
+    // Wait before the next try after a failed connection: 2 s, then double each time, up to 15 s.
+    // A short cut comes back almost at once; a long one does not flood the Dahua server.
+    static int retryMs = 2000;
+
+    void Restart(string why) { Restart(why, 2000); }
+    void Restart(string why, int nextWaitMs)
     {
         Log("reinicio la app: " + why);
         try { single.ReleaseMutex(); } catch { }   // so the new copy can start
-        System.Diagnostics.Process.Start(Application.ExecutablePath);
+        System.Diagnostics.Process.Start(Application.ExecutablePath, "--espera " + nextWaitMs);
         HardExit();
     }
 
@@ -591,7 +597,7 @@ class CamForm : Form
     void UpdateState()
     {
         var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"cams\":[");
-        for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"k\":\"" + Key(tiles[k]) + "\",\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + ",\"ptz\":" + (CanPtz(tiles[k].Ch) ? "true" : "false") + "}");
+        for (int k = 0; k < tiles.Count; k++) sb.Append((k > 0 ? "," : "") + "{\"k\":\"" + Key(tiles[k]) + "\",\"hd\":" + (hd.Contains(tiles[k].Ch) ? "true" : "false") + ",\"ptz\":" + (CanPtz(tiles[k]) ? "true" : "false") + "}");
         stateJson = sb.Append("]}").ToString();
         var ph = new long[tiles.Count]; var hv = new int[tiles.Count];
         for (int k = 0; k < tiles.Count; k++) { ph[k] = tiles[k].Play; hv[k] = tiles[k].Half; }
@@ -788,7 +794,7 @@ class CamForm : Form
             else if (p[0] == "hd" && t != null && p.Length > 2) SetHd(t, p[2] == "1");
             else if (p[0] == "order" && p.Length > 1) SetOrder(p[1].Split(','));
             // Phone joystick on camera i: "ptz i dx dy" (drag in phone pixels), "ptzstop".
-            else if (p[0] == "ptz" && t != null && !CanPtz(t.Ch) && p.Length > 3)
+            else if (p[0] == "ptz" && t != null && !CanPtz(t) && p.Length > 3)
             {
                 // Joystick on a camera without PTZ: move the zoomed picture (each command = one small step).
                 int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy);
@@ -799,7 +805,7 @@ class CamForm : Form
                     DoLayout();
                 }
             }
-            else if (p[0] == "ptz" && t != null && CanPtz(t.Ch) && p.Length > 3) { int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy); PtzDrag(t.Ch, dx * 2, dy * 2); }
+            else if (p[0] == "ptz" && t != null && CanPtz(t) && p.Length > 3) { int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy); PtzDrag(t.Ch, dx * 2, dy * 2); }
             else if (p[0] == "ptzstop") PtzStop();
             // Phone zoom buttons: "zoom i 1" (in) / "zoom i -1" (out): one digital zoom step each.
             else if (p[0] == "zoom" && t != null && p.Length > 2) ZoomStep(t, p[2] == "1" ? 1 : -1);
@@ -1053,7 +1059,7 @@ connect();
                 int lp = localPort;
                 if (WaitFor("tunel", 15, () => Native.P2P_QueryChannelStatus(0, h, lp))) { ok = true; break; }
             }
-            if (!ok) { Status("No pude abrir el tunel P2P, reintento en 15 s"); Thread.Sleep(15000); BeginInvoke((MethodInvoker)delegate { Restart("tunel fallo"); }); return; }
+            if (!ok) { RetryLater("No pude abrir el tunel P2P", "tunel fallo"); return; }
 
             // 2. Login through the tunnel.
             Native.CLIENT_Init(keepCb, IntPtr.Zero);
@@ -1084,7 +1090,7 @@ connect();
             Marshal.FreeHGlobal(pin); Marshal.FreeHGlobal(pout);
             Log("Login -> " + login + " nError " + nErr + " canales " + nChan + " lastErr 0x" + Native.CLIENT_GetLastError().ToString("X"));
             if (login == 0 && nErr == 1) { Status("Clave del NVR incorrecta. Borra " + PassFile + " y abri de nuevo."); return; }
-            if (login == 0) { Status("No pude entrar al NVR (error " + nErr + "), reintento en 15 s"); Thread.Sleep(15000); BeginInvoke((MethodInvoker)delegate { Restart("login fallo"); }); return; }
+            if (login == 0) { RetryLater("No pude entrar al NVR (error " + nErr + ")", "login fallo"); return; }
 
             // 3. Show the cameras found last time right away, then look for cameras again
             //    (a camera added to the NVR appears; the list is saved for the next start).
@@ -1147,8 +1153,18 @@ connect();
     }
 
     [STAThread]
+    void RetryLater(string msg, string why)
+    {
+        int wait = retryMs;
+        Status(msg + ", reintento en " + (wait / 1000) + " s");
+        Thread.Sleep(wait);
+        BeginInvoke((MethodInvoker)delegate { Restart(why, Math.Min(wait * 2, 15000)); });
+    }
+
     static void Main(string[] args)
     {
+        // Set by Restart after a failed connection: how long to wait if this try fails too.
+        if (args.Length == 2 && args[0] == "--espera") int.TryParse(args[1], out retryMs);
         // Test: Camaras.exe --qr file.png text   (writes the QR as an image and exits)
         if (args.Length == 3 && args[0] == "--qr") { Qr.ToBitmap(Qr.Encode(args[2]), 8).Save(args[1], System.Drawing.Imaging.ImageFormat.Png); return; }
         // Draw in real screen pixels. Without this, with Windows zoom (e.g. 150%) Windows draws the video smaller

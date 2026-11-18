@@ -23,6 +23,7 @@ dividir=
 ; Phone remote (web page for the local network). 0 = off.
 puerto_web=8080
 ; Channels with a camera that can move (PTZ), e.g. ptz=2. Drag on it (full screen) moves it.
+; For a split camera, name one lens: ptz=2.2 (bottom half of channel 2); the other lens gets digital pan.
 ptz=
 ; PTZ: 1 = left/right turned around; speed in percent.
 ptz_invertir_pan=0
