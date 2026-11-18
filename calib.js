@@ -102,16 +102,22 @@ var Calib = (function () {
   }
   var WMAX = 1 / 0.2;   // nothing nearer than 20 cm
   // Pair a (in A), b (in B): the B ray seen from A is the line 2h*w + d. Error at the best w.
-  function epi(g, ax, ay, bx, by) {
+  // lam > 0: a distance also costs (lam * its shift in pixels squared), so the turn explains as much as it can and
+  // the distances only what is left (with a strip this narrow, a bit more turn and a bit nearer look the same).
+  function epi(g, ax, ay, bx, by, lam) {
     var rb = [0, 0, 0], q = [0, 0], R = g.R; unproject(g.L, bx, by, rb);
+    var Dpx = 2 * Math.sqrt(g.h[0] * g.h[0] + g.h[1] * g.h[1] + g.h[2] * g.h[2]) * g.L.F, L2 = lam ? lam * Dpx * Dpx : 0;
     var d0 = R[0] * rb[0] + R[3] * rb[1] + R[6] * rb[2], d1 = R[1] * rb[0] + R[4] * rb[1] + R[7] * rb[2], d2 = R[2] * rb[0] + R[5] * rb[1] + R[8] * rb[2];
     var b0 = 2 * g.h[0], b1 = 2 * g.h[1], b2 = 2 * g.h[2];
     function err(w) { return project(g.L, b0 * w + d0, b1 * w + d1, b2 * w + d2, q) ? Math.hypot(q[0] - ax, q[1] - ay) : 1e4; }
-    var bw = 0, be = err(0), i;
-    for (i = 1; i <= 24; i++) { var w = WMAX * i / 24, e = err(w); if (e < be) { be = e; bw = w; } }
+    function obj(w) { var e = err(w); return e * e + L2 * w * w; }
+    var bw = 0, bo = obj(0), i;
+    for (i = 1; i <= 24; i++) { var w = WMAX * i / 24, ob = obj(w); if (ob < bo) { bo = ob; bw = w; } }
     var lo = Math.max(0, bw - WMAX / 24), hi = Math.min(WMAX, bw + WMAX / 24);
-    for (i = 0; i < 25; i++) { var m1 = lo + (hi - lo) * 0.382, m2 = lo + (hi - lo) * 0.618; if (err(m1) < err(m2)) hi = m2; else lo = m1; }
-    var wm = (lo + hi) / 2, em = err(wm); return em < be ? { e: em, w: wm } : { e: be, w: bw };
+    for (i = 0; i < 25; i++) { var m1 = lo + (hi - lo) * 0.382, m2 = lo + (hi - lo) * 0.618; if (obj(m1) < obj(m2)) hi = m2; else lo = m1; }
+    var wm = (lo + hi) / 2; if (obj(wm) > bo) wm = bw;
+    // e: pixel error left; c: the whole cost (error and the price of the distance), as a pixel-like number
+    return { e: err(wm), w: wm, c: Math.sqrt(obj(wm)) };
   }
 
   // ---- the whole calibration ----
@@ -119,6 +125,9 @@ var Calib = (function () {
   // st.o: { F, K, tA, base, clip (0..1), outW } ; show(msg): progress to the page
   function run(st, show) {
     for (var kc in CAM) if (st.o[kc] === undefined) st.o[kc] = CAM[kc];
+    // how the fit works (see fitRig): distances cost a little, lens shape fitted with the turn, 2 rounds of matching again
+    var FIT = { lam: 0.05, joint: true, rounds: 2 };
+    for (kc in FIT) if (st.o[kc] === undefined) st.o[kc] = FIT[kc];
     var inp = st.inp, o = st.o, A = inp.A, B = inp.B;
     var D = 2 * Math.PI / 360;
     // -- 1. rough pan/tilt (edge pictures, 160x90) --
@@ -216,16 +225,24 @@ var Calib = (function () {
       return ms;
     }
     // -- 3. fine pan/tilt: every pair may be at any distance, it only has to lie on its line --
+    // Fine fit. With o.joint the lens shape (F, K) is fitted at the same time as pan and tilt, held near the
+    // camera's known shape (a turn and a lens change can partly stand in for each other).
+    var lam = o.lam || 0;
+    function rigOf(xv) { return Rig(o.joint ? Object.assign({}, o, { F: xv[2], K: xv[3] }) : o, xv[0], xv[1]); }
     function fitRig(start, ms, iters, each) {
       function cost(xv) {
-        var gg = Rig(o, xv[0], xv[1]), es = ms.map(function (m) { return epi(gg, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
+        var gg = rigOf(xv), es = ms.map(function (m) { return epi(gg, m[0], m[1], m[2], m[3], lam).c; }).sort(function (a, b) { return a - b; });
         var use = Math.max(6, Math.floor(es.length * 0.9)), e = 0;
         for (var i2 = 0; i2 < use; i2++) e += es[i2] < 2 ? es[i2] * es[i2] : 4 * es[i2] - 4;
-        return e / use;
+        e /= use;
+        if (o.joint) e += Math.pow((xv[2] - o.F) / 8, 2) + Math.pow((xv[3] - o.K) / 0.02, 2);
+        return e;
       }
-      var f = nelder(cost, [start.pan, start.tilt], [1 * D, 0.5 * D], iters, each), gg = Rig(o, f.x[0], f.x[1]);
+      var x0 = [start.pan, start.tilt], st0 = [1 * D, 0.5 * D];
+      if (o.joint) { x0.push(start.F || o.F, start.K != null ? start.K : o.K); st0.push(8, 0.02); }
+      var f = nelder(cost, x0, st0, iters * (o.joint ? 2 : 1), each), gg = rigOf(f.x);
       var es = ms.map(function (m) { return epi(gg, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
-      return { g: gg, good: es.filter(function (e) { return e < 2.5; }).length, med: es[es.length >> 1] };
+      return { g: gg, x: f.x, good: es.filter(function (e) { return e < 2.5; }).length, med: es[es.length >> 1] };
     }
     // A near thing seen by both lenses (a ladder) can fool the rough search: try the few best places for real
     // (shared corners and fine fit each) and keep the one where the most pairs fit.
@@ -249,6 +266,15 @@ var Calib = (function () {
     var matches = findMatches(g0, 800, function (ms, n, tot) { show({ stage: 2, text: 'Buscando puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.2 + 0.1 * n / tot, rig: g0, mix: true, matches: ms, viewCyl: true, hold: 160 }); });
     if (matches.length < 8) throw new Error('muy pocos puntos en comun (' + matches.length + ')');
     var fr2 = fitRig(win, matches, 120);
+    // Match again with the better model (better guesses: more and surer pairs) and fit again, a few rounds:
+    // the turn and the lens shape are worked out together, each round from the last.
+    for (var round = 0; round < (o.rounds || 0); round++) {
+      var ms2 = findMatches(fr2.g, 800);
+      if (ms2.length < 8) break;
+      var fr3 = fitRig({ pan: fr2.g.pan, tilt: fr2.g.tilt, F: fr2.g.L.F, K: fr2.g.L.K }, ms2, 120);
+      if (fr3.good < fr2.good * 0.9) break;
+      matches = ms2; fr2 = fr3;
+    }
     var g = fr2.g;
     st.rig = g; st.matchErr = fr2.med; st.matches = matches;
     // The show: lens B slides from where it started into place (smooth, zoomed on the shared strip), the lines between
@@ -398,57 +424,60 @@ var Calib = (function () {
     return (W[k] * (1 - fx) + W[k + 1] * fx) * (1 - fy) + (W[k + gr.NX] * (1 - fx) + W[k + gr.NX + 1] * fx) * fy;
   }
   // -- 5. seam, on the cylinder (half size) --
-  // Each lens is shown from its own place, unbent: lens A as it is, lens B as it is from 9 cm lower. They only
-  // have to agree ON the seam. So the seam is a path from top to bottom where, with B taken at the distance
-  // measured there, both lenses look alike; and each row of B is taken at the distance of its seam point (B only
-  // moves up or down a bit per row, never bends sideways). Near things away from the seam keep their straight lines.
+  // Each lens is shown from its own place, unbent: lens A as it is, lens B as it is from 9 cm lower, each row of B at
+  // one distance (B only moves up or down a little per row, never bends sideways: straight lines stay straight).
+  // That distance is the BACKGROUND's in that row (a low value of the measures there): a near thing at the seam (the
+  // table the camera stands on) would pull the whole row of B with it. Then the seam is a path from top to bottom
+  // where both lenses, exactly as they will be drawn, look most alike.
   function seam(st, show) {
-    var c = st.cyl, g = st.rig, gr = st.grid, S = 2, w = Math.floor(c.CW / S), h = Math.floor(c.CH / S);
-    var la = new Float32Array(w * h), lb = new Float32Array(w * h), ok = new Uint8Array(w * h), wm = new Float32Array(w * h);
-    var r = [0, 0, 0], qa = [0, 0], qb = [0, 0], x, y;
-    for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
-      var k = y * w + x, cx = x * S + S / 2, cy = y * S + S / 2; cylRay(c, cx, cy, r);
-      var wv = wAt(gr, cx, cy); wm[k] = wv;
-      if (toA(g, r, 0, qa) && toB(g, r, 2 * wv, qb)) { ok[k] = 1; la[k] = bil(st.inp.A, LW, LH, qa[0], qa[1]); lb[k] = bil(st.inp.B, LW, LH, qb[0], qb[1]); }
+    var c = st.cyl, g = st.rig, gr = st.grid, S = 2, w = Math.floor(c.CW / S), h = Math.floor(c.CH / S), x, y, i, j;
+    var KW = c.Fc / S * Math.sqrt(4 * (g.h[0] * g.h[0] + g.h[1] * g.h[1] + g.h[2] * g.h[2]));   // half-size px per unit w
+    // background distance per grid row: the 30% point of the good measures in that row and the next ones
+    var rowW = new Float64Array(gr.NY).fill(NaN);
+    for (var gy = 0; gy < gr.NY; gy++) {
+      var l = []; for (var dy = -1; dy <= 1; dy++) { var yy = gy + dy; if (yy < 0 || yy >= gr.NY) continue; for (var gx = 0; gx < gr.NX; gx++) { var gi = yy * gr.NX + gx; if (st.keep && st.keep[gi]) l.push(gr.W[gi]); } }
+      if (l.length >= 2) { l.sort(function (a2, b2) { return a2 - b2; }); rowW[gy] = l[Math.floor(l.length * 0.3)]; }
     }
-    // pixels of shift per unit of w on this half size canvas (B moves by the whole lens distance)
-    var KW = c.Fc / S * Math.sqrt(4 * (g.h[0] * g.h[0] + g.h[1] * g.h[1] + g.h[2] * g.h[2]));
+    var hw = new Float32Array(h);
+    for (y = 0; y < h; y++) {
+      var gyf = (y * S + S / 2) / gr.step, best = NaN, bd = 1e9;
+      for (gy = 0; gy < gr.NY; gy++) if (rowW[gy] === rowW[gy] && Math.abs(gy - gyf) < bd) { bd = Math.abs(gy - gyf); best = rowW[gy]; }
+      hw[y] = best === best ? best : 0;
+    }
+    // smooth (middle value, then average), then at most 0.08 px more shift per row (at most 8% taller or shorter)
+    var hs = new Float32Array(h); for (y = 0; y < h; y++) { var nn = []; for (j = Math.max(0, y - 10); j <= Math.min(h - 1, y + 10); j++) nn.push(hw[j]); nn.sort(function (a2, b2) { return a2 - b2; }); hs[y] = nn[nn.length >> 1]; }
+    var hwA;
+    // the limit, for sure: the lowest curve under the measures that never changes faster than the limit (it stays
+    // with the background and only rises slowly where every row around needs more)
+    var lim = 0.08 / KW, env = new Float32Array(h);
+    for (y = 0; y < h; y++) { var mn = Infinity; for (j = 0; j < h; j++) { var v = hs[j] + lim * Math.abs(y - j); if (v < mn) mn = v; } env[y] = mn; }
+    hwA = env;
+    // both lenses exactly as they will be drawn
+    var la = new Float32Array(w * h), lb = new Float32Array(w * h), ok = new Uint8Array(w * h), r = [0, 0, 0], qa = [0, 0], qb = [0, 0];
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+      var k = y * w + x; cylRay(c, x * S + S / 2, y * S + S / 2, r);
+      if (toA(g, r, 0, qa) && toB(g, r, 2 * hwA[y], qb)) { ok[k] = 1; la[k] = bil(st.inp.A, LW, LH, qa[0], qa[1]); lb[k] = bil(st.inp.B, LW, LH, qb[0], qb[1]); }
+    }
     var ea = gradMag(la, w, h), eb = gradMag(lb, w, h), INF = 1e18, prev = new Float64Array(w).fill(INF), from = new Int32Array(w * h), rowOk = new Uint8Array(h);
     for (y = 0; y < h; y++) {
       var cur = new Float64Array(w).fill(INF);
       for (x = 1; x < w - 1; x++) {
         var k2 = y * w + x; if (!ok[k2] || !ok[k2 - 1] || !ok[k2 + 1]) continue;
-        var D = Math.abs(ea[k2] - eb[k2]) + 0.5;
+        // edges that differ, and brightness that differs a little (both as drawn)
+        var D = Math.abs(ea[k2] - eb[k2]) + 0.15 * Math.abs(la[k2] - lb[k2]) + 0.5;
         if (y === 0 || !rowOk[y - 1]) { cur[x] = D + (y > 0 && prev[x] < INF ? prev[x] : 0); from[k2] = x; continue; }
         var bv = INF, bx = -1;
-        // going on from the row above: the distance along the path should change little (B moves per row)
-        for (var d = -1; d <= 1; d++) { var xx = x + d, pv = prev[xx] + KW * Math.abs(wm[k2] - wm[(y - 1) * w + xx]); if (pv < bv) { bv = pv; bx = xx; } }
+        for (var d = -1; d <= 1; d++) { var xx = x + d; if (prev[xx] < bv) { bv = prev[xx]; bx = xx; } }
         if (bx >= 0 && bv < INF) { cur[x] = bv + D; from[k2] = bx; }
       }
       for (x = 0; x < w; x++) if (cur[x] < INF) { rowOk[y] = 1; break; }
-      // a row where the lenses do not overlap: the path goes straight on
       if (!rowOk[y]) for (x = 0; x < w; x++) { cur[x] = prev[x]; from[y * w + x] = x; }
       prev = cur;
     }
     var bx2 = -1, bvv = INF; for (x = 0; x < w; x++) if (prev[x] < bvv) { bvv = prev[x]; bx2 = x; }
-    var seamC = new Float32Array(c.CH), Ws = new Float32Array(c.CH);
-    if (bx2 < 0) { seamC.fill(-1); st.ws = { seam: seamC, W: Ws }; st.aLeft = true; return; }
-    var hx = new Float32Array(h), hw = [], hy = [];
-    for (y = h - 1; y >= 0; y--) { hx[y] = bx2; if (rowOk[y]) { hy.push(y); hw.push(wm[y * w + bx2]); } bx2 = from[y * w + bx2]; }
-    hy.reverse(); hw.reverse();
-    // distance per row: the seam's, a middle value over nearby rows (one odd point must not jerk B), then averaged,
-    // then limited so B never shifts more than 0.08 px per row (at most 8% taller or shorter somewhere)
-    var hwS = new Float32Array(h), i, j;
-    for (y = 0; y < h; y++) {
-      // nearest rows with a seam point
-      var near = []; for (i = 0; i < hy.length; i++) if (Math.abs(hy[i] - y) <= 10) near.push(hw[i]);
-      if (!near.length) { var bi = 0; for (i = 1; i < hy.length; i++) if (Math.abs(hy[i] - y) < Math.abs(hy[bi] - y)) bi = i; near.push(hy.length ? hw[bi] : 0); }
-      near.sort(function (a2, b2) { return a2 - b2; }); hwS[y] = near[near.length >> 1];
-    }
-    var hwA = new Float32Array(h); for (y = 0; y < h; y++) { var sm = 0, n = 0; for (j = Math.max(0, y - 25); j <= Math.min(h - 1, y + 25); j++) { sm += hwS[j]; n++; } hwA[y] = sm / n; }
-    var lim = 0.08 / KW;   // w change per row for 0.08 px of shift per row (same ratio at any size)
-    for (var pass = 0; pass < 2000; pass++) { var ch = false; for (y = 1; y < h; y++) { var df = hwA[y] - hwA[y - 1]; if (Math.abs(df) > lim) { var fx = (Math.abs(df) - lim) / 2 * Math.sign(df); hwA[y - 1] += fx; hwA[y] -= fx; ch = true; } } if (!ch) break; }
-    for (y = 0; y < c.CH; y++) { var yy = Math.min(h - 1, Math.floor(y / S)); seamC[y] = hx[yy] * S + S / 2; Ws[y] = hwA[yy]; }
+    var seamC = new Float32Array(c.CH), Ws = new Float32Array(c.CH), hx = new Float32Array(h);
+    if (bx2 >= 0) for (y = h - 1; y >= 0; y--) { hx[y] = bx2; bx2 = from[y * w + bx2]; } else hx.fill(-1);
+    for (y = 0; y < c.CH; y++) { var yh = Math.min(h - 1, Math.floor(y / S)); seamC[y] = hx[yh] < 0 ? -1 : hx[yh] * S + S / 2; Ws[y] = hwA[yh]; }
     st.ws = { seam: seamC, W: Ws };
     // which lens is left: where only A shows, on average
     var sA = 0, nA = 0; for (y = 0; y < c.CH; y += 8) for (x = 0; x < c.CW; x += 8) { cylRay(c, x, y, r); if (toA(g, r, 0, qa) && !toB(g, r, 0, qb)) { sA += x; nA++; } }

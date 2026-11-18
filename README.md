@@ -40,6 +40,10 @@ This app shows the cameras in about 10 seconds.
     (the best few places each tried for real), shared corners (corners of B searched in A), fine pan/tilt (each pair
     may be at any distance), distances (A's patch fixed, B's slid along its line), seam, frame. A result with few
     fitting pairs or a big typical error is refused instead of sent.
+  - The fit: with a strip this narrow, a bit more tilt and things a bit nearer look the same, so a distance costs a
+    little: the turn explains as much as it can and distances only what is left (then what the person lined up by
+    eye stays lined up). Pan, tilt and the lens shape are fitted together (the shape held near the camera's known one),
+    and the pairs are searched again with each better result (2 rounds).
   - Each lens is shown unbent from its own place; they only have to agree on the seam, so the seam follows a path
     where they look alike, and each row of lens B is taken at the distance of its seam point (B moves only up or
     down a little per row: straight lines stay straight).
