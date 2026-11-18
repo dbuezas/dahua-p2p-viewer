@@ -1557,6 +1557,7 @@ function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
  if(m.t=='cloud'){cal3Set(m.pts);calNext();return}
  calText(m.text,m.frac);
  if(m.kind=='slide'){calSlide(m);return}
+ if(m.kind=='move'){calMove(m);return}
  // a frame waiting long in the queue plays faster (never more than ~6 s behind the work)
  var hold=m.hold*(calQ.length>60?0.4:calQ.length>30?0.7:1),fade=m.fade||0;
  var same=calCv.width==m.w&&calCv.height==m.h;
@@ -1572,7 +1573,7 @@ function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
 // Lens B sliding into place: two layers composed every screen frame (A; B where A has nothing; B half over A),
 // while the view zooms from crop0 to crop1 and the pair lines move with lens B.
 var calLA=document.createElement('canvas'),calLB=document.createElement('canvas'),calLS=document.createElement('canvas'),calComp=document.createElement('canvas');
-function calSlide(m){var W=m.outW,H=m.outH;
+function calSlide(m){var W=m.outW,H=m.outH;calLast=m;calMv=[0,0];
  [[calLA,m.A],[calLB,m.B]].forEach(function(x){x[0].width=m.w;x[0].height=m.h;x[0].getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(x[1]),m.w,m.h),0,0)});
  calComp.width=m.w;calComp.height=m.h;calCv.width=W;calCv.height=H;var t0=performance.now();
  (function step(){var el=performance.now()-t0,p=Math.min(1,el/m.dur),e=p*p*(3-2*p),dx=m.off[0]*(1-e),dy=m.off[1]*(1-e),k=calComp.getContext('2d');
@@ -1593,6 +1594,17 @@ function calSlide(m){var W=m.outW,H=m.outH;
    g.strokeStyle=er<2?'rgba(60,255,60,.9)':er<6?'rgba(255,200,0,.9)':'rgba(255,60,60,.9)';g.beginPath();g.moveTo((L[i]-ox)*f,(L[i+1]-oy)*f);g.lineTo((bx-ox)*f,(by-oy)*f);g.stroke();
    g.fillStyle=g.strokeStyle;g.beginPath();g.arc((L[i]-ox)*f,(L[i+1]-oy)*f,lw*1.3,0,7);g.fill()}
   if(p<1)requestAnimationFrame(step);else setTimeout(calNext,Math.max(0,m.hold-el))})()}
+// A better result during the search: lens B's picture (from the last slide's pictures) moves to where it should be
+// (the worker only sends how far); the view stays.
+var calLast=null,calMv=[0,0];
+function calMove(mv){var m=calLast;if(!m){calNext();return}var W=m.outW,H=m.outH,s=m.sc||1,a0=calMv.slice(),a1=[mv.move[0]/s,mv.move[1]/s],t0=performance.now();
+ (function step(){var el=performance.now()-t0,p=Math.min(1,el/(mv.dur||120)),e=p*p*(3-2*p),dx=a0[0]+(a1[0]-a0[0])*e,dy=a0[1]+(a1[1]-a0[1])*e,k=calComp.getContext('2d');
+  k.globalCompositeOperation='source-over';k.globalAlpha=1;k.clearRect(0,0,m.w,m.h);k.drawImage(calLA,0,0);
+  k.globalCompositeOperation='destination-over';k.drawImage(calLB,dx,dy);
+  k.globalCompositeOperation='source-atop';k.globalAlpha=0.5;k.drawImage(calLB,dx,dy);
+  var c1=m.crop1,sw=c1[2]-c1[0],sh=sw*H/W,cx=(c1[0]+c1[2])/2,cy=(c1[1]+c1[3])/2,g=calCv.getContext('2d');
+  g.fillStyle='#000';g.fillRect(0,0,W,H);g.drawImage(calComp,cx-sw/2,cy-sh/2,sw,sh,0,0,W,H);
+  if(p<1)requestAnimationFrame(step);else{calMv=a1;setTimeout(calNext,Math.max(0,(mv.hold||150)-el))}})()}
 function calOver(g,m,a){var W=m.w,H=m.h,lw=Math.max(1.5,W/400);
  // the final cut closing in: everything outside the kept box darkens, the box frame moves in from the edges
  if(m.cut){var e=a*a*(3-2*a),c=m.cut,x0=c[0]*e,y0=c[1]*e,x1=W+(c[2]-W)*e,y1=H+(c[3]-H)*e;g.save();g.fillStyle='rgba(0,0,0,'+(0.75*e)+')';

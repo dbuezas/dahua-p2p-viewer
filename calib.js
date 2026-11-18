@@ -244,47 +244,106 @@ var Calib = (function () {
       var es = ms.map(function (m) { return epi(gg, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
       return { g: gg, x: f.x, good: es.filter(function (e) { return e < 2.5; }).length, med: es[es.length >> 1] };
     }
-    // A near thing seen by both lenses (a ladder) can fool the rough search: try the few best places for real
-    // (shared corners and fine fit each) and keep the one where the most pairs fit.
-    var win = null;
-    // (corners are searched where the pictures line up best, not at the fitted pan/tilt: that one puts things at
-    // infinity, and near things then fall outside the search window)
-    var nT = Math.min(8, tops.length), last = null;
-    tops.slice(0, nT).forEach(function (t, k) {
-      var ms = findMatches(Rig(o, t.pan, t.tilt), 250);
-      var f = ms.length >= 8 ? fitRig(t, ms, 80) : { good: 0 };
-      show({ stage: 2, text: 'Probando lugar ' + (k + 1) + ' de ' + nT + ': ' + f.good + ' puntos encajan', frac: 0.05 + 0.15 * (k + 1) / nT, rig: Rig(o, t.pan, t.tilt), mix: true, matches: ms, viewCyl: true, hold: 450 });
-      if (f.good > 0 && (!win || f.good > win.good)) win = { good: f.good, t: t, pan: f.g.pan, tilt: f.g.tilt };
-      last = t;
+    // ---- The visible search: the picture always shows the best alignment found so far. ----
+    // Score: how well both lenses' edge pictures match over all of the shared part (at infinity), for a pan, tilt
+    // and lens shape (F, K) together. First spread tries around the start (the hand alignment), then small steps in
+    // each direction that keep only what improves, smaller and smaller (a descent), then the shared pairs.
+    var lensO = function (F, K) { return Object.assign({}, o, { F: F, K: K }); };
+    var rigX = function (x) { return Rig(lensO(x[2], x[3]), x[0], x[1]); };
+    var rayCache = {}, rayKeys = [];
+    function raysFor(F, K) {
+      var key = F.toFixed(1) + '/' + K.toFixed(4), rs = rayCache[key];
+      if (rs) return rs;
+      rs = []; var L0 = { F: F, K: K }, rr = [0, 0, 0];
+      for (var yy = 3; yy < h4 - 3; yy++) for (var xx = 3; xx < w4 - 3; xx++) { unproject(L0, xx * f4 + 2, yy * f4 + 2, rr); rs.push(rr[0], rr[1], rr[2]); }
+      rayCache[key] = rs; rayKeys.push(key); if (rayKeys.length > 40) delete rayCache[rayKeys.shift()];
+      return rs;
+    }
+    function roughX(x, L) {
+      var g = rigX(x), rs = raysFor(x[2], x[3]), sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, n = 0, R = g.R, ga = lvl[L].gA, gb = lvl[L].gB;
+      for (var i = 0, m = 0; i < rs.length; i += 3, m++) {
+        if (!project(g.L, R[0] * rs[i] + R[1] * rs[i + 1] + R[2] * rs[i + 2], R[3] * rs[i] + R[4] * rs[i + 1] + R[5] * rs[i + 2], R[6] * rs[i] + R[7] * rs[i + 1] + R[8] * rs[i + 2], q)) continue;
+        var bv = bil(gb, w4, h4, q[0] / f4 - 0.5, q[1] / f4 - 0.5); if (bv !== bv || q[0] < 12 || q[1] < 12 || q[0] > LW - 12 || q[1] > LH - 12) continue;
+        var av = ga[pix[m]]; sa += av; sb += bv; saa += av * av; sbb += bv * bv; sab += av * bv; n++;
+      }
+      if (n < 150) return -1;
+      var va = saa / n - (sa / n) * (sa / n), vb = sbb / n - (sb / n) * (sb / n);
+      return va > 0 && vb > 0 ? (sab / n - sa / n * sb / n) / Math.sqrt(va * vb) * Math.sqrt(n / 400) : -1;
+    }
+    var p0 = o.start || tops[0];
+    if (!st.viewCyl) makeView(st, Rig(o, p0.pan, p0.tilt));
+    var cur = [p0.pan, p0.tilt, o.F, o.K], shown = rigX(cur), ref = null;
+    // Each better result moves lens B's picture there. The pictures of both lenses are sent once (at the first
+    // result) and each better one only says how far to move lens B's picture: cheap, so many can be shown.
+    function showBest(text, frac, x, dur) {
+      var nr = rigX(x);
+      if (!ref) { ref = nr; show({ stage: 2, text: text, frac: frac, rig: nr, mix: true, viewCyl: true, hold: 60, slide: { from: nr, to: nr, c: st.viewCyl, crop0: st.viewCrop, crop1: st.viewCrop, dur: 50, pad: 160 } }); }
+      show({ stage: 2, text: text, frac: frac, move: moveOf(st.viewCyl, st.viewCrop, ref, nr), hold: dur + 20, dur: dur });
+      shown = nr;
+    }
+    var D2 = function (x) { return (x[0] / D).toFixed(1) + '°, ' + (x[1] / D).toFixed(1) + '°, F ' + x[2].toFixed(0) + ', K ' + x[3].toFixed(2); };
+    // 1. spread tries (also the rough search's best places), on the soft edge pictures
+    var curV = roughX(cur, 0), tried = 0;
+    var halton = function (i, b) { var f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; };
+    var seeds = tops.slice(0, 6).map(function (t) { return [t.pan, t.tilt, o.F, o.K]; });
+    for (var hi = 1; hi <= 70; hi++) seeds.push([p0.pan + (2 * halton(hi, 2) - 1) * 8 * D, p0.tilt + (2 * halton(hi, 3) - 1) * 5 * D, o.F * (1 + (2 * halton(hi, 5) - 1) * 0.04), o.K + (2 * halton(hi, 7) - 1) * 0.06]);
+    show({ stage: 2, text: 'Probando alineaciones y lentes', frac: 0.05, rig: shown, mix: true, viewCyl: true, hold: 300 });
+    seeds.forEach(function (x) {
+      tried++; var v = roughX(x, 0);
+      if (v > curV) { cur = x; curV = v; showBest('Probando alineaciones y lentes: ' + tried + ' probadas, la mejor: ' + D2(cur), 0.05 + 0.1 * tried / seeds.length, cur, 220); }
     });
-    if (!win) throw new Error('no encontre puntos en comun entre las dos lentes');
-    var g0 = Rig(o, win.t.pan, win.t.tilt);
-    // from the last try, glide to the best one (no jump back)
-    if (!st.viewCyl) makeView(st, win.t);
-    show({ stage: 2, text: 'El mejor: el lugar ' + (tops.indexOf(win.t) + 1) + ' (' + win.good + ' puntos encajan)', frac: 0.2, rig: Rig(o, win.t.pan, win.t.tilt), mix: true, viewCyl: true, hold: 1000,
-      slide: { from: Rig(o, last.pan, last.tilt), to: Rig(o, win.t.pan, win.t.tilt), c: st.viewCyl, crop0: st.viewCrop, crop1: st.viewCrop, dur: 900 } });
-    var matches = findMatches(g0, 800, function (ms, n, tot) { show({ stage: 2, text: 'Buscando puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.2 + 0.1 * n / tot, rig: g0, mix: true, matches: ms, viewCyl: true, hold: 160 }); });
-    if (matches.length < 8) throw new Error('muy pocos puntos en comun (' + matches.length + ')');
-    var fr2 = fitRig(win, matches, 120);
-    // Match again with the better model (better guesses: more and surer pairs) and fit again, a few rounds:
-    // the turn and the lens shape are worked out together, each round from the last.
+    // 2. descent on the sharper pictures: a small step in each direction, keep what improves, then smaller steps
+    curV = roughX(cur, 1);
+    [[1, 0.6, 8, 0.02], [0.5, 0.3, 4, 0.01], [0.25, 0.15, 2, 0.005], [0.12, 0.08, 1, 0.0025]].forEach(function (stp, si) {
+      for (var it = 0; it < 30; it++) {
+        var improved = false;
+        for (var pi = 0; pi < 4; pi++) for (var sg = -1; sg <= 1; sg += 2) {
+          var y2 = cur.slice(); y2[pi] += sg * stp[pi] * (pi < 2 ? D : 1); var v2 = roughX(y2, 1);
+          if (v2 > curV) { cur = y2; curV = v2; improved = true; showBest('Bajando por la pendiente (paso ' + (si + 1) + ' de 4): ' + D2(cur), 0.15 + 0.05 * si, cur, 140); }
+        }
+        if (!improved) break;
+      }
+    });
+    // 3. shared pairs where the pictures line up best now
+    var g0 = rigX(cur), win = { t: { pan: cur[0], tilt: cur[1], F: cur[2], K: cur[3] } };
+    var matches = findMatches(g0, 800, function (ms, n, tot) { show({ stage: 2, text: 'Buscando puntos en comun: ' + ms.length + ' (de ' + n + ' esquinas probadas)', frac: 0.35 + 0.05 * n / tot, rig: g0, mix: true, matches: ms, viewCyl: true, hold: 160 }); });
+    var fr2 = matches.length >= 8 ? fitRig(win.t, matches, 80) : { good: 0 };
+    if (fr2.good < 15) {
+      // A near thing seen by both lenses (a ladder) can fool the picture score: try the rough search's best
+      // places for real (shared corners and fine fit each) and keep the one where the most pairs fit.
+      tops.slice(0, 8).forEach(function (t) {
+        var ms = findMatches(Rig(o, t.pan, t.tilt), 250), f = ms.length >= 8 ? fitRig(t, ms, 80) : { good: 0 };
+        if (f.good > fr2.good) { fr2 = f; win = { t: t }; }
+      });
+      if (!fr2.good) throw new Error('no encontre puntos en comun entre las dos lentes');
+      g0 = Rig(o, win.t.pan, win.t.tilt); matches = findMatches(g0, 800);
+      if (matches.length < 8) throw new Error('muy pocos puntos en comun (' + matches.length + ')');
+    }
+    // 4. fine fit on the pairs (pan, tilt and lens shape together), showing each better result; then match again
+    // only changes one can see (a twentieth of a degree, or a visible lens change) are shown
+    var lastShown = -1, lastX = null;
+    var eachFit = function (label) { return function (it, xv) {
+      var x4 = xv.length > 2 ? xv : [xv[0], xv[1], o.F, o.K];
+      if (lastX && Math.abs(x4[0] - lastX[0]) < 0.05 * D && Math.abs(x4[1] - lastX[1]) < 0.05 * D && Math.abs(x4[2] - lastX[2]) < 1 && Math.abs(x4[3] - lastX[3]) < 0.003) return;
+      if (it - lastShown < 3) return;
+      lastShown = it; lastX = x4.slice(); showBest(label + ': ' + D2(x4), 0.42, x4, 110);
+    }; };
+    fr2 = fitRig(win.t, matches, 120, eachFit('Afinando con ' + matches.length + ' puntos en comun'));
     for (var round = 0; round < (o.rounds || 0); round++) {
       var ms2 = findMatches(fr2.g, 800);
       if (ms2.length < 8) break;
-      var fr3 = fitRig({ pan: fr2.g.pan, tilt: fr2.g.tilt, F: fr2.g.L.F, K: fr2.g.L.K }, ms2, 120);
+      lastShown = -1;
+      var fr3 = fitRig({ pan: fr2.g.pan, tilt: fr2.g.tilt, F: fr2.g.L.F, K: fr2.g.L.K }, ms2, 120, eachFit('Vuelta ' + (round + 2) + ', ' + ms2.length + ' puntos'));
       if (fr3.good < fr2.good * 0.9) break;
       matches = ms2; fr2 = fr3;
     }
     var g = fr2.g;
     st.rig = g; st.matchErr = fr2.med; st.matches = matches;
-    // The show: lens B slides from where it started into place (smooth, zoomed on the shared strip), the lines between
-    // pairs shrink and turn green, the double picture becomes one.
+    // zoom onto the shared strip, lens B gliding the last bit into place
     cylinder(st);
-    if (!st.viewCyl) makeView(st, win.t);
     st.view = { cyl: st.viewCyl, crop: stripBox(st, st.viewCyl, g) || st.viewCrop };
-    // lens B slides from the best try into place while the view zooms onto the shared strip (the phone animates it)
-    show({ stage: 3, text: 'Encajando las lentes', frac: 0.4, rig: g, mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 2600,
-      slide: { from: Rig(o, win.t.pan, win.t.tilt), to: g, c: st.view.cyl, crop0: st.viewCrop || st.view.crop, crop1: st.view.crop, matches: matches, dur: 2500 } });
+    show({ stage: 3, text: 'Encajando las lentes', frac: 0.48, rig: g, mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 1300,
+      slide: { from: shown, to: g, c: st.view.cyl, crop0: st.viewCrop || st.view.crop, crop1: st.view.crop, matches: matches, dur: 1200 } });
     show({ stage: 3, text: 'Encajadas: error tipico ' + st.matchErr.toFixed(1) + ' px, ' + fr2.good + ' de ' + matches.length + ' puntos encajan', frac: 0.5, rig: g, mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 900 });
     // a wrong result must not reach the TV
     if (fr2.good < 15 || fr2.med > 4) throw new Error('no pude encajar las lentes (error tipico ' + fr2.med.toFixed(1) + ' px, ' + fr2.good + ' puntos buenos). Proba de nuevo o mové la camara 4.');
@@ -606,7 +665,7 @@ var Calib = (function () {
     // where the middle of the final view's lens B picture showed with 'from'
     cylRay(c, (c1.x0 + c1.x1) / 2, (c1.y0 + c1.y1) / 2, r); var off = [0, 0];
     if (toB(g, r, 0, q)) { unproject(g.L, q[0], q[1], rb); var R = f.R, d = [R[0] * rb[0] + R[3] * rb[1] + R[6] * rb[2], R[1] * rb[0] + R[4] * rb[1] + R[7] * rb[2], R[2] * rb[0] + R[5] * rb[1] + R[8] * rb[2]], pf = cylOf(c, d); off = [pf[0] - (c1.x0 + c1.x1) / 2, pf[1] - (c1.y0 + c1.y1) / 2]; }
-    var pad = 8, U = { x0: Math.max(0, Math.min(c0.x0, c1.x0) - Math.abs(off[0]) - pad), y0: Math.max(0, Math.min(c0.y0, c1.y0) - Math.abs(off[1]) - pad) };
+    var pad = sl.pad || 8, U = { x0: Math.max(0, Math.min(c0.x0, c1.x0) - Math.abs(off[0]) - pad), y0: Math.max(0, Math.min(c0.y0, c1.y0) - Math.abs(off[1]) - pad) };
     U.x1 = Math.min(c.CW, Math.max(c0.x1, c1.x1) + Math.abs(off[0]) + pad); U.y1 = Math.min(c.CH, Math.max(c0.y1, c1.y1) + Math.abs(off[1]) + pad);
     // layer size: the final view at about PW wide (the zoom must stay sharp), at most 1800 wide
     var sc = Math.max((c1.x1 - c1.x0) / PW, (U.x1 - U.x0) / 1800), LWp = Math.max(1, Math.round((U.x1 - U.x0) / sc)), LHp = Math.max(1, Math.round((U.y1 - U.y0) / sc));
@@ -625,7 +684,7 @@ var Calib = (function () {
       lines.push(L(pa[0], U.x0), L(pa[1], U.y0), L(ends[0][0], U.x0), L(ends[0][1], U.y0), L(ends[1][0], U.x0), L(ends[1][1], U.y0), epi(f, m[0], m[1], m[2], m[3]).e, epi(g, m[0], m[1], m[2], m[3]).e);
     });
     var cr = function (cc) { return [L(cc.x0, U.x0), L(cc.y0, U.y0), L(cc.x1, U.x0), L(cc.y1, U.y0)]; };
-    return { w: LWp, h: LHp, A: la, B: lb, off: [off[0] / sc, off[1] / sc], crop0: cr(c0), crop1: cr(c1), lines: lines, outW: PW, outH: Math.round(PW * (c1.y1 - c1.y0) / (c1.x1 - c1.x0)) };
+    return { w: LWp, h: LHp, A: la, B: lb, off: [off[0] / sc, off[1] / sc], crop0: cr(c0), crop1: cr(c1), lines: lines, outW: PW, outH: Math.round(PW * (c1.y1 - c1.y0) / (c1.x1 - c1.x0)), sc: sc };
   }
   // Lens B settling row by row at the measured distances: layers of both lenses as if everything were far, and per
   // layer row the shift of lens B from there to its place at that row's distance (the phone moves B in thin strips).
@@ -650,6 +709,13 @@ var Calib = (function () {
     }
     var cc = [0, 0, LWp, LHp];
     return { w: LWp, h: LHp, A: la, B: lb, off: [0, 0], rows: rows, crop0: cc, crop1: cc, lines: [], outW: PW, outH: LHp };
+  }
+  // How far (canvas pixels) lens B's picture drawn for rig 'ref' must move to look like rig 'to', at the view's middle.
+  function moveOf(c, cr, ref, to) {
+    var r = [0, 0, 0], q = [0, 0], rb = [0, 0, 0], cx = (cr.x0 + cr.x1) / 2, cy = (cr.y0 + cr.y1) / 2;
+    cylRay(c, cx, cy, r); if (!toB(to, r, 0, q)) return [0, 0];
+    unproject(to.L, q[0], q[1], rb); var R = ref.R, d = [R[0] * rb[0] + R[3] * rb[1] + R[6] * rb[2], R[1] * rb[0] + R[4] * rb[1] + R[7] * rb[2], R[2] * rb[0] + R[5] * rb[1] + R[8] * rb[2]], pf = cylOf(c, d);
+    return [cx - pf[0], cy - pf[1]];
   }
   function colAt(img, x, y, ch) {
     var x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, k = (y0 * LW + x0) * 4 + ch;
@@ -677,9 +743,10 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
   var state = null, PW = 720, lastShow = 0;
   // Every step of the work is one frame; the page plays them at their own pace (hold ms each, fade = cross-fade).
   var post = function (opt) {
+    if (opt.move) { self.postMessage({ t: 'show', kind: 'move', text: opt.text, frac: opt.frac, move: opt.move, hold: opt.hold || 150, dur: opt.dur || 120 }); return; }
     if (opt.slide) {
       var sd = Calib.slideData(state, PW, opt.slide);
-      self.postMessage({ t: 'show', kind: 'slide', text: opt.text, frac: opt.frac, w: sd.w, h: sd.h, A: sd.A, B: sd.B, off: sd.off, crop0: sd.crop0, crop1: sd.crop1, lines: sd.lines, rows: sd.rows || null, outW: sd.outW, outH: sd.outH, hold: opt.hold || 1000, dur: opt.slide.dur || 1000 }, [sd.A.buffer, sd.B.buffer]);
+      self.postMessage({ t: 'show', kind: 'slide', text: opt.text, frac: opt.frac, w: sd.w, h: sd.h, A: sd.A, B: sd.B, off: sd.off, crop0: sd.crop0, crop1: sd.crop1, lines: sd.lines, rows: sd.rows || null, sc: sd.sc || 1, outW: sd.outW, outH: sd.outH, hold: opt.hold || 1000, dur: opt.slide.dur || 1000 }, [sd.A.buffer, sd.B.buffer]);
       return;
     }
     var pv = Calib.preview(state, PW, opt);
