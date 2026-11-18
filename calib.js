@@ -22,8 +22,9 @@ var Calib = (function () {
   var LW = 640, LH = 360;
   // The camera itself (same for every calibration): lens shape, how lens A sits on the body (tilt tA), and where
   // lens B is from lens A: 9 cm (only scales the distances, the picture does not change with it), leaned ax
-  // sideways and az forward from straight down (0: straight down). Found once from three pictures.
-  var CAM = { F: 671.58, K: -0.2496, tA: -0.02703, base: 0.09, ax: 0, az: 0 };
+  // sideways and az forward from straight down. Chosen by what one sees: the values that make both lenses match best
+  // over ten test pictures, each fully calibrated (a search run on the computer).
+  var CAM = { F: 696.05, K: -0.24736, tA: -0.07461, base: 0.09, ax: 0.04478, az: 0.01839 };
   function mul(a, b) { var r = [0, 0, 0, 0, 0, 0, 0, 0, 0]; for (var i = 0; i < 3; i++) for (var j = 0; j < 3; j++) for (var k = 0; k < 3; k++) r[i * 3 + j] += a[i * 3 + k] * b[k * 3 + j]; return r; }
   function tr(a) { return [a[0], a[3], a[6], a[1], a[4], a[7], a[2], a[5], a[8]]; }
   // Rz(roll) * Rx(pitch) * Ry(yaw), like the PC's Lens
@@ -115,9 +116,9 @@ var Calib = (function () {
     function err(w) { return project(g.L, b0 * w + d0, b1 * w + d1, b2 * w + d2, q) ? Math.hypot(q[0] - ax, q[1] - ay) : 1e4; }
     function obj(w) { var e = err(w); return e * e + L2 * w * w; }
     var bw = 0, bo = obj(0), i;
-    for (i = 1; i <= 24; i++) { var w = WMAX * i / 24, ob = obj(w); if (ob < bo) { bo = ob; bw = w; } }
-    var lo = Math.max(0, bw - WMAX / 24), hi = Math.min(WMAX, bw + WMAX / 24);
-    for (i = 0; i < 25; i++) { var m1 = lo + (hi - lo) * 0.382, m2 = lo + (hi - lo) * 0.618; if (obj(m1) < obj(m2)) hi = m2; else lo = m1; }
+    for (i = 1; i <= 14; i++) { var w = WMAX * i / 14, ob = obj(w); if (ob < bo) { bo = ob; bw = w; } }
+    var lo = Math.max(0, bw - WMAX / 14), hi = Math.min(WMAX, bw + WMAX / 14);
+    for (i = 0; i < 16; i++) { var m1 = lo + (hi - lo) * 0.382, m2 = lo + (hi - lo) * 0.618; if (obj(m1) < obj(m2)) hi = m2; else lo = m1; }
     var wm = (lo + hi) / 2; if (obj(wm) > bo) wm = bw;
     // e: pixel error left; c: the whole cost (error and the price of the distance), as a pixel-like number
     return { e: err(wm), w: wm, c: Math.sqrt(obj(wm)) };
@@ -203,6 +204,20 @@ var Calib = (function () {
     }
     corners.sort(function (a, b) { return b[2] - a[2]; });
     var A2 = shrink(A, LW, LH, 2), B2 = shrink(B, LW, LH, 2), w2 = LW / 2, h2 = LH / 2, Rs = Math.round(w2 * 0.09);
+    var A4 = shrink(A, LW, LH, 4), B4 = shrink(B, LW, LH, 4), w4b = LW / 4, h4b = LH / 4, Rs4 = Math.round(Rs / 2);
+    // correlation of A's patches with one fixed patch of B (its mean and spread worked out once)
+    function nccFixed(I, J, w, h, bx, by, P) {
+      if (bx < P || by < P || bx >= w - P || by >= h - P) return null;
+      var vals = [], s = 0, ss = 0; for (var j = -P; j <= P; j++) for (var i = -P; i <= P; i++) { var v = J[(by + j) * w + bx + i]; vals.push(v); s += v; ss += v * v; }
+      var n = vals.length, mb = s / n, vb = ss / n - mb * mb; if (vb <= 4) return null;
+      for (var k = 0; k < n; k++) vals[k] -= mb;
+      return function (ax, ay) {
+        if (ax < P || ay < P || ax >= w - P || ay >= h - P) return -2;
+        var sa = 0, saa = 0, sab = 0, m = 0;
+        for (var j = -P; j <= P; j++) { var row = (ay + j) * w + ax; for (var i = -P; i <= P; i++) { var a = I[row + i]; sa += a; saa += a * a; sab += a * vals[m++]; } }
+        var va = saa / n - (sa / n) * (sa / n); return va > 4 ? (sab / n) / Math.sqrt(va * vb) : -1;
+      };
+    }
     function findMatches(g0, maxC, progress) {
       var cs = [], rb = [0, 0, 0], R0 = g0.R, ms = [];
       for (var k = 0; k < corners.length && cs.length < maxC; k++) {
@@ -212,11 +227,27 @@ var Calib = (function () {
         cs.push([c[0], c[1], c[2], q[0], q[1]]);
       }
       for (var ci = 0; ci < cs.length; ci++) {
-        var c2 = cs[ci], px = Math.round(c2[3] / 2), py = Math.round(c2[4] / 2), bx = Math.round(c2[0] / 2), by = Math.round(c2[1] / 2);
-        var bst = -2, second = -2, bax = 0, bay = 0, xx, yy, nv;
-        for (yy = py - Rs; yy <= py + Rs; yy++) for (xx = px - Rs; xx <= px + Rs; xx++) {
-          nv = ncc(A2, B2, w2, h2, xx, yy, bx, by, 6); var far = Math.abs(xx - bax) + Math.abs(yy - bay) > 2;
-          if (nv > bst) { if (far) second = bst; bst = nv; bax = xx; bay = yy; } else if (nv > second && far) second = nv;
+        var c2 = cs[ci], bst = -2, second = -2, bax = 0, bay = 0, xx, yy, nv;
+        // coarse: quarter size, wide window; then half size, a small window around the best
+        var f4 = nccFixed(A4, B4, w4b, h4b, Math.round(c2[0] / 4), Math.round(c2[1] / 4), 4);
+        if (f4) {
+          // the few best places at quarter size (apart from each other), each checked at half size; the best two
+          // half-size results give the "clearly better than anything else" test
+          var px4 = Math.round(c2[3] / 4), py4 = Math.round(c2[4] / 4), tops4 = [];
+          for (yy = py4 - Rs4; yy <= py4 + Rs4; yy++) for (xx = px4 - Rs4; xx <= px4 + Rs4; xx++) {
+            nv = f4(xx, yy); if (nv < 0.4) continue;
+            if (tops4.length < 4 || nv > tops4[tops4.length - 1][0]) {
+              var near = -1; for (var t4 = 0; t4 < tops4.length; t4++) if (Math.abs(tops4[t4][1] - xx) + Math.abs(tops4[t4][2] - yy) <= 2) { near = t4; break; }
+              if (near >= 0) { if (nv > tops4[near][0]) tops4[near] = [nv, xx, yy]; } else tops4.push([nv, xx, yy]);
+              tops4.sort(function (a3, b3) { return b3[0] - a3[0]; }); if (tops4.length > 4) tops4.length = 4;
+            }
+          }
+          var f2 = tops4.length ? nccFixed(A2, B2, w2, h2, Math.round(c2[0] / 2), Math.round(c2[1] / 2), 6) : null;
+          if (f2) tops4.forEach(function (t) {
+            var tb = -2, tx = 0, ty = 0;
+            for (var y5 = t[2] * 2 - 3; y5 <= t[2] * 2 + 3; y5++) for (var x5 = t[1] * 2 - 3; x5 <= t[1] * 2 + 3; x5++) { var v5 = f2(x5, y5); if (v5 > tb) { tb = v5; tx = x5; ty = y5; } }
+            if (tb > bst) { if (Math.abs(tx - bax) + Math.abs(ty - bay) > 2) second = bst; bst = tb; bax = tx; bay = ty; } else if (tb > second && Math.abs(tx - bax) + Math.abs(ty - bay) > 2) second = tb;
+          });
         }
         if (bst >= 0.75 && bst - second >= 0.03) {
           var fb = -2, fx = 0, fy = 0;
@@ -364,6 +395,7 @@ var Calib = (function () {
       show({ textOnly: true, text: 'Vuelta ' + round + ': costo ' + before.toFixed(2) + ' -> ' + vb.toFixed(2), frac: 0.44 });
       if (round > 1 && vb > before * 0.99) break;   // this round did not help: done
     }
+    if (o.joint2 !== false) { st.rig = rigX(xb); cylinder(st); st.rowKnots = null; var msJ = matches; xb = jointDescent(st, xb, rigX, show, showBest, D, function (v) { return pairCost(v.slice(0, 6), msJ); }); }
     var gF = rigX(xb), esF = matches.map(function (m) { return epi(gF, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
     st.fitX = xb;
     fr2 = { g: gF, x: xb, good: esF.filter(function (e) { return e < 2.5; }).length, med: esF[esF.length >> 1] };
@@ -461,7 +493,7 @@ var Calib = (function () {
     // shared part of that band wins; among nearly as good ones, the smallest shift. So it can only look better.
     var BAND = 8, nb = Math.ceil(h / BAND), hw = new Float32Array(h), bandW = new Float64Array(nb).fill(NaN), rq = [0, 0, 0], qa0 = [0, 0], qb0 = [0, 0];
     var wLo = -10 / KW, wHi = Math.min(WMAX, 70 / KW), wStep = 0.5 / KW;
-    for (var bi = 0; bi < nb && !flat; bi++) {
+    for (var bi = 0; bi < nb && !flat && !st.rowKnots; bi++) {
       var rays2 = [], av2 = [];
       for (y = bi * BAND; y < Math.min(h, (bi + 1) * BAND); y++) for (x = 0; x < w; x += 2) {
         cylRay(c, x * S + S / 2, y * S + S / 2, rq); if (!toA(g, rq, 0, qa0) || !toB(g, rq, 0, qb0)) continue;
@@ -484,14 +516,22 @@ var Calib = (function () {
       for (bi = 0; bi < nb; bi++) if (bandW[bi] === bandW[bi] && Math.abs(bi - bb0) < bd) { bd = Math.abs(bi - bb0); best = bandW[bi]; }
       hw[y] = best === best ? best : 0;
     }
-    // smooth (middle value, then average), then at most 0.08 px more shift per row (at most 8% taller or shorter)
-    var hs = new Float32Array(h); for (y = 0; y < h; y++) { var nn = []; for (j = Math.max(0, y - 10); j <= Math.min(h - 1, y + 10); j++) nn.push(hw[j]); nn.sort(function (a2, b2) { return a2 - b2; }); hs[y] = nn[nn.length >> 1]; }
-    var hwA;
-    // the limit, for sure: the lowest curve under the band values that never changes faster than the limit (it stays
-    // with the background and only rises slowly where every row around needs more)
-    var lim = 0.08 / KW, env = new Float32Array(h);
-    for (y = 0; y < h; y++) { var mn = Infinity; for (j = 0; j < h; j++) { var v = hs[j] + lim * Math.abs(y - j); if (v < mn) mn = v; } env[y] = mn; }
-    hwA = env;
+    // smooth a little (middle value of 5 bands' rows), then follow the bands as closely as possible while never
+    // changing more than LIM px of shift per row (no stretching beyond that): pull toward the bands, clamp the
+    // change per row both ways, many times
+    var LIM = st.o.rowLim || 0.15;
+    if (st.rowKnots && !flat) { var hwK = new Float32Array(h); for (y = 0; y < h; y++) hwK[y] = rowW(st, y * S + S / 2); hw = hwK; }
+    var hs = new Float32Array(h); if (st.rowKnots && !flat) { hs = hw; } else for (y = 0; y < h; y++) { var nn = []; for (j = Math.max(0, y - 4); j <= Math.min(h - 1, y + 4); j++) nn.push(hw[j]); nn.sort(function (a2, b2) { return a2 - b2; }); hs[y] = nn[nn.length >> 1]; }
+    // then a wide average (only slow changes: a near thing in a few bands must not make lens B wave)
+    var SM = st.rowKnots ? 0 : st.o.rowSmooth != null ? st.o.rowSmooth : 40, hs2 = new Float32Array(h);
+    if (SM > 0) for (y = 0; y < h; y++) { var sw = 0, sv = 0; for (j = Math.max(0, y - 2 * SM); j <= Math.min(h - 1, y + 2 * SM); j++) { var wg = Math.exp(-0.5 * Math.pow((j - y) / Math.max(1, SM), 2)); sw += wg; sv += wg * hs[j]; } hs2[y] = sv / sw; }
+    if (SM > 0) hs = hs2;
+    var lim = (st.rowKnots ? 100 : LIM) / KW, hwA = Float32Array.from(hs);
+    for (var itp = 0; itp < 200; itp++) {
+      for (y = 0; y < h; y++) hwA[y] = 0.7 * hwA[y] + 0.3 * hs[y];
+      for (y = 1; y < h; y++) hwA[y] = Math.max(hwA[y - 1] - lim, Math.min(hwA[y - 1] + lim, hwA[y]));
+      for (y = h - 2; y >= 0; y--) hwA[y] = Math.max(hwA[y + 1] - lim, Math.min(hwA[y + 1] + lim, hwA[y]));
+    }
     // both lenses exactly as they will be drawn
     var la = new Float32Array(w * h), lb = new Float32Array(w * h), ok = new Uint8Array(w * h), r = [0, 0, 0], qa = [0, 0], qb = [0, 0];
     for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
@@ -505,6 +545,8 @@ var Calib = (function () {
         var k2 = y * w + x; if (!ok[k2] || !ok[k2 - 1] || !ok[k2 + 1]) continue;
         // edges that differ, and brightness that differs a little (both as drawn)
         var D = Math.abs(ea[k2] - eb[k2]) + 0.15 * Math.abs(la[k2] - lb[k2]) + 0.5;
+        // the person may say where the seam should go: it stays near there
+        if (st.o.seamTarget != null) D += 0.08 * Math.abs(x * S + S / 2 - st.o.seamTarget);
         if (y === 0 || !rowOk[y - 1]) { cur[x] = D + (y > 0 && prev[x] < INF ? prev[x] : 0); from[k2] = x; continue; }
         var bv = INF, bx = -1;
         for (var d = -1; d <= 1; d++) { var xx = x + d; if (prev[xx] < bv) { bv = prev[xx]; bx = xx; } }
@@ -553,6 +595,58 @@ var Calib = (function () {
   }
   // output pixel -> cylinder point
   function outToCyl(fr, ox, oy, p) { p[0] = fr.x0 + ox; p[1] = fr.y0 + oy; }
+
+  // Row distance curve of the joint descent: knots over the work canvas height, straight lines between them.
+  function rowW(st, y) {
+    var k = st.rowKnots, n = k.length, f = Math.max(0, Math.min(n - 1.0001, y / (st.cyl.CH - 1) * (n - 1))), i = f | 0;
+    return k[i] + (k[i + 1] - k[i]) * (f - i);
+  }
+  // -- 4c. Everything together: one score (how well both lenses match over the whole shared strip, exactly as drawn,
+  // lens B's rows at the curve's distance), and a descent that takes one small step in each variable in turn
+  // (pan, tilt, F, K, where lens B sits, and each knot of the row curve), keeps what helps, then smaller steps.
+  // The curve may not bend sharply (costs), so lens B never waves.
+  function jointDescent(st, x0, rigX, show, showBest, D, pairs) {
+    var c = st.cyl, g0 = rigX(x0), r = [0, 0, 0], qa = [0, 0], qb = [0, 0], pts = [];
+    for (var y = 0; y < c.CH; y += 4) for (var x = 0; x < c.CW; x += 4) { cylRay(c, x, y, r); if (toA(g0, r, 0, qa) && toB(g0, r, 0, qb)) pts.push(r[0], r[1], r[2], y); }
+    var NK = 8, KWf = c.Fc * 2 * Math.sqrt(g0.h[0] * g0.h[0] + g0.h[1] * g0.h[1] + g0.h[2] * g0.h[2]);   // px per unit w
+    var o = st.o, LAMC = o.curveCost != null ? o.curveCost : 0.0004;
+    function score(v) {
+      var g = rigX(v), sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, n = 0, rr = [0, 0, 0];
+      for (var i = 0; i < pts.length; i += 4) {
+        rr[0] = pts[i]; rr[1] = pts[i + 1]; rr[2] = pts[i + 2]; var yy = pts[i + 3];
+        if (!toA(g, rr, 0, qa)) continue;
+        var f = yy / (c.CH - 1) * (NK - 1), k = Math.min(NK - 2, f | 0), w = v[6 + k] + (v[7 + k] - v[6 + k]) * (f - k);
+        if (!toB(g, rr, 2 * w, qb)) continue;
+        var a = bil(st.inp.A, LW, LH, qa[0], qa[1]), b = bil(st.inp.B, LW, LH, qb[0], qb[1]); if (a !== a || b !== b) continue;
+        sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b; n++;
+      }
+      if (n < 500) return -2;
+      var m = (sab / n - sa / n * sb / n) / Math.sqrt((saa / n - (sa / n) * (sa / n)) * (sbb / n - (sb / n) * (sb / n)));
+      var bend = 0; for (var j = 1; j < NK - 1; j++) { var d2 = (v[6 + j - 1] - 2 * v[6 + j] + v[6 + j + 1]) * KWf; bend += d2 * d2; }
+      var pf = o.loose || 1, prior = Math.pow((v[2] - o.F) / (20 * pf), 2) + Math.pow((v[3] - o.K) / (0.05 * pf), 2) + Math.pow(v[4] / (0.15 * pf), 2) + Math.pow(v[5] / (0.15 * pf), 2);
+      // the shared pairs must keep fitting (a tilt and the opposite shift of all rows look alike on the strip; the
+      // pairs tell them apart)
+      var pc = pairs ? pairs(v) : 0;
+      return m - LAMC * bend - 0.002 * prior - (o.pairW != null ? o.pairW : 0.01) * pc;
+    }
+    var v = x0.slice(0, 6); for (var k0 = 0; k0 < NK; k0++) v.push(0);
+    var best = score(v), it = 0;
+    var step0 = [0.15 * D, 0.1 * D, 3, 0.008, 0.02, 0.02]; for (k0 = 0; k0 < NK; k0++) step0.push(3 / KWf);
+    var names = ['paneo', 'inclinacion', 'foco', 'curvatura', 'B costado', 'B adelante']; for (k0 = 0; k0 < NK; k0++) names.push('fila ' + (k0 + 1));
+    [1, 0.5, 0.25, 0.12].forEach(function (sc) {
+      for (var pass = 0; pass < 8; pass++) {
+        var improved = false;
+        for (var p = 0; p < v.length; p++) for (var sg = -1; sg <= 1; sg += 2) {
+          var t = v.slice(); t[p] += sg * step0[p] * sc; var sv = score(t); it++;
+          if (sv > best) { best = sv; v = t; improved = true; if (p < 6) showBest('Todo junto (' + names[p] + '), coincidencia ' + best.toFixed(3), 0.47, v, 90); }
+        }
+        if (show) show({ textOnly: true, text: 'Todo junto: paso ' + sc + ', vuelta ' + (pass + 1) + ', ' + it + ' pruebas, coincidencia ' + best.toFixed(3), frac: 0.47 });
+        if (!improved) break;
+      }
+    });
+    st.rowKnots = v.slice(6);
+    return v.slice(0, 6);
+  }
 
   // -- 6b. Small bending near the seam only, so a wide soft seam shows no doubles. --
   // In a band of +-HB pixels around the seam, what is left between both lenses is measured (patches of A searched in
@@ -800,7 +894,14 @@ var Calib = (function () {
     }
     return (sab / n - sa / n * sb / n) / Math.sqrt((saa / n - (sa / n) * (sa / n)) * (sbb / n - (sb / n) * (sb / n)));
   }
-  return { CAM: CAM, slideData: slideData, stripMatch: stripMatch, run: run, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
+  // The person tapped the final view at (fx, fy) (parts of its width and height): the seam goes near there.
+  function seamAt(st, fx, fy) {
+    var V = st.view.cyl, cr = st.view.final || st.view.crop, r = [0, 0, 0];
+    cylRay(V, cr.x0 + fx * (cr.x1 - cr.x0), cr.y0 + fy * (cr.y1 - cr.y0), r);
+    st.o.seamTarget = cylOf(st.cyl, r)[0];
+    seam(st, null); if (st.o.warp !== false) seamWarp(st, null); framing(st);
+  }
+  return { CAM: CAM, seamAt: seamAt, slideData: slideData, stripMatch: stripMatch, run: run, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
 })();
 
 // ---- Web Worker side: the page sends the pictures; pictures of the work go back as it runs. ----
@@ -827,9 +928,10 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
         var pv = Calib.preview(state, Math.min(PW, 640), { stage: 1, viewCyl: true, rig: Calib.Rig(state.o, m.pan, m.tilt) });
         self.postMessage({ t: 'view', w: pv.w, h: pv.h, img: pv.data, rpp: pv.rpp }, [pv.data.buffer]);
       }
+      else if (m.t === 'seamAt' && state && state.view) { Calib.seamAt(state, m.fx, m.fy); finish(); }
       else if (m.t === 'start') {
         if (m.inp) { PW = m.pw || 720; state = { inp: m.inp, o: m.o }; }
-        state.o.start = m.start || null; state.cyl = null; state.viewCyl = null; state.viewCrop = null;
+        state.o.start = m.start || null; state.o.seamTarget = null; state.rowKnots = null; state.cyl = null; state.viewCyl = null; state.viewCrop = null;
         Calib.run(state, post);
         finish();
       }

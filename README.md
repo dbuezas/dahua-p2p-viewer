@@ -59,6 +59,7 @@ This app shows the cameras in about 10 seconds.
   - Then a small bending near the seam only (+-32 px): what is still off between both lenses there is measured
     (patches), cleaned, smoothed and kept gentle, and each lens bends half of it toward the other, fully in the
     middle and fading to nothing at the band's edges.
+  - At the end, a tap on the picture moves the seam near that place (inside the part both lenses see).
   - The PC blends the seam in two bands: each lens's picture is split into a blurred part (colours, light) and the
     rest (details); the blurred parts blend over a wide width (hides a lighter or darker lens) and the details over a
     narrow one (no doubles). Only the columns around the seam are worked, row by row.

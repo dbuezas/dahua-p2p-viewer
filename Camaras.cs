@@ -1598,6 +1598,9 @@ function calRun(){calQ=[];calBusy=false;calFinal=null;document.getElementById('c
  }).catch(function(e){calText('Error: '+e.message)})}
 var calHand=null,calDrag=null;
 function calView(){if(!calHand||!calW)return;if(calHand.busy){calHand.again=true;return}calHand.busy=true;calW.postMessage({t:'view',pan:calHand.pan,tilt:calHand.tilt})}
+// At the end: a tap on the picture puts the seam near there (it is worked out again around that place).
+calCv.addEventListener('pointerdown',function(e){if(calHand||!calFinal||!calW||calGo.disabled)return;var b=calCv.getBoundingClientRect();
+ calGo.disabled=true;calText('Moviendo la costura ahi...');calW.postMessage({t:'seamAt',fx:(e.clientX-b.left)/b.width,fy:(e.clientY-b.top)/b.height})});
 calCv.addEventListener('pointerdown',function(e){if(!calHand)return;calCv.setPointerCapture(e.pointerId);calDrag={x:e.clientX,y:e.clientY,pan:calHand.pan,tilt:calHand.tilt}});
 calCv.addEventListener('pointermove',function(e){if(!calDrag||!calHand)return;var k=calHand.rpp*calCv.width/calCv.clientWidth;
  calHand.pan=calDrag.pan-(e.clientX-calDrag.x)*k;calHand.tilt=calDrag.tilt+(e.clientY-calDrag.y)*k;calView()});
@@ -1613,7 +1616,7 @@ function calMsg(e){var m=e.data;
  calQ.push(m);if(!calBusy)calNext()}
 function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
  if(m.t=='error'){calText('No pude: '+m.text);calQ=[];calBusy=false;return}
- if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calNext();return}
+ if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calNext();setTimeout(function(){if(!calBusy)calText(document.getElementById('calt').textContent.replace(/ Toca la imagen.*$/,'')+' Toca la imagen para mover la costura ahi.')},50);return}
  if(m.t=='final'){calFinal=m;calFinalMix=false;var bm=document.getElementById('calmix');bm.style.display='';bm.textContent='Ver superpuestas';calNext();return}
  if(m.kind=='text'){calText(m.text,m.frac);setTimeout(calNext,0);return}
  calText(m.text,m.frac);
