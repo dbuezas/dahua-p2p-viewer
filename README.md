@@ -34,9 +34,12 @@ This app shows the cameras in about 10 seconds.
     turn of lens B are fitted to them (Nelder-Mead); shown on a cylinder with a soft seam. The fit uses the best 70% of the points and starts from the last
     result (the lens shape does not change). The lenses are a few cm apart, so near things (a table edge) land in
     different places: the leftover shift is measured all over the shared strip and lens B is bent locally to fit,
-    fading out over its own part (fine bending grid kept in `panoramica.txt`).
+    fading out over its own part (fine bending grid kept in `panoramica.txt`). Long straight edges count too
+    (the smallest shift that fits). The seam follows the path where both lenses look most alike (dynamic
+    programming). With few shared points the known lens shape is kept and only the turn is fitted.
+    Test without the TV: `Camaras.exe --pano picture.jpg out [last-numbers.txt]` writes both panoramas and the grid.
   If the lenses no longer see a shared strip, the phone says so.
-  Under the buttons the phone shows, as a curiosity, the panorama with a straight grid of each lens bent the way the
+  The panorama card on the phone shows, as a curiosity, the panorama with a straight grid of each lens bent the way the
   panorama bends it (light blue: camera 3, orange: camera 4).
 - When it cannot connect, it shows in big letters what to try: the other Wi-Fi network, or restarting the router.
 - Phone remote: a small web page on port 8080 (`puerto_web` in `camaras.ini`, 0 = off), only for the local network.

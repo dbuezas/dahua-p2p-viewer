@@ -980,7 +980,8 @@ class CamForm : Form
         if (i >= 0 && i < ph.Length) { play = ph[i]; half = hv[i]; }
         if (play == 0) return null;
         var vws = viewOf;
-        if (i < vws.Length && vws[i] != null) return vws[i].Jpeg(480);   // drawn by me: my last picture
+        // Drawn by me: my last picture. The panorama's card shows it with the bent grid of each lens on top.
+        if (i < vws.Length && vws[i] != null) return vws[i].Half == 0 ? (vws[i].GridJpeg(480) ?? vws[i].Jpeg(480)) : vws[i].Jpeg(480);
         lock (snapLock)
         {
             string f = CaptureFile(play, "camaras_snap_" + i);
@@ -1183,7 +1184,8 @@ class CamForm : Form
             var ax = new double[OW]; var ay = new double[OW]; var bx = new double[OW]; var by = new double[OW];
             var inA = new bool[OW]; var inB = new bool[OW];
             var ray = new double[3]; var rb = new double[3]; var q = new double[2];
-            double band = Cal.Mode == 2 ? Math.Max(4, OW / 60.0) : 0;   // half width of the soft seam, in output pixels
+            // Half width of the soft seam, in output pixels: narrow when the seam follows the best path.
+            double band = Cal.Mode == 2 ? (SeamAt(Cal.C2, 0.5) >= 0 ? Math.Max(2, OW / 200.0) : Math.Max(4, OW / 60.0)) : 0;
             for (int oy = 0; oy < OH; oy++)
             {
                 int minA = int.MaxValue, maxA = -1, minB = int.MaxValue, maxB = -1;
@@ -1219,6 +1221,7 @@ class CamForm : Form
                 bool bRight = (minB + maxB) > (minA + maxA);
                 double lo = Math.Max(minA, minB), hi = Math.Min(maxA, maxB);
                 double seamX = lo <= hi ? (lo + hi) / 2 : (bRight ? maxA : minA);
+                if (Cal.Mode == 2) { double su = SeamAt(Cal.C2, (oy + 0.5) / OH); if (su >= 0) seamX = su * OW - 0.5; }
                 for (int ox = 0; ox < OW; ox++)
                 {
                     int k = oy * OW + ox;
@@ -1522,7 +1525,9 @@ class CamForm : Form
             double fk = prev[0] * W, kk = prev[1];
             Func<double[], double> turn = r => cost(new[] { fk, kk, r[0], r[1], r[2] });
             var pt = NelderMead(turn, new[] { prev[2], prev[3], prev[4] }, new[] { 0.05, 0.02, 0.02 }, 1000, out v);
-            if (v < bestV * 1.1) { bestV = Math.Min(v, bestV); bestP = new[] { fk, kk, pt[0], pt[1], pt[2] }; }
+            // With few shared points (something close covers the strip) the lens shape cannot be trusted from this
+            // picture: keep the known shape unless it clearly does not fit.
+            if (v < bestV * (ms.Count < 40 ? 3 : 1.1)) { bestV = Math.Min(v, bestV); bestP = new[] { fk, kk, pt[0], pt[1], pt[2] }; }
         }
         var lens = new Lens(bestP[0], bestP[1], bestP[2], bestP[3], bestP[4], W, H);
         var errs = new List<double>();
@@ -1586,37 +1591,42 @@ class CamForm : Form
             lens.ToB(ray, rb);
             if (lens.Project(rb, q) && q[0] >= 0 && q[0] < W - 1 && q[1] >= 0 && q[1] < H - 1) { cb[k] = Bilinear(B, W, q[0], q[1]); vb[k] = true; }
         }
-        int step = Math.Max(8, ow / 90), P = 8, S = Math.Max(10, ow / 60);
+        int step = Math.Max(8, ow / 90), P = 8, S = Math.Max(16, ow / 30);
         int NX = (ow - 1) / step + 1, NY = (oh - 1) / step + 1, N = NX * NY;
         var du = new double[N]; var dv = new double[N]; var known = new bool[N]; var zero = new bool[N];
         Func<bool[], int, int, bool> ok = (m, x, y) => x >= 0 && y >= 0 && x < ow && y < oh && m[y * ow + x];
         int measured = 0; double maxShift = 0;
         for (int gy = 0; gy < NY; gy++) for (int gx = 0; gx < NX; gx++)
         {
-            int px = gx * step, py = gy * step, R = P + S;
-            if (!ok(va, px - P, py - P) || !ok(va, px + P, py + P) || !ok(va, px - P, py + P) || !ok(va, px + P, py - P)) continue;
-            if (!ok(vb, px - R, py - R) || !ok(vb, px + R, py + R) || !ok(vb, px - R, py + R) || !ok(vb, px + R, py - R)) continue;
+            int px = gx * step, py = gy * step;
+            if (!ok(va, px - P, py - P) || !ok(va, px + P, py + P) || !ok(va, px - P, py + P) || !ok(va, px + P, py - P) || !ok(vb, px, py)) continue;
             double sa = 0, saa = 0; int n = 0;
             for (int j = -P; j <= P; j++) for (int i = -P; i <= P; i++) { double a = ca[(py + j) * ow + px + i]; sa += a; saa += a * a; n++; }
             double ma = sa / n, vA = saa / n - ma * ma;
             if (vA < 40) continue;   // plain wall: nothing to measure
-            double best = -2, second = -2; int bx = 0, by = 0;
+            int side = 2 * S + 1; var vals = new double[side * side]; double best = -2;
             for (int dy = -S; dy <= S; dy++) for (int dx = -S; dx <= S; dx++)
             {
+                int k = (dy + S) * side + dx + S; vals[k] = -2;
+                int qx = px + dx, qy = py + dy;
+                if (!ok(vb, qx - P, qy - P) || !ok(vb, qx + P, qy + P) || !ok(vb, qx - P, qy + P) || !ok(vb, qx + P, qy - P)) continue;
                 double sb = 0, sbb = 0, sab = 0;
                 for (int j = -P; j <= P; j += 2) for (int i = -P; i <= P; i += 2)
                 {
-                    double a = ca[(py + j) * ow + px + i] - ma, b = cb[(py + dy + j) * ow + px + dx + i];
+                    double a = ca[(py + j) * ow + px + i] - ma, b = cb[(qy + j) * ow + qx + i];
                     sb += b; sbb += b * b; sab += a * b;
                 }
                 int m2 = (P + 1) * (P + 1);   // every second pixel
                 double vB = sbb / m2 - (sb / m2) * (sb / m2);
-                double v = vB > 1 ? (sab / m2) / Math.Sqrt(vA * vB) : -1;
-                bool far = Math.Abs(dx - bx) + Math.Abs(dy - by) > 2;
-                if (v > best) { if (far) second = best; best = v; bx = dx; by = dy; }
-                else if (v > second && far) second = v;
+                vals[k] = vB > 1 ? (sab / m2) / Math.Sqrt(vA * vB) : -1;
+                if (vals[k] > best) best = vals[k];
             }
-            if (best < 0.7 || best - second < 0.03 || Math.Abs(bx) == S || Math.Abs(by) == S) continue;
+            if (best < 0.75) continue;
+            // Along a straight edge (the table) many shifts fit about as well: take the smallest of those.
+            int bx = 0, by = 0; double bd = double.MaxValue;
+            for (int dy = -S; dy <= S; dy++) for (int dx = -S; dx <= S; dx++)
+                if (vals[(dy + S) * side + dx + S] >= best - 0.02 && dx * dx + dy * dy < bd) { bd = dx * dx + dy * dy; bx = dx; by = dy; }
+            if (Math.Abs(bx) == S || Math.Abs(by) == S) continue;
             int g = gy * NX + gx; known[g] = true; du[g] = bx; dv[g] = by; measured++;
         }
         // Clean: a measure far from the middle value of its neighbours is wrong (moving thing, repeated pattern).
@@ -1632,7 +1642,7 @@ class CamForm : Form
             }
             lx.Sort(); ly.Sort();
             double mx = lx[lx.Count / 2], my = ly[ly.Count / 2];
-            if (lx.Count >= 3 && Math.Abs(du[g] - mx) <= 3 && Math.Abs(dv[g] - my) <= 3) { keep[g] = true; maxShift = Math.Max(maxShift, Math.Max(Math.Abs(mx), Math.Abs(my))); }
+            if (lx.Count >= 3 && Math.Abs(du[g] - mx) <= 4 && Math.Abs(dv[g] - my) <= 4) { keep[g] = true; maxShift = Math.Max(maxShift, Math.Max(Math.Abs(mx), Math.Abs(my))); }
         }
         // Where only lens B shows, far enough from the shared strip, the bending is zero.
         for (int gy = 0; gy < NY; gy++)
@@ -1661,8 +1671,59 @@ class CamForm : Form
             }
         int kept = 0; foreach (var b in keep) if (b) kept++;
         Log("panoramica 2: ajuste fino " + measured + " medidas, " + kept + " buenas, corrimiento maximo " + maxShift.ToString("0") + " px, grilla " + NX + "x" + NY);
-        var r = new double[4 + 2 * N]; r[0] = NX; r[1] = NY; r[2] = (double)step / ow; r[3] = (double)step / oh;
+        // Seam: a path from top to bottom through the shared strip where both lenses (B already bent) look most alike,
+        // so whatever still does not fit is left out of sight. Dynamic programming, one step left/right per row at most.
+        Func<double[], double, double, double> grid = (f, x, y) =>
+        {
+            double gx = Math.Max(0, Math.Min(NX - 1.001, x / step)), gy = Math.Max(0, Math.Min(NY - 1.001, y / step));
+            int x0 = (int)gx, y0 = (int)gy, k = y0 * NX + x0; double fx = gx - x0, fy = gy - y0;
+            return (f[k] * (1 - fx) + f[k + 1] * fx) * (1 - fy) + (f[k + NX] * (1 - fx) + f[k + NX + 1] * fx) * fy;
+        };
+        const double INF = 1e18;
+        var costPrev = new double[ow]; var costCur = new double[ow]; var from = new int[ow * oh]; var D = new double[ow];
+        bool started = false;
+        for (int y = 0; y < oh; y++)
+        {
+            bool any = false;
+            for (int x = 0; x < ow; x++)
+            {
+                D[x] = INF;
+                if (!va[y * ow + x]) continue;
+                double sx = x + grid(du, x, y), sy = y + grid(dv, x, y);
+                if (sx < 0 || sy < 0 || sx >= ow - 1 || sy >= oh - 1) continue;
+                int k = (int)sy * ow + (int)sx; if (!vb[k] || !vb[k + 1] || !vb[k + ow] || !vb[k + ow + 1]) continue;
+                D[x] = Math.Abs(ca[y * ow + x] - Bilinear(cb, ow, sx, sy)); any = true;
+            }
+            for (int x = 0; x < ow; x++)
+            {
+                if (!started) { costCur[x] = D[x]; from[y * ow + x] = x; continue; }
+                int bi = x; double bv = costPrev[x];
+                if (x > 0 && costPrev[x - 1] < bv) { bv = costPrev[x - 1]; bi = x - 1; }
+                if (x < ow - 1 && costPrev[x + 1] < bv) { bv = costPrev[x + 1]; bi = x + 1; }
+                costCur[x] = D[x] >= INF || bv >= INF ? (any ? INF : bv) : D[x] + bv; from[y * ow + x] = bi;
+            }
+            if (any) started = true;
+            var tmp = costPrev; costPrev = costCur; costCur = tmp;
+        }
+        var seamPx = new double[oh]; int sxEnd = -1; double sv = INF;
+        for (int x = 0; x < ow; x++) if (costPrev[x] < sv) { sv = costPrev[x]; sxEnd = x; }
+        int nS = 0; double[] seamU = null;
+        if (sxEnd >= 0)
+        {
+            int cx = sxEnd;
+            for (int y = oh - 1; y >= 0; y--) { seamPx[y] = cx; cx = from[y * ow + cx]; }
+            nS = 64; seamU = new double[nS];
+            for (int k = 0; k < nS; k++)
+            {
+                int y = k * (oh - 1) / (nS - 1); double sum = 0; int c = 0;
+                for (int j = Math.Max(0, y - 4); j <= Math.Min(oh - 1, y + 4); j++) { sum += seamPx[j]; c++; }
+                seamU[k] = (sum / c + 0.5) / ow;
+            }
+        }
+        Log("panoramica 2: union " + (nS > 0 ? "por el camino mas parecido" : "en el medio"));
+        var r = new double[4 + 2 * N + 1 + nS]; r[0] = NX; r[1] = NY; r[2] = (double)step / ow; r[3] = (double)step / oh;
         for (int g = 0; g < N; g++) { r[4 + g] = du[g] / ow; r[4 + N + g] = dv[g] / oh; }
+        r[4 + 2 * N] = nS; for (int k = 0; k < nS; k++) r[5 + 2 * N + k] = seamU[k];
         return r;
     }
 
@@ -1670,6 +1731,16 @@ class CamForm : Form
     {
         int x0 = (int)x, y0 = (int)y; double fx = x - x0, fy = y - y0; int k = y0 * w + x0;
         return (img[k] * (1 - fx) + img[k + 1] * fx) * (1 - fy) + (img[k + w] * (1 - fx) + img[k + w + 1] * fx) * fy;
+    }
+
+    // Seam column (0 to 1) at height v of the picture, or -1 when the calibration has none.
+    static double SeamAt(double[] c, double v)
+    {
+        if (c.Length < 13) return -1;
+        int N = (int)c[9] * (int)c[10], o = 13 + 2 * N; if (c.Length <= o) return -1;
+        int nS = (int)c[o]; if (nS < 2 || c.Length < o + 1 + nS) return -1;
+        double t = Math.Max(0, Math.Min(nS - 1.001, v * (nS - 1))); int i = (int)t; double f = t - i;
+        return c[o + 1 + i] * (1 - f) + c[o + 2 + i] * f;
     }
 
     // Fine bending at a point of the picture (u, v from 0 to 1): shift of lens B as parts of the picture size.
@@ -1682,6 +1753,53 @@ class CamForm : Form
         int x0 = (int)gx, y0 = (int)gy; double fx = gx - x0, fy = gy - y0; int k = y0 * NX + x0;
         Func<int, double> at = o => (c[o + k] * (1 - fx) + c[o + k + 1] * fx) * (1 - fy) + (c[o + k + NX] * (1 - fx) + c[o + k + NX + 1] * fx) * fy;
         du = at(13); dv = at(13 + N);
+    }
+
+    static void PanoTest(string inFile, string outBase, string prevFile)
+    {
+        LogFile = outBase + ".log";
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        double[] prev = null;
+        if (prevFile != "-") { var f = File.ReadAllText(prevFile).Trim().Split(' '); prev = new double[f.Length]; for (int i = 0; i < f.Length; i++) prev[i] = double.Parse(f[i], inv); }
+        using (var src = new Bitmap(inFile))
+        {
+            string err;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var c1 = Calibrate(src, out err);
+            if (c1 == null) { Log("modo 1: " + err); return; }
+            var c2 = Calibrate2(src, c1, prev, out err);
+            Log("calculo " + sw.ElapsedMilliseconds + " ms" + (c2 == null ? ", modo 2: " + err : ""));
+            if (c2 != null) File.WriteAllText(outBase + "_c2.txt", Nums(c2));
+            // The picture as an I420 frame, like the SDK gives it.
+            int w = src.Width & ~1, h = src.Height & ~3;
+            var yuv = new byte[w * h * 3 / 2];
+            using (var b = src.Clone(new Rectangle(0, 0, w, h), System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+            {
+                var d = b.LockBits(new Rectangle(0, 0, w, h), System.Drawing.Imaging.ImageLockMode.ReadOnly, b.PixelFormat);
+                var raw = new byte[d.Stride * h]; Marshal.Copy(d.Scan0, raw, 0, raw.Length); b.UnlockBits(d);
+                for (int y = 0; y < h; y++) for (int x = 0; x < w; x++)
+                {
+                    int i = y * d.Stride + x * 3; double B = raw[i], G = raw[i + 1], R = raw[i + 2];
+                    yuv[y * w + x] = (byte)Math.Max(0, Math.Min(255, 16 + 0.257 * R + 0.504 * G + 0.098 * B));
+                    if ((x & 1) == 0 && (y & 1) == 0)
+                    {
+                        int k = (y / 2) * (w / 2) + x / 2;
+                        yuv[w * h + k] = (byte)Math.Max(0, Math.Min(255, 128 - 0.148 * R - 0.291 * G + 0.439 * B));
+                        yuv[w * h + w * h / 4 + k] = (byte)Math.Max(0, Math.Min(255, 128 + 0.439 * R - 0.368 * G - 0.071 * B));
+                    }
+                }
+            }
+            var pin = GCHandle.Alloc(yuv, GCHandleType.Pinned);
+            foreach (var mode in new[] { 1, 2 })
+            {
+                if (mode == 2 && c2 == null) continue;
+                var v = new PanoView { Cal = new PanoCal { Mode = mode, C1 = c1, C2 = c2 } };
+                v.Frame(pin.AddrOfPinnedObject(), w, h);
+                File.WriteAllBytes(outBase + "_" + mode + ".jpg", v.Jpeg(1400));
+                if (mode == 2) File.WriteAllBytes(outBase + "_grid.jpg", v.GridJpeg(1400));
+            }
+            pin.Free();
+        }
     }
 
     static double[] NelderMead(Func<double[], double> fn, double[] x0, double[] step, int iters, out double bestV)
@@ -1811,14 +1929,13 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 #zoom{display:flex;flex-direction:column;gap:14px}#zoom button{width:64px;height:64px;font-size:28px;touch-action:none}
 </style></head><body>
 <header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
-<div id=pano style='display:none;padding:0 10px 6px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=1>Simple</button> <button data-pano=2>Avanzada</button>
-<div id=gridbox style='display:none'><img id=gridimg style='width:100%;border-radius:8px;margin-top:8px'><p class=tip style='margin:2px 0'>Como se deforma cada lente: celeste = camara 3, naranja = camara 4.</p></div></div>
+<div id=pano style='display:none;padding:0 10px 6px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=1>Simple</button> <button data-pano=2>Avanzada</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4.</p></div>
 <p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
 <p class=tip id=msg style='color:#fc0'></p>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=grid></div><img id=ghost>
 <script>
-var st={big:-1,cams:[]},gridKey='';
+var st={big:-1,cams:[]};
 // ONE connection that stays open (WebSocket) for everything; if it drops, connect again at once.
 // Buttons change on the phone right away; the TV follows when the command arrives.
 var ws=null,queue=[],lastMsg=0,net=document.getElementById('net');
@@ -1846,8 +1963,7 @@ function draw(s){st=s;var g=document.getElementById('grid');
  var pb=document.getElementById('pano');pb.style.display=s.split?'':'none';
  [].forEach.call(pb.querySelectorAll('button'),function(b){b.classList.toggle('on',+b.dataset.pano==(+s.pano||0))});
  document.getElementById('msg').textContent=s.msg||'';
- var gk=(+s.pano||0)+'|'+(s.msg||''),gb=document.getElementById('gridbox');gb.style.display=s.pano&&!s.msg?'':'none';
- if(gk!=gridKey&&s.pano&&!s.msg){gridKey=gk;setTimeout(function(){document.getElementById('gridimg').src='/grid?'+Date.now()},2500)}else if(!s.pano)gridKey='';
+ document.getElementById('gridtip').style.display=s.pano&&!s.msg?'':'none';
  var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none'}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
 var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
@@ -2092,6 +2208,9 @@ connect();
         // Set by Restart after a failed connection: how long to wait if this try fails too.
         if (args.Length == 2 && args[0] == "--espera") int.TryParse(args[1], out retryMs);
         // Test: Camaras.exe --qr file.png text   (writes the QR as an image and exits)
+        // Test: Camaras.exe --pano picture.jpg out (prev numbers file or -)  works out both panoramas from a picture
+        // of the split channel and writes out_1.jpg, out_2.jpg, out_grid.jpg; the log goes to out.log.
+        if (args.Length >= 3 && args[0] == "--pano") { PanoTest(args[1], args[2], args.Length > 3 ? args[3] : "-"); return; }
         if (args.Length == 3 && args[0] == "--qr") { Qr.ToBitmap(Qr.Encode(args[2]), 8).Save(args[1], System.Drawing.Imaging.ImageFormat.Png); return; }
         // Draw in real screen pixels. Without this, with Windows zoom (e.g. 150%) Windows draws the video smaller
         // and then stretches the whole window up, which makes every picture blurry.
