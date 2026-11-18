@@ -1765,8 +1765,31 @@ class CamForm : Form
                 double tol = 5 + 0.3 * Math.Max(Math.Max(Math.Abs(dv[k]), Math.Abs(dv[g])), Math.Max(Math.Abs(du[k]), Math.Abs(du[g])));
                 if (Math.Abs(du[k] - du[g]) <= tol && Math.Abs(dv[k] - dv[g]) <= tol) agree++;
             }
-            if (agree >= 2) { keep[g] = true; maxShift = Math.Max(maxShift, Math.Max(Math.Abs(du[g]), Math.Abs(dv[g]))); }
+            if (agree >= 2) keep[g] = true;
         }
+        // A small group of wrong measures agrees with itself and passes the check above. So each measure must also be
+        // near the median (the middle value) of the measures beside it in the same row; this repeats until nothing changes.
+        for (int pass = 0; pass < 4; pass++)
+        {
+            var drop = new List<int>(); var ls = new List<double>(); var lt = new List<double>();
+            for (int gy = 0; gy < NY; gy++) for (int gx = 0; gx < NX; gx++)
+            {
+                int g = gy * NX + gx; if (!keep[g]) continue;
+                ls.Clear(); lt.Clear();
+                for (int j = 0; j <= 0; j++) for (int i = -4; i <= 4; i++)
+                {
+                    int x = gx + i, y = gy + j, k = y * NX + x; if (x < 0 || y < 0 || x >= NX || y >= NY || !keep[k]) continue;
+                    ls.Add(du[k]); lt.Add(dv[k]);
+                }
+                if (ls.Count < 4) continue;
+                ls.Sort(); lt.Sort(); double mu = ls[ls.Count / 2], mv = lt[lt.Count / 2];
+                double tol = 5 + 0.3 * Math.Max(Math.Abs(mu), Math.Abs(mv));
+                if (Math.Abs(du[g] - mu) > tol || Math.Abs(dv[g] - mv) > tol) drop.Add(g);
+            }
+            foreach (int g in drop) keep[g] = false;
+            if (drop.Count == 0) break;
+        }
+        for (int g = 0; g < N; g++) if (keep[g]) maxShift = Math.Max(maxShift, Math.Max(Math.Abs(du[g]), Math.Abs(dv[g])));
         // Where only lens B shows, far enough from the shared strip, the bending is zero.
         for (int gy = 0; gy < NY; gy++)
         {
@@ -1779,17 +1802,21 @@ class CamForm : Form
                 if (va[k] != vb[k] && (hi < 0 || gx > hi + fade || gx < lo - fade)) zero[gy * NX + gx] = true;   // only one lens, far from the strip
             }
         }
-        // Fill: each free point becomes the average of its neighbours, many times (smooth surface through the measures).
+        // Fill: a smooth surface near the measures. Each point becomes the average of its neighbours; a measured point
+        // also pulls toward its measure with weight Pull. The measures pull but do not pin the surface: a pinned lone
+        // measure makes a sharp cone (a dip or bump in straight lines around it).
         for (int g = 0; g < N; g++) if (!keep[g]) { du[g] = 0; dv[g] = 0; }
+        var mu0 = (double[])du.Clone(); var mv0 = (double[])dv.Clone();
         for (int it = 0; it < 3000; it++)
             for (int gy = 0; gy < NY; gy++) for (int gx = 0; gx < NX; gx++)
             {
-                int g = gy * NX + gx; if (keep[g] || zero[g]) continue;
-                double sx = 0, sy = 0; int c = 0;
-                if (gx > 0) { sx += du[g - 1]; sy += dv[g - 1]; c++; }
-                if (gx < NX - 1) { sx += du[g + 1]; sy += dv[g + 1]; c++; }
+                int g = gy * NX + gx; if (zero[g]) continue;
+                double sx = 0, sy = 0, c = 0;
+                if (gx > 0) { sx += Side * du[g - 1]; sy += Side * dv[g - 1]; c += Side; }
+                if (gx < NX - 1) { sx += Side * du[g + 1]; sy += Side * dv[g + 1]; c += Side; }
                 if (gy > 0) { sx += du[g - NX]; sy += dv[g - NX]; c++; }
                 if (gy < NY - 1) { sx += du[g + NX]; sy += dv[g + NX]; c++; }
+                if (keep[g]) { sx += Pull * c * mu0[g]; sy += Pull * c * mv0[g]; c += Pull * c; }
                 du[g] = sx / c; dv[g] = sy / c;
             }
         // Never fold the picture: between neighbouring grid points the bending may change by at most half their
@@ -1816,6 +1843,7 @@ class CamForm : Form
             }
             if (!changed) break;
         }
+        if (DebugField) { var fd = new StringBuilder("campo final dv (filas abajo, columnas 30-62, * = medida buena):"); for (int gy = Math.Max(0, NY - 9); gy < NY; gy++) { fd.Append("\n f" + gy + ":"); for (int gx = 30; gx < Math.Min(NX, 63); gx++) fd.Append(" " + dv[gy * NX + gx].ToString("0") + (keep[gy * NX + gx] ? "*" : "")); } Log(fd.ToString()); }
         int kept = 0; foreach (var b in keep) if (b) kept++;
         Log("panoramica 2: ajuste fino " + measured + " medidas, " + kept + " buenas, corrimiento maximo " + maxShift.ToString("0") + " px, grilla " + NX + "x" + NY);
         // Seam: a path from top to bottom through the shared strip where both lenses (both already bent) look most alike,
@@ -1932,11 +1960,15 @@ class CamForm : Form
 
     static bool DebugField, FieldOnEdges = false; static string DebugOut;
     // Fine bending search: a match counts from MinCorr; among matches within Tol of the best, the smallest shift wins.
-    static double MinCorr = 0.72, Tol = 0.06, PartMin = 0.5;
+    static double MinCorr = 0.72, Tol = 0.06, PartMin = 0.5, Pull = 4, Side = 4;
     static void PanoTest(string inFile, string outBase, string prevFile)
     {
         LogFile = outBase + ".log"; DebugField = true; DebugOut = outBase;
         var inv = System.Globalization.CultureInfo.InvariantCulture;
+        // Test only: CAM_PULL / CAM_SIDE override the fill weights.
+        string ev = Environment.GetEnvironmentVariable("CAM_PULL"); if (ev != null) Pull = double.Parse(ev, inv);
+        ev = Environment.GetEnvironmentVariable("CAM_SIDE"); if (ev != null) Side = double.Parse(ev, inv);
+        Log("prueba: Pull " + Pull + ", Side " + Side);
         double[] prev = null;
         if (prevFile != "-") { var f = File.ReadAllText(prevFile).Trim().Split(' '); prev = new double[f.Length]; for (int i = 0; i < f.Length; i++) prev[i] = double.Parse(f[i], inv); }
         using (var src = new Bitmap(inFile))
