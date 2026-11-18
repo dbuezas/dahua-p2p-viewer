@@ -1330,32 +1330,7 @@ class CamForm : Form
             {
                 if (pix == null || Half > 0 || Cal == null || fw == 0) return null;
                 int lw = fw, lh = fh / 2;
-                double x0 = 0, x1 = 1, y0 = 0, y1 = 1, seam; Lens lens = null;
-                if (Cal.Mode == 2) lens = new Lens(Cal.C2, lw, lh); else PanoBox(Cal.C1, out x0, out x1, out y0, out y1, out seam);
-                var r = new double[3]; var ra = new double[3];
-                // Lens pixel -> place in the picture (0..1), or false when it falls off.
-                Func<int, double, double, PointF?> map = (lensNo, x, y) =>
-                {
-                    double u, v;
-                    if (lens != null)
-                    {
-                        var c = Cal.C2;
-                        lens.Unproject(x, y, r); if (lensNo == 1) { lens.ToA(r, ra); Array.Copy(ra, r, 3); }
-                        double ang = Math.Atan2(r[0], r[2]), hgt = r[1] / Math.Sqrt(r[0] * r[0] + r[2] * r[2]);
-                        u = (ang - c[5]) / (c[6] - c[5]); v = (hgt - c[7]) / (c[8] - c[7]);
-                        double du, dv; FieldAt(c, u, v, out du, out dv);
-                        double f = FieldBoth(c) ? (lensNo == 1 ? 0.5 : -0.5) : (lensNo == 1 ? 1 : 0);
-                        u -= f * du; v -= f * dv;
-                    }
-                    else
-                    {
-                        double X = x / lw, Y = y / lw;
-                        if (lensNo == 1) { X = Cal.C1[1] + Cal.C1[0] * X; Y = Cal.C1[2] + Cal.C1[0] * Y; }
-                        u = (X - x0) / (x1 - x0); v = (Y - y0) / (y1 - y0);
-                    }
-                    if (u < -0.3 || u > 1.3 || v < -0.5 || v > 1.5) return null;
-                    return new PointF((float)u, (float)v);
-                };
+                Func<int, double, double, PointF?> map = (lensNo, x, y) => MapLens(Cal, lw, lh, lensNo, x, y);
                 int oh = Math.Max(1, OH * w / OW);
                 using (var src = new Bitmap(OW, OH, OW * 4, System.Drawing.Imaging.PixelFormat.Format32bppRgb, pin.AddrOfPinnedObject()))
                 using (var dst = new Bitmap(w, oh))
@@ -1385,6 +1360,32 @@ class CamForm : Form
                     return ms.ToArray();
                 }
             }
+        }
+
+        // Lens pixel (lens 0 = A, 1 = B) -> place in the panorama (0..1), or null when it falls off.
+        public static PointF? MapLens(PanoCal cal, int lw, int lh, int lensNo, double x, double y)
+        {
+            double u, v;
+            if (cal.Mode == 2)
+            {
+                var c = cal.C2; var lens = new Lens(c, lw, lh); var r = new double[3]; var ra = new double[3];
+                lens.Unproject(x, y, r); if (lensNo == 1) { lens.ToA(r, ra); Array.Copy(ra, r, 3); }
+                double ang = Math.Atan2(r[0], r[2]), hgt = r[1] / Math.Sqrt(r[0] * r[0] + r[2] * r[2]);
+                u = (ang - c[5]) / (c[6] - c[5]); v = (hgt - c[7]) / (c[8] - c[7]);
+                // The bending moves the picture; undo it a few times to find where this lens point really shows.
+                double f = FieldBoth(c) ? (lensNo == 1 ? 0.5 : -0.5) : (lensNo == 1 ? 1 : 0), uu = u, vv = v;
+                for (int i = 0; i < 4; i++) { double du, dv; FieldAt(c, uu, vv, out du, out dv); uu = u - f * du; vv = v - f * dv; }
+                u = uu; v = vv;
+            }
+            else
+            {
+                double x0, x1, y0, y1, seam; PanoBox(cal.C1, out x0, out x1, out y0, out y1, out seam);
+                double X = x / lw, Y = y / lw;
+                if (lensNo == 1) { X = cal.C1[1] + cal.C1[0] * X; Y = cal.C1[2] + cal.C1[0] * Y; }
+                u = (X - x0) / (x1 - x0); v = (Y - y0) / (y1 - y0);
+            }
+            if (u < -0.3 || u > 1.3 || v < -0.5 || v > 1.5) return null;
+            return new PointF((float)u, (float)v);
         }
 
         // Last pasted frame as a JPEG for the phone.
@@ -1610,69 +1611,135 @@ class CamForm : Form
     static double[] Field(double[] A, double[] B, int W, int H, Lens lens, double a0, double a1, double h0, double h1)
     {
         int ow = (int)(lens.F * (a1 - a0)), oh = (int)(ow * (h1 - h0) / (a1 - a0));
-        var ca = new double[ow * oh]; var cb = new double[ow * oh]; var va = new bool[ow * oh]; var vb = new bool[ow * oh];
+        // The cylinder pictures go a bit above and below the panorama (mo rows each side): a near thing at the
+        // bottom edge (the table) can be shifted out of the panorama in one lens, and must still be found there.
+        int mo = oh / 4, ohx = oh + 2 * mo;
+        var cax = new double[ow * ohx]; var cbx = new double[ow * ohx]; var vax = new bool[ow * ohx]; var vbx = new bool[ow * ohx];
         var ray = new double[3]; var rb = new double[3]; var q = new double[2];
-        for (int y = 0; y < oh; y++) for (int x = 0; x < ow; x++)
+        for (int y = 0; y < ohx; y++) for (int x = 0; x < ow; x++)
         {
-            double ang = a0 + (x + 0.5) / ow * (a1 - a0), hgt = h0 + (y + 0.5) / oh * (h1 - h0);
+            double ang = a0 + (x + 0.5) / ow * (a1 - a0), hgt = h0 + (y - mo + 0.5) / oh * (h1 - h0);
             ray[0] = Math.Sin(ang); ray[1] = hgt; ray[2] = Math.Cos(ang);
             int k = y * ow + x;
-            if (lens.Project(ray, q) && q[0] >= 0 && q[0] < W - 1 && q[1] >= 0 && q[1] < H - 1) { ca[k] = Bilinear(A, W, q[0], q[1]); va[k] = true; }
+            if (lens.Project(ray, q) && q[0] >= 0 && q[0] < W - 1 && q[1] >= 0 && q[1] < H - 1) { cax[k] = Bilinear(A, W, q[0], q[1]); vax[k] = !Osd(q[0] / W, q[1] / H, 0); }
             lens.ToB(ray, rb);
-            if (lens.Project(rb, q) && q[0] >= 0 && q[0] < W - 1 && q[1] >= 0 && q[1] < H - 1) { cb[k] = Bilinear(B, W, q[0], q[1]); vb[k] = true; }
+            if (lens.Project(rb, q) && q[0] >= 0 && q[0] < W - 1 && q[1] >= 0 && q[1] < H - 1) { cbx[k] = Bilinear(B, W, q[0], q[1]); vbx[k] = !Osd(q[0] / W, q[1] / H, 1); }
         }
-        int step = Math.Max(8, ow / 90), P = 8, S = Math.Max(16, ow / 30);
+        // Matching works on edge strength: behind a near thing each lens sees a different background (parallax),
+        // but the thing's own edges look the same.
+        Func<double[], bool[], int, int, double[]> grad = (img, m, w2, h2) =>
+        {
+            var e = new double[w2 * h2];
+            for (int y = 1; y < h2 - 1; y++) for (int x = 1; x < w2 - 1; x++)
+            {
+                int k = y * w2 + x; if (!m[k - 1] || !m[k + 1] || !m[k - w2] || !m[k + w2]) continue;
+                double gx = img[k + 1] - img[k - 1], gy = img[k + w2] - img[k - w2]; e[k] = Math.Sqrt(gx * gx + gy * gy);
+            }
+            return e;
+        };
+        if (FieldOnEdges) { cax = grad(cax, vax, ow, ohx); cbx = grad(cbx, vbx, ow, ohx); }
+        // The panorama's own rows.
+        var ca = new double[ow * oh]; var cb = new double[ow * oh]; var va = new bool[ow * oh]; var vb = new bool[ow * oh];
+        Array.Copy(cax, mo * ow, ca, 0, ow * oh); Array.Copy(cbx, mo * ow, cb, 0, ow * oh);
+        Array.Copy(vax, mo * ow, va, 0, ow * oh); Array.Copy(vbx, mo * ow, vb, 0, ow * oh);
+        int step = Math.Max(8, ow / 90), P = 8;
         int NX = (ow - 1) / step + 1, NY = (oh - 1) / step + 1, N = NX * NY;
         var du = new double[N]; var dv = new double[N]; var known = new bool[N]; var zero = new bool[N];
-        Func<bool[], int, int, bool> ok = (m, x, y) => x >= 0 && y >= 0 && x < ow && y < oh && m[y * ow + x];
-        int measured = 0; double maxShift = 0;
-        for (int gy = 0; gy < NY; gy++) for (int gx = 0; gx < NX; gx++)
+        Func<bool[], int, int, int, int, bool> okIn = (m, w2, h2, x, y) => x >= 0 && y >= 0 && x < w2 && y < h2 && m[y * w2 + x];
+        Func<bool[], int, int, bool> ok = (m, x, y) => okIn(m, ow, oh, x, y);
+        // Half size pictures for the first, wide search (near things can be shifted 50+ pixels).
+        int hw = ow / 2, hh = ohx / 2;
+        var ca2 = new double[hw * hh]; var cb2 = new double[hw * hh]; var va2 = new bool[hw * hh]; var vb2 = new bool[hw * hh];
+        for (int y = 0; y < hh; y++) for (int x = 0; x < hw; x++)
         {
-            int px = gx * step, py = gy * step;
-            if (!ok(va, px - P, py - P) || !ok(va, px + P, py + P) || !ok(va, px - P, py + P) || !ok(va, px + P, py - P) || !ok(vb, px, py)) continue;
+            int k = 2 * y * ow + 2 * x, k2 = y * hw + x;
+            va2[k2] = vax[k] && vax[k + 1] && vax[k + ow] && vax[k + ow + 1]; vb2[k2] = vbx[k] && vbx[k + 1] && vbx[k + ow] && vbx[k + ow + 1];
+            ca2[k2] = (cax[k] + cax[k + 1] + cax[k + ow] + cax[k + ow + 1]) / 4; cb2[k2] = (cbx[k] + cbx[k + 1] + cbx[k + ow] + cbx[k + ow + 1]) / 4;
+        }
+        var dbgLines = new List<string>();
+        // Patch search: correlation of A's patch at (px, py) with B's patch at (px + dx, py + dy), every second pixel.
+        // Among the shifts that fit about as well as the best (along a straight edge many do), the one nearest to
+        // (cx, cy) wins. Returns false when nothing fits well.
+        Func<double[], double[], bool[], bool[], int, int, int, int, int, int, int, int[], bool> search = (A2, B2, VA, VB, w2, h2, px, py, cx, cy, S, res) =>
+        {
+            if (!okIn(VA, w2, h2, px - P, py - P) || !okIn(VA, w2, h2, px + P, py + P) || !okIn(VA, w2, h2, px - P, py + P) || !okIn(VA, w2, h2, px + P, py - P)) return false;
             double sa = 0, saa = 0; int n = 0;
-            for (int j = -P; j <= P; j++) for (int i = -P; i <= P; i++) { double a = ca[(py + j) * ow + px + i]; sa += a; saa += a * a; n++; }
+            for (int j = -P; j <= P; j += 2) for (int i = -P; i <= P; i += 2) { double a = A2[(py + j) * w2 + px + i]; sa += a; saa += a * a; n++; }
             double ma = sa / n, vA = saa / n - ma * ma;
-            if (vA < 40) continue;   // plain wall: nothing to measure
+            if (DebugField && w2 == hw && py * 2 - mo > oh * 0.8 && Math.Abs(px * 2 - ow / 2) < ow / 6) dbgLines.Add("  nodo " + (px * 2) + "," + (py * 2 - mo) + " textura " + vA.ToString("0"));
+            if (vA < 30) return false;   // plain wall: nothing to measure
             int side = 2 * S + 1; var vals = new double[side * side]; double best = -2;
             for (int dy = -S; dy <= S; dy++) for (int dx = -S; dx <= S; dx++)
             {
                 int k = (dy + S) * side + dx + S; vals[k] = -2;
-                int qx = px + dx, qy = py + dy;
-                if (!ok(vb, qx - P, qy - P) || !ok(vb, qx + P, qy + P) || !ok(vb, qx - P, qy + P) || !ok(vb, qx + P, qy - P)) continue;
+                int qx = px + cx + dx, qy = py + cy + dy;
+                if (!okIn(VB, w2, h2, qx - P, qy - P) || !okIn(VB, w2, h2, qx + P, qy + P) || !okIn(VB, w2, h2, qx - P, qy + P) || !okIn(VB, w2, h2, qx + P, qy - P)) continue;
                 double sb = 0, sbb = 0, sab = 0;
                 for (int j = -P; j <= P; j += 2) for (int i = -P; i <= P; i += 2)
                 {
-                    double a = ca[(py + j) * ow + px + i] - ma, b = cb[(qy + j) * ow + qx + i];
+                    double a = A2[(py + j) * w2 + px + i] - ma, b = B2[(qy + j) * w2 + qx + i];
                     sb += b; sbb += b * b; sab += a * b;
                 }
-                int m2 = (P + 1) * (P + 1);   // every second pixel
-                double vB = sbb / m2 - (sb / m2) * (sb / m2);
-                vals[k] = vB > 1 ? (sab / m2) / Math.Sqrt(vA * vB) : -1;
+                double vB = sbb / n - (sb / n) * (sb / n);
+                vals[k] = vB > 1 ? (sab / n) / Math.Sqrt(vA * vB) : -1;
                 if (vals[k] > best) best = vals[k];
             }
-            if (best < 0.75) continue;
-            // Along a straight edge (the table) many shifts fit about as well: take the smallest of those.
+            if (DebugField && w2 == hw && py * 2 - mo > oh * 0.8 && Math.Abs(px * 2 - ow / 2) < ow / 6)
+            {
+                int qx = 0, qy = 0; double bv = -3;
+                for (int dy = -S; dy <= S; dy++) for (int dx = -S; dx <= S; dx++) if (vals[(dy + S) * side + dx + S] > bv) { bv = vals[(dy + S) * side + dx + S]; qx = dx; qy = dy; }
+                dbgLines.Add("    mejor " + best.ToString("0.00") + " en " + (2 * qx) + "," + (2 * qy));
+            }
+            if (best < MinCorr) return false;
             int bx = 0, by = 0; double bd = double.MaxValue;
             for (int dy = -S; dy <= S; dy++) for (int dx = -S; dx <= S; dx++)
-                if (vals[(dy + S) * side + dx + S] >= best - 0.02 && dx * dx + dy * dy < bd) { bd = dx * dx + dy * dy; bx = dx; by = dy; }
-            if (Math.Abs(bx) == S || Math.Abs(by) == S) continue;
-            int g = gy * NX + gx; known[g] = true; du[g] = bx; dv[g] = by; measured++;
+                if (vals[(dy + S) * side + dx + S] >= best - Tol && dx * dx + dy * dy < bd) { bd = dx * dx + dy * dy; bx = dx; by = dy; }
+            if (Math.Abs(bx) == S || Math.Abs(by) == S) return false;
+            res[0] = cx + bx; res[1] = cy + by; return true;
+        };
+        int measured = 0; double maxShift = 0; var rr = new int[2];
+        int Swide = Math.Max(16, ow / 24);   // in half size pixels: about ow/12 full size
+        for (int gy = 0; gy < NY; gy++) for (int gx = 0; gx < NX; gx++)
+        {
+            int px = gx * step, py = gy * step;
+            if (!ok(vb, px, py)) continue;
+            if (!search(ca2, cb2, va2, vb2, hw, hh, px / 2, (py + mo) / 2, 0, 0, Swide, rr)) continue;
+            int cx2 = rr[0] * 2, cy2 = rr[1] * 2;
+            // Finer step on the full size picture; when its smaller patch cannot tell, the half size result stays.
+            if (!search(cax, cbx, vax, vbx, ow, ohx, px, py + mo, cx2, cy2, 3, rr)) { rr[0] = cx2; rr[1] = cy2; }
+            int g = gy * NX + gx; known[g] = true; du[g] = rr[0]; dv[g] = rr[1]; measured++;
         }
-        // Clean: a measure far from the middle value of its neighbours is wrong (moving thing, repeated pattern).
+        if (DebugField && DebugOut != null)
+            foreach (var pair in new[] { Tuple.Create("_ca.png", cax, vax), Tuple.Create("_cb.png", cbx, vbx) })
+                using (var bm = new Bitmap(ow, ohx))
+                {
+                    for (int y = 0; y < ohx; y++) for (int x = 0; x < ow; x++)
+                    {
+                        int k = y * ow + x; int v = pair.Item3[k] ? (int)Math.Max(0, Math.Min(255, pair.Item2[k])) : 0;
+                        bm.SetPixel(x, y, pair.Item3[k] ? Color.FromArgb(v, v, v) : Color.FromArgb(80, 0, 0));
+                        if (y == mo || y == mo + oh - 1) bm.SetPixel(x, y, Color.Yellow);
+                    }
+                    bm.Save(DebugOut + pair.Item1, System.Drawing.Imaging.ImageFormat.Png);
+                }
+        if (DebugField)
+        {
+            var dbg = new StringBuilder("medidas abajo:\n" + string.Join("\n", dbgLines.ToArray()));
+            for (int gy = Math.Max(0, NY - 7); gy < NY; gy++) { dbg.Append("\n fila " + gy + ":"); for (int gx = 0; gx < NX; gx++) if (known[gy * NX + gx]) dbg.Append(" " + gx + "(" + du[gy * NX + gx] + "," + dv[gy * NX + gx] + ")"); }
+            Log(dbg.ToString());
+        }
+        // Clean: a measure needs at least two nearby measures that agree with it (a wrong one, from a moving thing or
+        // a repeated pattern, stands alone). Near and far things side by side keep their own different shifts.
         var keep = new bool[N];
         for (int gy = 0; gy < NY; gy++) for (int gx = 0; gx < NX; gx++)
         {
             int g = gy * NX + gx; if (!known[g]) continue;
-            var lx = new List<double>(); var ly = new List<double>();
+            int agree = 0;
             for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++)
             {
-                int x = gx + i, y = gy + j; if (x < 0 || y < 0 || x >= NX || y >= NY || !known[y * NX + x]) continue;
-                lx.Add(du[y * NX + x]); ly.Add(dv[y * NX + x]);
+                int x = gx + i, y = gy + j, k = y * NX + x; if ((i == 0 && j == 0) || x < 0 || y < 0 || x >= NX || y >= NY || !known[k]) continue;
+                if (Math.Abs(du[k] - du[g]) <= 5 && Math.Abs(dv[k] - dv[g]) <= 5) agree++;
             }
-            lx.Sort(); ly.Sort();
-            double mx = lx[lx.Count / 2], my = ly[ly.Count / 2];
-            if (lx.Count >= 3 && Math.Abs(du[g] - mx) <= 4 && Math.Abs(dv[g] - my) <= 4) { keep[g] = true; maxShift = Math.Max(maxShift, Math.Max(Math.Abs(mx), Math.Abs(my))); }
+            if (agree >= 2) { keep[g] = true; maxShift = Math.Max(maxShift, Math.Max(Math.Abs(du[g]), Math.Abs(dv[g]))); }
         }
         // Where only lens B shows, far enough from the shared strip, the bending is zero.
         for (int gy = 0; gy < NY; gy++)
@@ -1764,10 +1831,18 @@ class CamForm : Form
             }
         }
         Log("panoramica 2: union " + (nS > 0 ? "por el camino mas parecido" : "en el medio"));
-        var r = new double[4 + 2 * N + 1 + nS]; r[0] = -NX; r[1] = NY;   // minus: both lenses take half r[2] = (double)step / ow; r[3] = (double)step / oh;
+        // NX is stored negative: both lenses take half of the bending.
+        var r = new double[4 + 2 * N + 1 + nS]; r[0] = -NX; r[1] = NY; r[2] = (double)step / ow; r[3] = (double)step / oh;
         for (int g = 0; g < N; g++) { r[4 + g] = du[g] / ow; r[4 + N + g] = dv[g] / oh; }
         r[4 + 2 * N] = nS; for (int k = 0; k < nS; k++) r[5 + 2 * N + k] = seamU[k];
         return r;
+    }
+
+    // Text the camera writes on its picture: the date and time (top right of lens A), the name "Device1" (bottom
+    // left of lens B). It must not be matched: it does not move with the scene.
+    static bool Osd(double u, double v, int lensNo)
+    {
+        return lensNo == 1 && u < 0.14 && v > 0.9;   // the date (top right of A) has nothing to match in B anyway
     }
 
     static double Bilinear(double[] img, int w, double x, double y)
@@ -1812,9 +1887,12 @@ class CamForm : Form
         return b;
     }
 
+    static bool DebugField, FieldOnEdges = false; static string DebugOut;
+    // Fine bending search: a match counts from MinCorr; among matches within Tol of the best, the smallest shift wins.
+    static double MinCorr = 0.72, Tol = 0.06;
     static void PanoTest(string inFile, string outBase, string prevFile)
     {
-        LogFile = outBase + ".log";
+        LogFile = outBase + ".log"; DebugField = true; DebugOut = outBase;
         var inv = System.Globalization.CultureInfo.InvariantCulture;
         double[] prev = null;
         if (prevFile != "-") { var f = File.ReadAllText(prevFile).Trim().Split(' '); prev = new double[f.Length]; for (int i = 0; i < f.Length; i++) prev[i] = double.Parse(f[i], inv); }
@@ -1860,7 +1938,71 @@ class CamForm : Form
                 if (mode == 2) File.WriteAllBytes(outBase + "_grid.jpg", v.GridJpeg(1400));
             }
             pin.Free();
+            // Pairs marked by eye (pairs.txt next to the picture): how far apart they land in the panorama.
+            string pf = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(inFile)), Path.GetFileNameWithoutExtension(inFile) + "_pares.txt");
+            if (File.Exists(pf))
+            {
+                foreach (var mode in new[] { 1, 2 }) if (mode == 1 || c2 != null) EvalPairs(new PanoCal { Mode = mode, C1 = c1, C2 = c2 }, w, h / 2, pf);
+                if (c2 != null) { var bare = new double[9]; Array.Copy(c2, bare, 9); Log("sin ajuste fino:"); EvalPairs(new PanoCal { Mode = 2, C1 = c1, C2 = bare }, w, h / 2, pf); }
+            }
         }
+    }
+
+    // Pair file, in pixels of a 2304x1296 lens:  "p name ax ay bx by"  (same thing seen by lens A and lens B),
+    // "l name ax ay ax ay ... / bx by bx by ..."  (the same straight edge: the gap where the two lines meet counts).
+    // Result in pixels of a 1400-wide panorama.
+    static void EvalPairs(PanoCal cal, int lw, int lh, string file)
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture; double k = lw / 2304.0;
+        double aspect;
+        if (cal.Mode == 2) aspect = (cal.C2[6] - cal.C2[5]) / (cal.C2[8] - cal.C2[7]);
+        else { double x0, x1, y0, y1, seam; PanoBox(cal.C1, out x0, out x1, out y0, out y1, out seam); aspect = (x1 - x0) / (y1 - y0); }
+        double PW = 1400, PH = 1400 / aspect, sum = 0; int n = 0;
+        var sb = new StringBuilder("evaluacion modo " + cal.Mode + ":");
+        if (cal.Mode == 2 && cal.C2.Length > 13)
+        {
+            var c = cal.C2; int NX = (int)Math.Abs(c[9]), NY = (int)c[10], N = NX * NY; double mx = 0;
+            for (int g = 0; g < 2 * N; g++) mx = Math.Max(mx, Math.Abs(c[13 + g]));
+            sb.Append(" [campo " + NX + "x" + NY + " paso " + c[11].ToString("0.0000", inv) + "/" + c[12].ToString("0.0000", inv) + " largo " + c.Length + " max " + mx.ToString("0.0000", inv) + "]");
+        }
+        foreach (var raw in File.ReadAllLines(file))
+        {
+            var line = raw.Trim(); if (line.Length == 0 || line[0] == '#') continue;
+            var f = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (f[0] == "p")
+            {
+                var a = PanoView.MapLens(cal, lw, lh, 0, double.Parse(f[2], inv) * k, double.Parse(f[3], inv) * k);
+                var b = PanoView.MapLens(cal, lw, lh, 1, double.Parse(f[4], inv) * k, double.Parse(f[5], inv) * k);
+                if (a == null || b == null) { sb.Append(" " + f[1] + "=fuera"); continue; }
+                double d = Math.Sqrt(Math.Pow((a.Value.X - b.Value.X) * PW, 2) + Math.Pow((a.Value.Y - b.Value.Y) * PH, 2));
+                string fld = "";
+                if (cal.Mode == 2) { double du, dv; FieldAt(cal.C2, (a.Value.X + b.Value.X) / 2, (a.Value.Y + b.Value.Y) / 2, out du, out dv); fld = "[" + (du * PW).ToString("0", inv) + "," + (dv * PH).ToString("0", inv) + "]"; }
+                sb.Append(" " + f[1] + "=" + d.ToString("0", inv) + fld); sum += d; n++;
+            }
+            else if (f[0] == "l")
+            {
+                int slash = Array.IndexOf(f, "/");
+                Func<int, int, int, List<PointF>> poly = (lensNo, from, to) =>
+                {
+                    var l = new List<PointF>();
+                    for (int i = from; i + 1 < to; i += 2) { var q = PanoView.MapLens(cal, lw, lh, lensNo, double.Parse(f[i], inv) * k, double.Parse(f[i + 1], inv) * k); if (q != null) l.Add(new PointF(q.Value.X * (float)PW, q.Value.Y * (float)PH)); }
+                    l.Sort((p1, p2) => p1.X.CompareTo(p2.X)); return l;
+                };
+                var la = poly(0, 2, slash); var lb = poly(1, slash + 1, f.Length);
+                if (la.Count < 2 || lb.Count < 2) { sb.Append(" " + f[1] + "=fuera"); continue; }
+                // Where the lines meet: middle between the end of A's line and the start of B's line (or of their common part).
+                double xm = (la[la.Count - 1].X + lb[0].X) / 2;
+                Func<List<PointF>, double, double> yAt = (l, x) =>
+                {
+                    int i = 0; while (i < l.Count - 2 && l[i + 1].X < x) i++;
+                    var p1 = l[i]; var p2 = l[i + 1]; return p1.Y + (p2.Y - p1.Y) * (x - p1.X) / Math.Max(1e-6, p2.X - p1.X);
+                };
+                double d = Math.Abs(yAt(la, xm) - yAt(lb, xm));
+                sb.Append(" " + f[1] + "=" + d.ToString("0", inv) + "(x" + xm.ToString("0", inv) + ")"); sum += d; n++;
+            }
+        }
+        sb.Append(" | promedio " + (n > 0 ? (sum / n).ToString("0.0", inv) : "-") + " px");
+        Log(sb.ToString());
     }
 
     static double[] NelderMead(Func<double[], double> fn, double[] x0, double[] step, int iters, out double bestV)
