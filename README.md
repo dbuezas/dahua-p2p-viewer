@@ -25,6 +25,7 @@ This app shows the cameras in about 10 seconds.
 - Drag a camera onto another one: they swap places. The order is saved in `orden.txt`.
 - A split camera is played ONCE in every mode: the app takes the decoded frames and draws each half (or the
   panorama) itself, at the size it shows on screen, so both halves always show the same moment.
+  Switching between halves and panorama keeps that video running and does not touch the other cameras.
 - Panorama of a split camera (phone: "Camaras 3 y 4 juntas: No / Simple / Avanzada"). It is worked out again each time it
   is turned on, from a picture taken then (the moving lens may point elsewhere). Both lenses come from ONE decoded
   stream (SDK decoded-frame callback, I420), pasted with a lookup table and drawn by the app, so they never get out
@@ -36,7 +37,7 @@ This app shows the cameras in about 10 seconds.
     different places: the leftover shift is measured all over the shared strip and both lenses are bent locally
     to fit (each takes half: A minus half, B plus half), fading out over each lens's own part (fine bending grid kept in `panoramica.txt`). Long straight edges count too
     (the smallest shift that fits). The seam follows the path where both lenses look most alike (dynamic
-    programming). With few shared points the known lens shape is kept and only the turn is fitted.
+    programming, on edge strength so a lighter lens does not matter). With few shared points the known lens shape is kept and only the turn is fitted.
     Test without the TV: `Camaras.exe --pano picture.jpg out [last-numbers.txt]` writes both panoramas and the grid.
   If the lenses no longer see a shared strip, the phone says so.
   The panorama card on the phone shows, as a curiosity, the panorama with a straight grid of each lens bent the way the

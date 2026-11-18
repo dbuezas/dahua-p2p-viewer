@@ -79,7 +79,7 @@ class CamForm : Form
     // One square on screen. Half: 0 = whole picture, 1 = top half, 2 = bottom half
     // (for a channel whose picture is two cameras stacked; it is played twice and each square shows one half),
     // 3 = panorama: both halves pasted into one wide picture.
-    // A split channel is played ONCE: the SDK decodes into Video2 (a tiny panel nobody sees) and I draw each half,
+    // A split channel is played ONCE: the SDK decodes into a tiny panel nobody sees (DecodePanel) and I draw each half,
     // or the panorama, into Video myself (see PanoView), so both halves always show the same moment.
     class Tile { public Panel Box, Video, Video2; public Label Tag; public int Ch, Half; public long Play, Play2, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1, PanX, PanY; public PanoView View; }
 
@@ -282,27 +282,7 @@ class CamForm : Form
         foreach (var t in tiles) { StopPlay(t); Controls.Remove(t.Box); t.Box.Dispose(); }
         tiles.Clear();
         big = null;
-        var split = SplitChannels();
-        foreach (var ch in chans)
-            foreach (var half in !split.Contains(ch) ? new[] { 0 } : pano.ContainsKey(ch) ? new[] { 3 } : new[] { 1, 2 })
-            {
-                var t = new Tile { Ch = ch, Half = half };
-                t.Box = new Panel { BackColor = Color.Black };
-                t.Video = new Panel { BackColor = Color.Black };
-                t.Box.Controls.Add(t.Video);
-                if (half != 0)
-                {
-                    t.Video2 = new Panel { BackColor = Color.Black, Bounds = new Rectangle(0, 0, 2, 2) };
-                    t.Box.Controls.Add(t.Video2);
-                    t.Video.BringToFront();
-                    t.View = new PanoView { Half = half == 3 ? 0 : half, Cal = half == 3 ? pano[ch] : null, Target = t.Video.Handle };
-                }
-                t.Tag = new Label { Text = "HD", ForeColor = Color.White, BackColor = Color.FromArgb(200, 0, 0), AutoSize = true, Font = new Font("Segoe UI", 18, FontStyle.Bold), Location = new Point(24, 24), Visible = hd.Contains(ch) };
-                t.Box.Controls.Add(t.Tag);
-                t.Tag.BringToFront();
-                tiles.Add(t);
-                Controls.Add(t.Box);
-            }
+        foreach (var ch in chans) tiles.AddRange(MakeTiles(ch));
         // Order saved by drag and drop; cameras not in the file go at the end.
         var order = new List<string>();
         try { order.AddRange(File.ReadAllText(OrderFile).Split(',')); } catch { }
@@ -327,6 +307,56 @@ class CamForm : Form
         foreach (var t in tiles) if (t.Play == 0) PlayTile(t);   // the second half of a split channel already got its stream
     }
 
+    bool IsPano(int ch) { PanoCal c; return pano.TryGetValue(ch, out c) && c.Mode > 0; }
+
+    // The squares of one camera: one, or for a split channel both halves or the panorama.
+    List<Tile> MakeTiles(int ch)
+    {
+        var list = new List<Tile>();
+        foreach (var half in !SplitChannels().Contains(ch) ? new[] { 0 } : IsPano(ch) ? new[] { 3 } : new[] { 1, 2 })
+        {
+            var t = new Tile { Ch = ch, Half = half };
+            t.Box = new Panel { BackColor = Color.Black };
+            t.Video = new Panel { BackColor = Color.Black };
+            t.Box.Controls.Add(t.Video);
+            if (half != 0) t.View = new PanoView { Half = half == 3 ? 0 : half, Cal = half == 3 ? pano[ch] : null, Target = t.Video.Handle };
+            t.Tag = new Label { Text = "HD", ForeColor = Color.White, BackColor = Color.FromArgb(200, 0, 0), AutoSize = true, Font = new Font("Segoe UI", 18, FontStyle.Bold), Location = new Point(24, 24), Visible = hd.Contains(ch) };
+            t.Box.Controls.Add(t.Tag);
+            t.Tag.BringToFront();
+            Controls.Add(t.Box);
+            list.Add(t);
+        }
+        return list;
+    }
+
+    // A split channel's stream goes into a tiny panel of the window that nobody sees (it stays when its squares
+    // change, so switching between halves and panorama keeps the video running).
+    Dictionary<int, Panel> decodePanels = new Dictionary<int, Panel>();
+    Panel DecodePanel(int ch)
+    {
+        Panel p;
+        if (!decodePanels.TryGetValue(ch, out p)) { p = new Panel { BackColor = Color.Black, Bounds = new Rectangle(0, 0, 2, 2) }; Controls.Add(p); p.SendToBack(); decodePanels[ch] = p; }
+        return p;
+    }
+
+    // Switching halves / panorama: only this camera's squares change; its video keeps running, the other cameras
+    // are not touched.
+    void ReplaceSplitTiles(int ch)
+    {
+        var olds = tiles.FindAll(u => u.Ch == ch);
+        if (olds.Count == 0) return;
+        int at = tiles.IndexOf(olds[0]); long h = olds[0].Play; bool hdNow = olds[0].PlayingHd; bool wasBig = olds.Contains(big);
+        var news = MakeTiles(ch);
+        foreach (var n in news) { n.Play = h; n.PlayingHd = hdNow; n.LastBytes = BytesOf(h); n.LastData = DateTime.Now; }
+        if (h != 0) lock (views) views[h] = news.ConvertAll(n => n.View).ToArray();   // new pictures from the next frame on
+        foreach (var o in olds) { tiles.Remove(o); Controls.Remove(o.Box); o.Box.Dispose(); }
+        tiles.InsertRange(Math.Min(at, tiles.Count), news);
+        if (wasBig) big = news[0];
+        DoLayout();
+        if (h == 0) PlayTile(news[0]);
+        Log("canal " + ch + ": " + (IsPano(ch) ? "panoramica " + pano[ch].Mode : "dos mitades") + " sin reiniciar el video");
+    }
+
     // (Re)starts the video of one square and counts its bytes, so the watchdog can see if it stops.
     void PlayTile(Tile t)
     {
@@ -336,7 +366,7 @@ class CamForm : Form
         else group.Add(t);
         foreach (var u in group) StopPlay(u);
         bool wantHd = WantHd(t);
-        long h = Native.CLIENT_RealPlayEx(login, t.Ch, (t.View != null ? t.Video2 : t.Video).Handle, wantHd ? 0 : int.Parse(C("flujo", "3")));   // 0 = main stream (HD)
+        long h = Native.CLIENT_RealPlayEx(login, t.Ch, (t.View != null ? DecodePanel(t.Ch) : t.Video).Handle, wantHd ? 0 : int.Parse(C("flujo", "3")));   // 0 = main stream (HD)
         foreach (var u in group) { u.Play = h; u.PlayingHd = wantHd; u.LastBytes = 0; u.LastData = DateTime.Now; }
         UpdateState();   // new stream number for the phone pictures
         // The SDK reuses the numbers of stopped streams: start counting this one from zero.
@@ -699,7 +729,7 @@ class CamForm : Form
     volatile long[] playHandles = new long[0];
     volatile int[] halves = new int[0];
     volatile PanoView[] viewOf = new PanoView[0];
-    int PanoMode() { int m = 0; foreach (var c in pano.Values) m = Math.Max(m, c.Mode); return m; }
+    int PanoMode() { int m = 0; foreach (var c in pano.Values) m = Math.Max(m, c.Mode); return m; }   // 0 = off
     void UpdateState()
     {
         var sb = new StringBuilder("{\"big\":" + (big == null ? -1 : tiles.IndexOf(big)) + ",\"split\":" + (SplitChannels().Count > 0 ? "true" : "false")
@@ -1064,7 +1094,7 @@ class CamForm : Form
                     if (c1 == null || (mode == 2 && c2 == null)) { panoMsg = "No pude armar la panoramica: " + err; Log("panoramica canal " + t.Ch + ": " + err); UpdateState(); return; }
                     pano[t.Ch] = new PanoCal { Mode = mode, C1 = c1, C2 = c2 ?? prev }; SavePano(); panoMsg = "";
                     Log("panoramica " + mode + " canal " + t.Ch + " en " + sw.ElapsedMilliseconds + " ms: " + Nums(c1) + (c2 != null ? " | " + Nums(c2) : ""));
-                    Rebuild();
+                    ReplaceSplitTiles(t.Ch);
                 });
             }) { IsBackground = true }.Start();
         }
@@ -1075,8 +1105,12 @@ class CamForm : Form
     void PanoOff()
     {
         panoMsg = "";
-        if (pano.Count == 0) { UpdateState(); return; }
-        pano.Clear(); SavePano(); Rebuild();
+        // Off, but the last advanced result stays known (mode 0): it helps the next fit.
+        var on = new List<int>(); foreach (var kv in pano) if (kv.Value.Mode > 0) on.Add(kv.Key);
+        if (on.Count == 0) { UpdateState(); return; }
+        foreach (var ch in on) { if (pano[ch].C2 != null) pano[ch].Mode = 0; else pano.Remove(ch); }
+        SavePano();
+        foreach (var ch in on) ReplaceSplitTiles(ch);
     }
 
     void SavePano()
@@ -1086,13 +1120,6 @@ class CamForm : Form
         try { File.WriteAllLines(PanoFile, lines.ToArray()); } catch { }
     }
 
-    // Builds all squares again with the same cameras (the order file keeps their places).
-    void Rebuild()
-    {
-        var chans = new List<int>(); foreach (var t in tiles) if (!chans.Contains(t.Ch)) chans.Add(t.Ch);
-        chans.Sort();
-        BuildTiles(chans);
-    }
 
     // ---- Panorama drawing: one stream, both lenses from the same decoded frame, so they never get out of step. ----
     // The SDK gives each frame as I420 (Y plane, then U and V planes at half width and half height). A lookup table,
@@ -1674,7 +1701,7 @@ class CamForm : Form
             }
         int kept = 0; foreach (var b in keep) if (b) kept++;
         Log("panoramica 2: ajuste fino " + measured + " medidas, " + kept + " buenas, corrimiento maximo " + maxShift.ToString("0") + " px, grilla " + NX + "x" + NY);
-        // Seam: a path from top to bottom through the shared strip where both lenses (B already bent) look most alike,
+        // Seam: a path from top to bottom through the shared strip where both lenses (both already bent) look most alike,
         // so whatever still does not fit is left out of sight. Dynamic programming, one step left/right per row at most.
         Func<double[], double, double, double> grid = (f, x, y) =>
         {
@@ -1683,6 +1710,18 @@ class CamForm : Form
             return (f[k] * (1 - fx) + f[k + 1] * fx) * (1 - fy) + (f[k + NX] * (1 - fx) + f[k + NX + 1] * fx) * fy;
         };
         const double INF = 1e18;
+        // Compared on edge strength, not on brightness: one lens can be lighter than the other.
+        Func<double[], bool[], double[]> edges = (img, ok2) =>
+        {
+            var e = new double[ow * oh];
+            for (int y = 1; y < oh - 1; y++) for (int x = 1; x < ow - 1; x++)
+            {
+                int k = y * ow + x; if (!ok2[k] || !ok2[k - 1] || !ok2[k + 1] || !ok2[k - ow] || !ok2[k + ow]) continue;
+                double gx = img[k + 1] - img[k - 1], gy = img[k + ow] - img[k - ow]; e[k] = Math.Sqrt(gx * gx + gy * gy);
+            }
+            return e;
+        };
+        var ea = edges(ca, va); var eb = edges(cb, vb);
         var costPrev = new double[ow]; var costCur = new double[ow]; var from = new int[ow * oh]; var D = new double[ow];
         bool started = false;
         for (int y = 0; y < oh; y++)
@@ -1696,7 +1735,7 @@ class CamForm : Form
                 if (axp < 0 || ayp < 0 || axp >= ow - 1 || ayp >= oh - 1 || sx < 0 || sy < 0 || sx >= ow - 1 || sy >= oh - 1) continue;
                 int ka = (int)ayp * ow + (int)axp; if (!va[ka] || !va[ka + 1] || !va[ka + ow] || !va[ka + ow + 1]) continue;
                 int k = (int)sy * ow + (int)sx; if (!vb[k] || !vb[k + 1] || !vb[k + ow] || !vb[k + ow + 1]) continue;
-                D[x] = Math.Abs(Bilinear(ca, ow, axp, ayp) - Bilinear(cb, ow, sx, sy)); any = true;
+                D[x] = Math.Abs(Bilinear(ea, ow, axp, ayp) - Bilinear(eb, ow, sx, sy)) + 0.5; any = true;   // + small cost per step: no needless detours
             }
             for (int x = 0; x < ow; x++)
             {
