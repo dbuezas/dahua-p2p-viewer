@@ -405,7 +405,7 @@ var Calib = (function () {
     cylinder(st);
     st.view = { cyl: st.viewCyl, crop: stripBox(st, st.viewCyl, g) || st.viewCrop };
     show({ stage: 3, text: 'Encajando las lentes', frac: 0.48, rig: g, mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 1300,
-      slide: { from: shown, to: g, c: st.view.cyl, crop0: st.viewCrop || st.view.crop, crop1: st.view.crop, matches: matches, knots: st.rowKnots, dur: 1200 } });
+      slide: { from: shown, to: g, c: st.view.cyl, crop0: st.jointCrop || st.viewCrop || st.view.crop, crop1: st.view.crop, matches: matches, knots: st.rowKnots, dur: 1200 } });
     show({ stage: 3, text: 'Encajadas: error tipico ' + st.matchErr.toFixed(1) + ' px, ' + fr2.good + ' de ' + matches.length + ' puntos encajan', frac: 0.5, rig: g, mix: true, matches: matches, knots: st.rowKnots, cylObj: st.view.cyl, crop: st.view.crop, hold: 900 });
     // a wrong result must not reach the TV
     if (fr2.good < 15 || fr2.med > 4) throw new Error('no pude encajar las lentes (error tipico ' + fr2.med.toFixed(1) + ' px, ' + fr2.good + ' puntos buenos). Proba de nuevo o mové la camara 4.');
@@ -648,7 +648,7 @@ var Calib = (function () {
       return m - LAMC * bend - 0.002 * prior - (o.pairW != null ? o.pairW : 0.01) * pc;
     }
     var v = x0.slice(0, 6); for (var k0 = 0; k0 < NK; k0++) v.push(0);
-    var best = score(v), it = 0;
+    var best = score(v), it = 0, zoomI = 0; st.jointCrop = null;
     var step0 = [0.15 * D, 0.1 * D, 3, 0.008, 0.02, 0.02]; for (k0 = 0; k0 < NK; k0++) step0.push(3 / KWf);
     var names = ['paneo', 'inclinacion', 'foco', 'curvatura', 'B costado', 'B adelante']; for (k0 = 0; k0 < NK; k0++) names.push('fila ' + (k0 + 1));
     [1, 0.5, 0.25, 0.12].forEach(function (sc) {
@@ -659,7 +659,13 @@ var Calib = (function () {
           if (sv > best) { best = sv; v = t; improved = true; }
         }
         // what the descent has now, all of it (direction, lens, where B sits and the row curve) in one picture
-        if (improved && show) show({ stage: 2, text: 'Todo junto: paso ' + sc + ', vuelta ' + (pass + 1) + ', coincidencia ' + best.toFixed(3), frac: 0.47, rig: rigX(v), knots: v.slice(6), mix: true, cylObj: st.viewCyl, crop: st.viewCrop, hold: 110, fade: 90 });
+        // ...and the view zooms in a bit more each time, onto the part both lenses see (live, while things move)
+        if (improved && show && st.viewCrop) {
+          var gz = rigX(v), tgt = stripBox(st, st.viewCyl, gz) || st.viewCrop, tz = 1 - Math.pow(0.82, ++zoomI), c0z = st.viewCrop;
+          var cz = { x0: Math.round(c0z.x0 + (tgt.x0 - c0z.x0) * tz), x1: Math.round(c0z.x1 + (tgt.x1 - c0z.x1) * tz), y0: Math.round(c0z.y0 + (tgt.y0 - c0z.y0) * tz), y1: Math.round(c0z.y1 + (tgt.y1 - c0z.y1) * tz) };
+          st.jointCrop = cz;
+          show({ stage: 2, text: 'Todo junto: paso ' + sc + ', vuelta ' + (pass + 1) + ', coincidencia ' + best.toFixed(3), frac: 0.47, rig: gz, knots: v.slice(6), mix: true, cylObj: st.viewCyl, crop: cz, hold: 110, fade: 90 });
+        }
         if (show) show({ textOnly: true, text: 'Todo junto: paso ' + sc + ', vuelta ' + (pass + 1) + ', ' + it + ' pruebas, coincidencia ' + best.toFixed(3), frac: 0.47 });
         if (!improved) break;
       }
