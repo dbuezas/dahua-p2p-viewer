@@ -129,7 +129,7 @@ var Calib = (function () {
   function run(st, show) {
     for (var kc in CAM) if (st.o[kc] === undefined) st.o[kc] = CAM[kc];
     // how the fit works (see fitRig): distances cost a little, lens shape fitted with the turn, 2 rounds of matching again
-    var FIT = { lam: 0.05, joint: true, rounds: 2, pos: true };
+    var FIT = { lam: 0.05, joint: true, rounds: 2, pos: true, loose: 1 };
     for (kc in FIT) if (st.o[kc] === undefined) st.o[kc] = FIT[kc];
     var inp = st.inp, o = st.o, A = inp.A, B = inp.B;
     var D = 2 * Math.PI / 360;
@@ -344,7 +344,8 @@ var Calib = (function () {
       var use = Math.max(6, Math.floor(es.length * 0.9)), e = 0;
       for (var i2 = 0; i2 < use; i2++) e += es[i2] < 2 ? es[i2] * es[i2] : 4 * es[i2] - 4;
       // the lens stays near the camera's known shape (loosely: a picture this narrow says little about it)
-      return e / use + Math.pow((x[2] - o.F) / 20, 2) + Math.pow((x[3] - o.K) / 0.05, 2) + (o.pos ? Math.pow((x[4] || 0) / 0.15, 2) + Math.pow((x[5] || 0) / 0.15, 2) : 0);
+      var pf = o.loose || 1;   // how loosely the lens and lens B's place are held near the known values
+      return e / use + Math.pow((x[2] - o.F) / (20 * pf), 2) + Math.pow((x[3] - o.K) / (0.05 * pf), 2) + (o.pos ? Math.pow((x[4] || 0) / (0.15 * pf), 2) + Math.pow((x[5] || 0) / (0.15 * pf), 2) : 0);
     }
     function part(x, ms, which, label) {
       var idx = which === 'dir' ? [0, 1] : which === 'lens' ? [2, 3] : [4, 5], stp = which === 'dir' ? [0.5 * D, 0.3 * D] : which === 'lens' ? [6, 0.02] : [0.05, 0.05];
