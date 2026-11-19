@@ -514,13 +514,23 @@ class CamForm : Form
     }
 
     // Square drawn by me (half or panorama): the picture keeps its shape, fills the square as much as it can, and zooms like the others.
+    // Zoomed, the video window is only the part of the square the picture covers (it never grows past the screen);
+    // the panorama draws the shown part of its picture into it.
     void LayoutPano(Tile t, int bw, int bh)
     {
         if (t.View == null) return;
-        double aspect = t.View.Aspect(), fw = Math.Min(bw, bh * aspect), fh = fw / aspect;
-        var vr = Zoomed(t, new Rectangle((int)((bw - fw) / 2), (int)((bh - fh) / 2), (int)fw, (int)fh), bw, bh);
-        t.Video.Bounds = vr;
-        t.View.TW = vr.Width; t.View.TH = vr.Height;
+        double aspect = t.View.Aspect(), fw = Math.Min(bw, bh * aspect), fh = fw / aspect, x0 = (bw - fw) / 2, y0 = (bh - fh) / 2;
+        double z = Math.Max(1, t.Zoom), cx = bw / 2.0, cy = bh / 2.0, px = t.Zoom > 1.0005 ? t.PanX : 0, py = t.Zoom > 1.0005 ? t.PanY : 0;
+        // the zoomed picture (may be bigger than the square)
+        double zx = cx - (cx - x0) * z - px * bw * (z - 1) / 2, zy = cy - (cy - y0) * z - py * bh * (z - 1) / 2, zw = fw * z, zh = fh * z;
+        int vx0 = (int)Math.Round(Math.Max(0, zx)), vy0 = (int)Math.Round(Math.Max(0, zy)), vx1 = (int)Math.Round(Math.Min(bw, zx + zw)), vy1 = (int)Math.Round(Math.Min(bh, zy + zh));
+        if (vx1 <= vx0 || vy1 <= vy0) return;
+        var vr = new Rectangle(vx0, vy0, vx1 - vx0, vy1 - vy0);
+        if (t.Video.Bounds != vr) t.Video.Bounds = vr;
+        var v = t.View;
+        v.FX0 = (vx0 - zx) / zw; v.FX1 = (vx1 - zx) / zw; v.FY0 = (vy0 - zy) / zh; v.FY1 = (vy1 - zy) / zh;
+        v.TW = vr.Width; v.TH = vr.Height;
+        v.Blit();
     }
 
     // One camera full screen (biggest 16:9 rectangle, centered). The others float over its bottom edge as small
@@ -1231,6 +1241,9 @@ class CamForm : Form
         [DllImport("gdi32.dll")] static extern int StretchDIBits(IntPtr dc, int x, int y, int w, int h, int sx, int sy, int sw, int sh, IntPtr bits, byte[] bmi, uint usage, uint rop);
 
         public PanoCal Cal; public IntPtr Target; public volatile int TW, TH;
+        // Digital zoom: the part of the picture shown (parts of its width and height). The window stays put; the last
+        // picture is drawn again with each step of a zoom or pan, so it glides (not only when a new picture comes).
+        public double FX0 = 0, FY0 = 0, FX1 = 1, FY1 = 1;
         public int Half;   // 1 or 2: just that half of the frame (no panorama, Cal is null)
         int fw, fh, OW, OH;
         int[] ia, ib, ua, ub; byte[] wa;   // per output pixel: Y and U/V index in lens A and B (-1 = none), share of A (0-255)
@@ -1417,20 +1430,30 @@ class CamForm : Form
                             }
                         }
                 }
-                int tw = TW, th = TH;
-                if (tw > 0 && th > 0)
-                {
-                    IntPtr dc = GetDC(Target);
-                    if (dc != IntPtr.Zero)
-                    {
-                        // Smooth scaling only when the picture is shrunk a lot (small squares); it costs time.
-                        if (tw < OW * 0.7) { SetStretchBltMode(dc, 4); SetBrushOrgEx(dc, 0, 0, IntPtr.Zero); } else SetStretchBltMode(dc, 3);
-                        StretchDIBits(dc, 0, 0, tw, th, 0, 0, OW, OH, pin.AddrOfPinnedObject(), bmi, 0, 0x00CC0020);
-                        ReleaseDC(Target, dc);
-                    }
-                }
+                BlitLocked();
             }
             finally { Monitor.Exit(this); }
+        }
+
+        // The last picture again, with the zoom as it is now (the screen's smooth zoom calls this).
+        public void Blit() { if (Monitor.TryEnter(this)) try { BlitLocked(); } finally { Monitor.Exit(this); } }
+        void BlitLocked()
+        {
+            int tw = TW, th = TH;
+            if (tw <= 0 || th <= 0 || pix == null || bmi == null) return;
+            // shown part in picture pixels; whole pixels for the copy, the screen rectangle stretched to match
+            // (so a slow pan moves by screen pixels, not by picture pixels)
+            double sx = FX0 * OW, sy = FY0 * OH, sw = Math.Max(1e-3, (FX1 - FX0) * OW), sh = Math.Max(1e-3, (FY1 - FY0) * OH), kx = tw / sw, ky = th / sh;
+            int ix0 = Math.Max(0, (int)Math.Floor(sx)), iy0 = Math.Max(0, (int)Math.Floor(sy)), ix1 = Math.Min(OW, (int)Math.Ceiling(sx + sw)), iy1 = Math.Min(OH, (int)Math.Ceiling(sy + sh));
+            if (ix1 <= ix0 || iy1 <= iy0) return;
+            int dx = (int)Math.Round((ix0 - sx) * kx), dy = (int)Math.Round((iy0 - sy) * ky), dw = (int)Math.Round((ix1 - sx) * kx) - dx, dh = (int)Math.Round((iy1 - sy) * ky) - dy;
+            IntPtr dc = GetDC(Target);
+            if (dc == IntPtr.Zero) return;
+            // Smooth scaling only when the picture is shrunk a lot (small squares); it costs time.
+            if (dw < (ix1 - ix0) * 0.7) { SetStretchBltMode(dc, 4); SetBrushOrgEx(dc, 0, 0, IntPtr.Zero); } else SetStretchBltMode(dc, 3);
+            // top-down picture: the copied rows are counted from the bottom of the picture
+            StretchDIBits(dc, dx, dy, dw, dh, ix0, OH - iy1, ix1 - ix0, iy1 - iy0, pin.AddrOfPinnedObject(), bmi, 0, 0x00CC0020);
+            ReleaseDC(Target, dc);
         }
 
         // Curiosity for the phone: the last panorama, darker, with a straight grid of each lens drawn the way
