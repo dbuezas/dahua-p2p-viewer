@@ -24,7 +24,7 @@ var Calib = (function () {
   // lens B is from lens A: 9 cm (only scales the distances, the picture does not change with it), leaned ax
   // sideways and az forward from straight down. Chosen by what one sees: the values that make both lenses match best
   // over ten test pictures, each fully calibrated (a search run on the computer).
-  var CAM = { F: 696.05, K: -0.24736, tA: -0.07461, base: 0.09, ax: 0.04478, az: 0.01839 };
+  var CAM = { F: 696.045, K: -0.247393, tA: -0.074596, base: 0.09, ax: 0.044947, az: 0.018557 };
   function mul(a, b) { var r = [0, 0, 0, 0, 0, 0, 0, 0, 0]; for (var i = 0; i < 3; i++) for (var j = 0; j < 3; j++) for (var k = 0; k < 3; k++) r[i * 3 + j] += a[i * 3 + k] * b[k * 3 + j]; return r; }
   function tr(a) { return [a[0], a[3], a[6], a[1], a[4], a[7], a[2], a[5], a[8]]; }
   // Rz(roll) * Rx(pitch) * Ry(yaw), like the PC's Lens
