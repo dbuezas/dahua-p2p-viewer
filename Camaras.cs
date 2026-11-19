@@ -82,7 +82,7 @@ class CamForm : Form
     // 3 = panorama: both halves pasted into one wide picture.
     // A split channel is played ONCE: the SDK decodes into a tiny panel nobody sees (DecodePanel) and I draw each half,
     // or the panorama, into Video myself (see PanoView), so both halves always show the same moment.
-    class Tile { public Panel Box, Video, Video2; public Label Tag; public int Ch, Half; public long Play, Play2, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1, PanX, PanY, TZoom = 1, TPanX, TPanY; public PanoView View; }   // T*: where the smooth zoom/pan is heading
+    class Tile { public Panel Box, Video, Video2; public Label Tag; public int Ch, Half; public long Play, Play2, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1, PanX, PanY, TZoom = 1, TPanX, TPanY, VelX, VelY, VelZ; public DateTime VelUntil, VelZUntil; public PanoView View; }   // T*: where the smooth zoom/pan is heading
 
     // Panorama of a split channel: worked out on the phone (calib.js, two real cameras 9 cm apart), which sends a
     // mesh, kept in panoramica3_<ch>.bin. Mode 3 = shown, 0 = off (panoramica.txt: "channel mode" per line).
@@ -237,7 +237,7 @@ class CamForm : Form
             bool zout = (Win.GetAsyncKeyState(0x6D) & 0x8000) != 0 || (Win.GetAsyncKeyState(0xBD) & 0x8000) != 0;
             int zoom = big == null ? 0 : zin ? 1 : zout ? -1 : 0;
             if (zoom != 0 && zoom != zoomWas) { ZoomStep(big, zoom); zoomStep = DateTime.Now.AddMilliseconds(300); }
-            else if (zoom != 0 && DateTime.Now >= zoomStep) { ZoomStep(big, zoom, true); zoomStep = DateTime.Now; }
+            else if (zoom != 0 && DateTime.Now >= zoomStep && big != null) { big.VelZ = zoom; big.VelZUntil = DateTime.Now.AddMilliseconds(150); StartSmooth(); }
             zoomWas = zoom;
             bool esc = (Win.GetAsyncKeyState(0x1B) & 0x8000) != 0;
             if (esc && !escWas) { if (big != null) { big = null; DoLayout(); } else Close(); }
@@ -632,7 +632,9 @@ class CamForm : Form
     void ZoomStep(Tile t, int dir, bool small = false)
     {
         if (t == null || t != big) return;
-        double f = small ? 1.04 : 1.25;
+        // held down: a zoom speed for a moment (renewed by the next message), the screen moves at an even pace
+        if (small) { t.VelZ = dir; t.VelZUntil = DateTime.Now.AddMilliseconds(150); StartSmooth(); return; }
+        double f = 1.25;
         t.TZoom = Math.Max(1, Math.Min(4, dir > 0 ? t.TZoom * f : t.TZoom / f));
         if (t.TZoom < 1.01) { t.TZoom = 1; t.TPanX = t.TPanY = 0; }
         StartSmooth();
@@ -643,22 +645,37 @@ class CamForm : Form
     void StartSmooth()
     {
         if (smoothTimer == null) { smoothTimer = new System.Windows.Forms.Timer { Interval = 15 }; smoothTimer.Tick += (s, e) => SmoothTick(); }
+        if (!smoothTimer.Enabled) smoothLast = smoothClock.Elapsed.TotalSeconds;
         smoothTimer.Enabled = true;
     }
+    System.Diagnostics.Stopwatch smoothClock = System.Diagnostics.Stopwatch.StartNew(); double smoothLast;
     void SmoothTick()
     {
         var t = big;
         if (t == null) { smoothTimer.Enabled = false; return; }
-        double a = 0.22;
-        double dz = t.TZoom - t.Zoom, dx = t.TPanX - t.PanX, dy = t.TPanY - t.PanY;
-        if (Math.Abs(dz) < 0.002 && Math.Abs(dx) < 0.001 && Math.Abs(dy) < 0.001)
-        { t.Zoom = t.TZoom; t.PanX = t.TPanX; t.PanY = t.TPanY; smoothTimer.Enabled = false; }
-        else
+        double now = smoothClock.Elapsed.TotalSeconds, dt = Math.Max(0.001, Math.Min(0.1, now - smoothLast)); smoothLast = now;
+        // speeds (joystick held, zoom held): the target moves at an even pace by this clock, not by message arrival
+        bool moving = false;
+        if (t.VelZ != 0 && DateTime.Now < t.VelZUntil)
         {
-            // zoom glides in equal ratios (not equal steps), so zooming in and out feel the same
-            t.Zoom = Math.Exp(Math.Log(t.Zoom) + a * (Math.Log(t.TZoom) - Math.Log(t.Zoom)));
-            t.PanX += a * dx; t.PanY += a * dy;
+            t.TZoom = Math.Max(1, Math.Min(4, t.TZoom * Math.Exp(t.VelZ * 0.65 * dt)));
+            if (t.TZoom < 1.01 && t.VelZ < 0) { t.TZoom = 1; t.TPanX = t.TPanY = 0; }
+            moving = true;
         }
+        else t.VelZ = 0;
+        if ((t.VelX != 0 || t.VelY != 0) && DateTime.Now < t.VelUntil && t.TZoom > 1)
+        {
+            t.TPanX = Math.Max(-1, Math.Min(1, t.TPanX + t.VelX * dt / 225.0 / (t.TZoom - 1)));
+            t.TPanY = Math.Max(-1, Math.Min(1, t.TPanY + t.VelY * dt / 225.0 / (t.TZoom - 1)));
+            moving = true;
+        }
+        else { t.VelX = t.VelY = 0; }
+        // the picture follows the target (same feel at any tick rate)
+        double a = 1 - Math.Exp(-dt / 0.07);
+        double dz = Math.Log(t.TZoom) - Math.Log(t.Zoom), dx = t.TPanX - t.PanX, dy = t.TPanY - t.PanY;
+        if (!moving && Math.Abs(dz) < 0.001 && Math.Abs(dx) < 0.0005 && Math.Abs(dy) < 0.0005)
+        { t.Zoom = t.TZoom; t.PanX = t.TPanX; t.PanY = t.TPanY; smoothTimer.Enabled = false; }
+        else { t.Zoom = Math.Exp(Math.Log(t.Zoom) + a * dz); t.PanX += a * dx; t.PanY += a * dy; }
         int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
         if (t.View != null) { LayoutPano(t, bw, bh); return; }
         var vr = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
@@ -1015,14 +1032,13 @@ class CamForm : Form
                 int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy);
                 if (t == big && t.TZoom > 1)
                 {
-                    // the phone sends this every 50 ms while the finger is held: small steps, the picture glides
-                    t.TPanX = Math.Max(-1, Math.Min(1, t.TPanX + dx / 4500.0 / (t.TZoom - 1)));
-                    t.TPanY = Math.Max(-1, Math.Min(1, t.TPanY + dy / 4500.0 / (t.TZoom - 1)));
+                    // the phone sends this every 50 ms while the finger is held: a speed, kept for a moment
+                    t.VelX = dx; t.VelY = dy; t.VelUntil = DateTime.Now.AddMilliseconds(200);
                     StartSmooth();
                 }
             }
             else if (p[0] == "ptz" && t != null && CanPtz(t) && p.Length > 3) { int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy); PtzDrag(t.Ch, dx * 2, dy * 2); }
-            else if (p[0] == "ptzstop") PtzStop();
+            else if (p[0] == "ptzstop") { PtzStop(); if (big != null) { big.VelX = big.VelY = 0; } }
             // Panorama of the split camera: "pano 1" (simple), "pano 2" (advanced), "pano 0" (both lenses again).
             else if (p[0] == "pano" && p.Length > 1) { if (p[1] == "0") PanoOff(); else Pano3Use(); }
             // Phone zoom buttons: "zoom i 1" (in) / "zoom i -1" (out): one digital zoom step each.
