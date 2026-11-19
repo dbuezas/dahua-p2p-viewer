@@ -82,7 +82,7 @@ class CamForm : Form
     // 3 = panorama: both halves pasted into one wide picture.
     // A split channel is played ONCE: the SDK decodes into a tiny panel nobody sees (DecodePanel) and I draw each half,
     // or the panorama, into Video myself (see PanoView), so both halves always show the same moment.
-    class Tile { public Panel Box, Video, Video2; public Label Tag; public int Ch, Half; public long Play, Play2, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1, PanX, PanY; public PanoView View; }
+    class Tile { public Panel Box, Video, Video2; public Label Tag; public int Ch, Half; public long Play, Play2, LastBytes; public bool PlayingHd; public DateTime LastData; public double Zoom = 1, PanX, PanY, TZoom = 1, TPanX, TPanY; public PanoView View; }   // T*: where the smooth zoom/pan is heading
 
     // Panorama of a split channel: worked out on the phone (calib.js, two real cameras 9 cm apart), which sends a
     // mesh, kept in panoramica3_<ch>.bin. Mode 3 = shown, 0 = off (panoramica.txt: "channel mode" per line).
@@ -192,8 +192,8 @@ class CamForm : Form
                 pressAt = pos; dragging = false;
                 dragFrom = pressOk && big == null ? TileAt(pos) : null;
                 ptzTile = pressOk && big != null && TileAt(pos) == big && CanPtz(big) ? big : null;
-                panTile = pressOk && big != null && TileAt(pos) == big && !CanPtz(big) && big.Zoom > 1 ? big : null;
-                if (panTile != null) { panX0 = panTile.PanX; panY0 = panTile.PanY; }
+                panTile = pressOk && big != null && TileAt(pos) == big && !CanPtz(big) && big.TZoom > 1 ? big : null;
+                if (panTile != null) { panX0 = panTile.TPanX; panY0 = panTile.TPanY; }
             }
             else if (down && panTile != null)
             {
@@ -201,10 +201,9 @@ class CamForm : Form
                 if (!dragging && (Math.Abs(pos.X - pressAt.X) > 20 || Math.Abs(pos.Y - pressAt.Y) > 20)) dragging = true;
                 if (dragging)
                 {
-                    int bw = panTile.Box.ClientSize.Width, bh = panTile.Box.ClientSize.Height; double z = panTile.Zoom;
-                    panTile.PanX = Math.Max(-1, Math.Min(1, panX0 - (pos.X - pressAt.X) / (bw * (z - 1) / 2)));
-                    panTile.PanY = Math.Max(-1, Math.Min(1, panY0 - (pos.Y - pressAt.Y) / (bh * (z - 1) / 2)));
-                    DoLayout();
+                    int bw = panTile.Box.ClientSize.Width, bh = panTile.Box.ClientSize.Height; double z = panTile.TZoom;
+                    panTile.TPanX = Math.Max(-1, Math.Min(1, panX0 - (pos.X - pressAt.X) / (bw * (z - 1) / 2)));
+                    panTile.TPanY = Math.Max(-1, Math.Min(1, panY0 - (pos.Y - pressAt.Y) / (bh * (z - 1) / 2)));
                 }
             }
             else if (down && ptzTile != null)
@@ -237,7 +236,8 @@ class CamForm : Form
             bool zin = (Win.GetAsyncKeyState(0x6B) & 0x8000) != 0 || (Win.GetAsyncKeyState(0xBB) & 0x8000) != 0;
             bool zout = (Win.GetAsyncKeyState(0x6D) & 0x8000) != 0 || (Win.GetAsyncKeyState(0xBD) & 0x8000) != 0;
             int zoom = big == null ? 0 : zin ? 1 : zout ? -1 : 0;
-            if (zoom != 0 && (zoom != zoomWas || (DateTime.Now - zoomStep).TotalMilliseconds > 250)) { ZoomStep(big, zoom); zoomStep = DateTime.Now; }
+            if (zoom != 0 && zoom != zoomWas) { ZoomStep(big, zoom); zoomStep = DateTime.Now.AddMilliseconds(300); }
+            else if (zoom != 0 && DateTime.Now >= zoomStep) { ZoomStep(big, zoom, true); zoomStep = DateTime.Now; }
             zoomWas = zoom;
             bool esc = (Win.GetAsyncKeyState(0x1B) & 0x8000) != 0;
             if (esc && !escWas) { if (big != null) { big = null; DoLayout(); } else Close(); }
@@ -495,7 +495,7 @@ class CamForm : Form
             if (addrLabel != null) addrLabel.BringToFront();
             if (qrBox != null) qrBox.BringToFront();
             int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
-            if (t != big) { t.Zoom = 1; t.PanX = t.PanY = 0; }
+            if (t != big) { t.Zoom = t.TZoom = 1; t.PanX = t.PanY = t.TPanX = t.TPanY = 0; }
             if (t.View != null) { LayoutPano(t, bw, bh); continue; }
             // A half square holds a video panel twice as tall, shifted so only its half shows.
             var vr = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
@@ -506,7 +506,7 @@ class CamForm : Form
     // Digital zoom (full screen only): the rectangle grows around the middle of the square; the square cuts it.
     static Rectangle Zoomed(Tile t, Rectangle vr, int bw, int bh)
     {
-        if (t.Zoom <= 1) { t.PanX = t.PanY = 0; return vr; }
+        if (t.Zoom <= 1.0005) return vr;
         double cx = bw / 2.0, cy = bh / 2.0, z = t.Zoom;
         // Digital pan: PanX/PanY from -1 to 1 move the cut-out to the left/top or right/bottom edge.
         double sx = -t.PanX * bw * (z - 1) / 2, sy = -t.PanY * bh * (z - 1) / 2;
@@ -618,12 +618,41 @@ class CamForm : Form
     }
 
     // Digital zoom of the full screen camera: one step = x1.25 (in) or /1.25 (out), from 1x to 4x.
-    void ZoomStep(Tile t, int dir)
+    // small: held down, many little steps (x1.04 each); the picture glides there (SmoothTick).
+    void ZoomStep(Tile t, int dir, bool small = false)
     {
         if (t == null || t != big) return;
-        t.Zoom = Math.Max(1, Math.Min(4, dir > 0 ? t.Zoom * 1.25 : t.Zoom / 1.25));
-        if (t.Zoom < 1.01) t.Zoom = 1;
-        DoLayout();
+        double f = small ? 1.04 : 1.25;
+        t.TZoom = Math.Max(1, Math.Min(4, dir > 0 ? t.TZoom * f : t.TZoom / f));
+        if (t.TZoom < 1.01) { t.TZoom = 1; t.TPanX = t.TPanY = 0; }
+        StartSmooth();
+    }
+
+    // Smooth digital zoom and pan: about 60 times a second the picture moves part of the way to where it is heading.
+    System.Windows.Forms.Timer smoothTimer;
+    void StartSmooth()
+    {
+        if (smoothTimer == null) { smoothTimer = new System.Windows.Forms.Timer { Interval = 15 }; smoothTimer.Tick += (s, e) => SmoothTick(); }
+        smoothTimer.Enabled = true;
+    }
+    void SmoothTick()
+    {
+        var t = big;
+        if (t == null) { smoothTimer.Enabled = false; return; }
+        double a = 0.22;
+        double dz = t.TZoom - t.Zoom, dx = t.TPanX - t.PanX, dy = t.TPanY - t.PanY;
+        if (Math.Abs(dz) < 0.002 && Math.Abs(dx) < 0.001 && Math.Abs(dy) < 0.001)
+        { t.Zoom = t.TZoom; t.PanX = t.TPanX; t.PanY = t.TPanY; smoothTimer.Enabled = false; }
+        else
+        {
+            // zoom glides in equal ratios (not equal steps), so zooming in and out feel the same
+            t.Zoom = Math.Exp(Math.Log(t.Zoom) + a * (Math.Log(t.TZoom) - Math.Log(t.Zoom)));
+            t.PanX += a * dx; t.PanY += a * dy;
+        }
+        int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height;
+        if (t.View != null) { LayoutPano(t, bw, bh); return; }
+        var vr = t.Half == 0 ? new Rectangle(0, 0, bw, bh) : new Rectangle(0, t.Half == 1 ? 0 : -bh, bw, bh * 2);
+        t.Video.Bounds = Zoomed(t, vr, bw, bh);
     }
 
     // ---- PTZ: commands go to a worker thread in order, so the screen never waits for the network. ----
@@ -974,11 +1003,12 @@ class CamForm : Form
             {
                 // Joystick on a camera without PTZ: move the zoomed picture (each command = one small step).
                 int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy);
-                if (t == big && t.Zoom > 1)
+                if (t == big && t.TZoom > 1)
                 {
-                    t.PanX = Math.Max(-1, Math.Min(1, t.PanX + dx / 1500.0 / (t.Zoom - 1)));
-                    t.PanY = Math.Max(-1, Math.Min(1, t.PanY + dy / 1500.0 / (t.Zoom - 1)));
-                    DoLayout();
+                    // the phone sends this every 50 ms while the finger is held: small steps, the picture glides
+                    t.TPanX = Math.Max(-1, Math.Min(1, t.TPanX + dx / 4500.0 / (t.TZoom - 1)));
+                    t.TPanY = Math.Max(-1, Math.Min(1, t.TPanY + dy / 4500.0 / (t.TZoom - 1)));
+                    StartSmooth();
                 }
             }
             else if (p[0] == "ptz" && t != null && CanPtz(t) && p.Length > 3) { int dx, dy; int.TryParse(p[2], out dx); int.TryParse(p[3], out dy); PtzDrag(t.Ch, dx * 2, dy * 2); }
@@ -986,7 +1016,7 @@ class CamForm : Form
             // Panorama of the split camera: "pano 1" (simple), "pano 2" (advanced), "pano 0" (both lenses again).
             else if (p[0] == "pano" && p.Length > 1) { if (p[1] == "0") PanoOff(); else Pano3Use(); }
             // Phone zoom buttons: "zoom i 1" (in) / "zoom i -1" (out): one digital zoom step each.
-            else if (p[0] == "zoom" && t != null && p.Length > 2) ZoomStep(t, p[2] == "1" ? 1 : -1);
+            else if (p[0] == "zoom" && t != null && p.Length > 2) ZoomStep(t, p[2] == "1" ? 1 : -1, p.Length > 3 && p[3] == "s");
             // Test: "ptzraw channel cmd speed" moves a recorder channel directly ("ptzstop" stops it).
             else if (p[0] == "ptzraw" && p.Length > 3) { int ch, pc, sp; int.TryParse(p[1], out ch); int.TryParse(p[2], out pc); int.TryParse(p[3], out sp); PtzStart(ch, (uint)pc, pc >= 0x20 ? sp : 0, sp); }
         });
@@ -1550,15 +1580,15 @@ function padMove(e){var r=pad.getBoundingClientRect(),dx=e.clientX-r.left-r.widt
 pad.addEventListener('pointerdown',function(e){padOn=true;pad.setPointerCapture(e.pointerId);padMove(e);e.preventDefault()});
 pad.addEventListener('pointermove',function(e){if(padOn)padMove(e)});
 // Keep sending while the finger is held still (the picture of a camera without PTZ moves one step per command).
-var padLast=null;setInterval(function(){if(padOn&&padLast)padMove(padLast)},150);
+var padLast=null;setInterval(function(){if(padOn&&padLast)padMove(padLast)},50);
 pad.addEventListener('pointermove',function(e){padLast=e});pad.addEventListener('pointerdown',function(e){padLast=e});
 function padEnd(){if(!padOn)return;padOn=false;padLast=null;knob.style.left='55px';knob.style.top='55px';cmd('ptzstop')}
 pad.addEventListener('pointerup',padEnd);pad.addEventListener('pointercancel',padEnd);
-// Zoom buttons (digital zoom on the TV): one step per tap, repeats every 250 ms while held.
-[['zin',1],['zout',-1]].forEach(function(z){var b=document.getElementById(z[0]),rep=null;
- function step(){ws&&ws.readyState==1&&ws.send('zoom '+st.big+' '+z[1])}
- function end(){clearInterval(rep);rep=null}
- b.addEventListener('pointerdown',function(e){e.preventDefault();b.setPointerCapture(e.pointerId);step();end();rep=setInterval(step,250)});
+// Zoom buttons (digital zoom on the TV): one big step per tap; held, small steps every 60 ms (the TV glides).
+[['zin',1],['zout',-1]].forEach(function(z){var b=document.getElementById(z[0]),rep=null,wait=null;
+ function step(sm){ws&&ws.readyState==1&&ws.send('zoom '+st.big+' '+z[1]+(sm?' s':''))}
+ function end(){clearInterval(rep);clearTimeout(wait);rep=null}
+ b.addEventListener('pointerdown',function(e){e.preventDefault();b.setPointerCapture(e.pointerId);end();step();wait=setTimeout(function(){rep=setInterval(function(){step(1)},60)},300)});
  b.addEventListener('pointerup',end);b.addEventListener('pointercancel',end)});
 function setBig(i){st.big=i;draw(st);cmd('big '+i)}
 // Tap = big; drag onto another camera = swap (pointer events work with fingers and mouse).
