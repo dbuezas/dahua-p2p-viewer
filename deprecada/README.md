@@ -1,0 +1,136 @@
+# dahua-p2p-viewer (deprecada)
+
+> **Deprecated.** Kept for reference. It needs the Dahua NetSDK DLLs (`dhnetsdk.dll`, `P2PDll.dll`, `play.dll`)
+> that come with SmartPSS Lite. I replaced it with a Go version that needs no DLLs.
+
+A tiny Windows app that shows all cameras of a Dahua NVR full screen, nothing else.
+It connects through Dahua's P2P cloud (by serial number), so the NVR needs no open ports.
+
+I made it for an old Windows 7 PC that shows the cameras of a house far away.
+SmartPSS Lite worked, but it took about a minute to show video (it asks every one of the 32 channels
+for its settings, and waits 5 s on each empty one) and it needs clicks every time.
+This app shows the cameras in about 10 seconds.
+
+- Finds the channels that have a camera by itself (and saves the list, so the next start is fast).
+  A camera added to the NVR later shows up on the next start.
+- A channel whose picture is two cameras stacked can be split into two squares (`dividir` in `camaras.ini`).
+- Click a camera: it gets full screen, and the others float over its bottom edge as small pictures
+  (10% of the screen width each).
+  Click a small one to make it big instead. Click the big one or Esc: all cameras. Esc with all cameras: close.
+- PTZ cameras (`ptz` in `camaras.ini`, e.g. `ptz=2`, or `ptz=2.2` for only the bottom lens of a split camera): with the camera full screen, drag on it to move it like a joystick
+  (direction and speed follow the drag; it stops when you let go). From the phone: the round joystick above the
+  cameras. My recorder sends every PTZ command to its one PTZ camera, whatever channel is asked, so only the listed
+  channels get commands. `ptz_invertir_pan=1` turns left/right around, `ptz_velocidad` sets the speed in percent (below the slowest real speed it moves in short pulses).
+- Digital zoom on the full screen camera: hold + or - (keyboard) or the + / − buttons on the phone (1x to 4x).
+- Digital pan on a zoomed camera without PTZ: drag the picture with the mouse, or use the phone joystick.
+- Right click a camera: switch it between low quality (sub stream, fast) and HD (main stream). A red "HD"
+  shows on HD cameras. The choice is saved in `hd.txt`. Too many HD cameras at once can hit the NVR's stream limit.
+- Drag a camera onto another one: they swap places. The order is saved in `orden.txt`.
+- A split camera is played ONCE in every mode: the app takes the decoded frames and draws each half (or the
+  panorama) itself, at the size it shows on screen, so both halves always show the same moment.
+  Switching between halves and panorama keeps that video running and does not touch the other cameras.
+- Panorama of a split camera (phone: "Camaras 3 y 4 juntas: No / Si / Calibrar"). Worked out on the phone
+  (`calib.js` in a Web Worker, built into the exe) and drawn by the PC. Both lenses come from ONE decoded stream
+  (SDK decoded-frame callback, I420), pasted with a lookup table and drawn by the app, so they never get out of step.
+  About half a CPU core on the sub stream, almost one in HD (i7 Q720).
+  - The model: the two lenses are two real cameras 9 cm apart (lens B under lens A, on the PTZ motor). Fixed for the
+    camera: lens shape (ray angle t lands at radius F*(t + K*t^3)) and how lens A sits on the body (found once from
+    three pictures taken at different times). Per calibration only the pan and tilt of lens B, and the distance of
+    things in the shared strip; a point can only slide along its line between the lenses, so the picture cannot bend
+    in ways no real scene does. Nothing assumes a particular room.
+  - Steps, each shown on the phone as it runs: first the person drags lens B's picture until both lenses roughly
+    line up (starting from the last calibration), then the phone refines: pan/tilt within ±10° on edge pictures
+    (the best few places each tried for real), shared corners (corners of B searched in A), fine pan/tilt (each pair
+    may be at any distance), a distance per band of rows of lens B, seam, frame. A result with few
+    fitting pairs or a big typical error is refused instead of sent.
+  - The search is shown, always with the best result so far: spread tries of pan, tilt and lens shape (F, K) around
+    the hand alignment, scored by how well both lenses' edge pictures match over all the shared part; then small
+    steps in each direction keeping only what improves, smaller and smaller (a descent); then the fit on the shared
+    pairs. Each better result only moves lens B's picture on the phone (both pictures are sent once), so many can be
+    shown smoothly.
+  - The fit: with a strip this narrow, a bit more tilt and things a bit nearer look the same, so a distance costs a
+    little: the turn explains as much as it can and distances only what is left (then what the person lined up by
+    eye stays lined up). Then rounds that take turns: shared corners searched again with the current model, the
+    direction (pan, tilt) with the lens kept, the lens shape (F, K, held loosely near the camera's known one) with the
+    direction kept, and where lens B sits from lens A (leaning sideways and forward from straight down, loosely held
+    near straight down: the PTZ turns around its own axis, not around the lens, so lens B is not exactly below lens A;
+    the distance itself only scales the metres, the picture does not change with it); until a round no longer helps
+    (each part can move the best of the other).
+  - Each lens is shown unbent from its own place; they only have to agree on the seam, so the seam follows a path
+    where they look alike, and each row of lens B is taken at the distance of its seam point (B moves only up or
+    down a little per row: straight lines stay straight).
+  - Then a bending over the whole shared part (+-128 px around the seam, measures searched up to 16 px): what is still off between both lenses there is measured
+    (patches), cleaned, smoothed and kept gentle, and each lens bends half of it toward the other, fully in the
+    middle and fading to nothing at the band's edges.
+  - The PC blends the seam in two bands: each lens's picture is split into a blurred part (colours, light) and the
+    rest (details); the blurred parts blend over a wide width (hides a lighter or darker lens) and the details over a
+    narrow one (no doubles). Only the columns around the seam are worked, row by row.
+    Colour blends over a much wider width (as much of the shared part as there is): at dusk one lens may already be in
+    night black and white while the other is still in colour.
+  - The result is shown zoomed on the seam, cut to only picture. "Ver superpuestas" shows both lenses half and half at the end (the seam hides errors; this does not). If the
+    per-row distances do not make the shared part match better than none, none are used.
+  - The phone sends the PC a mesh (lens A and B coordinates every 8 output pixels, the seam per row) as one binary
+    WebSocket message; the PC keeps it in `panoramica3_<ch>.bin` and only draws it. After moving the PTZ, calibrate
+    again ("Calibrar").
+  The panorama card on the phone shows, as a curiosity, the panorama with a straight grid of each lens bent the way the
+  panorama bends it (light blue: camera 3, orange: camera 4).
+- When it cannot connect, it shows in big letters what to try: the other Wi-Fi network, or restarting the router.
+- Phone remote: a small web page on port 8080 (`puerto_web` in `camaras.ini`, 0 = off), only for the local network.
+  One WebSocket connection carries everything (opening new connections is what fails on a weak Wi-Fi).
+  It shows a picture of each camera: tap one to make it big (tap again for all), drag one onto another to swap
+  them, and an HD button per camera.
+  Its address stays in the bottom right corner and a QR code of it in the bottom left (scan it with the phone).
+- While the app is in front, the PC does not sleep and the screen stays on.
+- Only one copy runs. Opening it again brings the running copy to the front.
+- Uses as much of the screen as possible without stretching the pictures: it tries normal grids
+  and rows with different counts (for example 5 cameras = 2 big on top + 3 smaller below) and keeps the bigger one.
+- Watchdog: a camera that stops sending video for 20 s is reopened. If no camera sends video for 90 s,
+  or the PC wakes up from sleep, the app starts again from zero (new P2P tunnel and login).
+
+## How it works
+
+It does not talk to the Dahua cloud by itself. It loads two DLLs that SmartPSS Lite installs:
+
+1. `P2PDll.dll` opens a local TCP tunnel to the NVR by its serial number
+   (`P2P_Init` → `P2P_DeviceStatus` → `P2P_Connect` → `P2P_QueryChannelStatus`).
+2. `dhnetsdk.dll` (Dahua NetSDK) logs in to `127.0.0.1:<tunnel port>` and plays the live video into windows.
+
+These functions have no public documentation. I found the arguments with the shim in `shim/`:
+a fake `P2PDll.dll` that writes every argument SmartPSS passes to a log file, then calls the real DLL.
+
+```
+P2P_Init(0, serverIp, 8800, key, user, &handle)   // key and user: two strings per server
+P2P_Connect(0, handle, serial, 37777, &localPort, nvrUser, nvrPassword, "", "")
+```
+
+Two things that took me a while:
+
+- `P2P_Init` takes **two** strings per server (`key` and `user`). With only one, the server never answers.
+- The P2P library cannot resolve host names on Windows 7, so the app resolves them first and passes the IP.
+
+## Setup
+
+1. Install SmartPSS Lite (for its DLLs; it does not need to run).
+2. Copy `camaras.ini.example` to `camaras.ini` and fill in the serial number of the NVR.
+3. Capture `key` and `user` for each P2P server with the shim (below) and put them in `servidores`.
+4. Build: run `build.ps1` on the Windows PC (uses `csc.exe` from .NET Framework 4, no Visual Studio needed).
+5. Start `Camaras.exe`. The first time it asks for the NVR password and saves it encrypted (Windows DPAPI).
+
+## Capturing the P2P strings with the shim
+
+1. Build the shim on macOS: `shim/build.sh` (needs clang and `lld-link`, for example from the Android NDK:
+   `LLD=$ANDROID_HOME/ndk/<version>/toolchains/llvm/prebuilt/darwin-x86_64/bin/lld-link shim/build.sh`).
+2. On the Windows PC, in the SmartPSS Lite folder: rename `P2PDll.dll` to `P2Preal.dll`
+   and copy the shim's `P2PDll.dll` there.
+3. Start SmartPSS Lite and open the cameras. The arguments land in `C:\Users\Public\camapp\shim.log`.
+   `P2P_Init` shows `a2` = server IP, `a4` = key, `a5` = user.
+4. Undo step 2 (delete the shim, rename `P2Preal.dll` back to `P2PDll.dll`).
+
+The log also contains the NVR password (`P2P_Connect` argument `a7`), so delete it when done.
+
+## Files
+
+- `Camaras.cs`: the app (C# 5, WinForms, .NET Framework 4, x64).
+- `camaras.ini.example`: settings template.
+- `build.ps1`: builds `Camaras.exe` on Windows.
+- `shim/`: the logging `P2PDll.dll` (plain C, no C runtime) and its build script.
