@@ -186,8 +186,13 @@ var Calib = (function () {
         for (var pi = -2; pi <= 2; pi++) for (var ti = -2; ti <= 2; ti++) { var pan = bb.pan + pi * s * D, tilt = bb.tilt + ti * s * D, vv = rough(pan, tilt, 1); if (vv > b0.v) b0 = { v: vv, pan: pan, tilt: tilt }; }
       });
       return b0;
-    }).filter(function (t) { return o.start || t.v >= 0.5; }).sort(function (a, b) { return b.v - a.v; });
-    if (!tops.length) throw new Error('las dos lentes no parecen ver la misma parte (la camara 4 mira muy lejos de la 3)');
+    }).sort(function (a, b) { return b.v - a.v; });
+    // Never refuse: a person or a near thing can spoil the scores. Keep going with the best there is and
+    // only warn (st.weak lists the reasons; the final message says the result may be wrong).
+    st.weak = [];
+    var goodTops = tops.filter(function (t) { return o.start || t.v >= 0.5; });
+    if (goodTops.length) tops = goodTops;
+    else { st.weak.push('las dos lentes casi no se parecen'); tops = tops.slice(0, 1); }
 
     // -- 2. shared corners (corners of B, each searched in A near where a pan/tilt puts it) --
     var resp = new Float32Array(LW * LH), corners = [];
@@ -353,9 +358,9 @@ var Calib = (function () {
         var ms = findMatches(Rig(o, t.pan, t.tilt), 250), f = ms.length >= 8 ? fitRig(t, ms, 80) : { good: 0 };
         if (f.good > fr2.good) { fr2 = f; win = { t: t }; }
       });
-      if (!fr2.good) throw new Error('no encontre puntos en comun entre las dos lentes');
-      g0 = Rig(o, win.t.pan, win.t.tilt); matches = findMatches(g0, 800);
-      if (matches.length < 8) throw new Error('muy pocos puntos en comun (' + matches.length + ')');
+      if (!fr2.good) st.weak.push('no encontre puntos en comun entre las dos lentes');
+      else { g0 = Rig(o, win.t.pan, win.t.tilt); matches = findMatches(g0, 800); }
+      if (matches.length < 8) st.weak.push('muy pocos puntos en comun (' + matches.length + ')');
     }
     // 4. fine fit on the pairs (pan, tilt and lens shape together), showing each better result; then match again
     // only changes one can see (a twentieth of a degree, or a visible lens change) are shown
@@ -372,11 +377,13 @@ var Calib = (function () {
     // (Each part can move the best of the other, so they take turns rather than one after the other once.)
     function pairCost(x, ms) {
       var gg = rigX(x), es = ms.map(function (m) { return epi(gg, m[0], m[1], m[2], m[3], lam).c; }).sort(function (a, b) { return a - b; });
-      var use = Math.max(6, Math.floor(es.length * 0.9)), e = 0;
+      // (with few pairs use all of them; with none the lens priors alone hold the fit where it is)
+      var use = Math.min(es.length, Math.max(6, Math.floor(es.length * 0.9))), e = 0;
       for (var i2 = 0; i2 < use; i2++) e += es[i2] < 2 ? es[i2] * es[i2] : 4 * es[i2] - 4;
+      if (use) e /= use;
       // the lens stays near the camera's known shape (loosely: a picture this narrow says little about it)
       var pf = o.loose || 1;   // how loosely the lens and lens B's place are held near the known values
-      return e / use + Math.pow((x[2] - o.F) / (20 * pf), 2) + Math.pow((x[3] - o.K) / (0.05 * pf), 2) + (o.pos ? Math.pow((x[4] || 0) / (0.15 * pf), 2) + Math.pow((x[5] || 0) / (0.15 * pf), 2) : 0);
+      return e + Math.pow((x[2] - o.F) / (20 * pf), 2) + Math.pow((x[3] - o.K) / (0.05 * pf), 2) + (o.pos ? Math.pow((x[4] || 0) / (0.15 * pf), 2) + Math.pow((x[5] || 0) / (0.15 * pf), 2) : 0);
     }
     function part(x, ms, which, label) {
       var idx = which === 'dir' ? [0, 1] : which === 'lens' ? [2, 3] : [4, 5], stp = which === 'dir' ? [0.5 * D, 0.3 * D] : which === 'lens' ? [6, 0.02] : [0.05, 0.05];
@@ -398,7 +405,7 @@ var Calib = (function () {
     if (o.joint2 !== false) { st.rig = rigX(xb); cylinder(st); st.rowKnots = null; var msJ = matches; xb = jointDescent(st, xb, rigX, show, showBest, D, function (v) { return pairCost(v.slice(0, 6), msJ); }); shown = rigX(xb); }
     var gF = rigX(xb), esF = matches.map(function (m) { return epi(gF, m[0], m[1], m[2], m[3]).e; }).sort(function (a, b) { return a - b; });
     st.fitX = xb;
-    fr2 = { g: gF, x: xb, good: esF.filter(function (e) { return e < 2.5; }).length, med: esF[esF.length >> 1] };
+    fr2 = { g: gF, x: xb, good: esF.filter(function (e) { return e < 2.5; }).length, med: esF.length ? esF[esF.length >> 1] : 99 };
     var g = fr2.g;
     st.rig = g; st.matchErr = fr2.med; st.matches = matches;
     // zoom onto the shared strip, lens B gliding the last bit into place
@@ -407,8 +414,8 @@ var Calib = (function () {
     show({ stage: 3, text: 'Encajando las lentes', frac: 0.48, rig: g, mix: true, matches: matches, cylObj: st.view.cyl, crop: st.view.crop, hold: 1300,
       slide: { from: shown, to: g, c: st.view.cyl, crop0: st.jointCrop || st.viewCrop || st.view.crop, crop1: st.view.crop, matches: matches, knots: st.rowKnots, dur: 1200 } });
     show({ stage: 3, text: 'Encajadas: error tipico ' + st.matchErr.toFixed(1) + ' px, ' + fr2.good + ' de ' + matches.length + ' puntos encajan', frac: 0.5, rig: g, mix: true, matches: matches, knots: st.rowKnots, cylObj: st.view.cyl, crop: st.view.crop, hold: 900 });
-    // a wrong result must not reach the TV
-    if (fr2.good < 15 || fr2.med > 4) throw new Error('no pude encajar las lentes (error tipico ' + fr2.med.toFixed(1) + ' px, ' + fr2.good + ' puntos buenos). Proba de nuevo o mové la camara 4.');
+    // a doubtful result is still used (never refuse); the final message warns about it
+    if (fr2.good < 15 || fr2.med > 4) st.weak.push('las lentes encajan mal (error tipico ' + fr2.med.toFixed(1) + ' px, ' + fr2.good + ' puntos buenos)');
 
     // -- 4. distances --
     cylinder(st);
@@ -969,7 +976,9 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined') {
   };
   var finish = function () {
     var ms = Calib.mesh(state), buf = Calib.pack(ms);
-    post({ stage: 7, cylObj: state.view.cyl, crop: state.view.final || state.view.crop, text: 'Listo: paneo ' + (state.rig.pan * 180 / Math.PI).toFixed(1) + '°, inclinacion ' + (state.rig.tilt * 180 / Math.PI).toFixed(1) + '°, error tipico ' + state.matchErr.toFixed(1) + ' px, ' + state.matches.length + ' puntos', frac: 1, rig: state.rig, W: true, seam: true }, true);
+    post({ stage: 7, cylObj: state.view.cyl, crop: state.view.final || state.view.crop, text: 'Listo: paneo ' + (state.rig.pan * 180 / Math.PI).toFixed(1) + '°, inclinacion ' + (state.rig.tilt * 180 / Math.PI).toFixed(1) + '°, error tipico ' + state.matchErr.toFixed(1) + ' px, ' + state.matches.length + ' puntos' +
+      (state.weak && state.weak.length ? '. OJO, poca confianza: ' + state.weak.join('; ') + '. Si se ve mal, calibrá de nuevo cuando no haya nadie cerca.' : ''),
+      frac: 1, rig: state.rig, W: true, seam: true }, true);
     var cr0 = state.view.final || state.view.crop, fs = Calib.preview(state, PW, { stage: 7, rig: state.rig, W: true, seam: true, cylObj: state.view.cyl, crop: cr0 }), fm = Calib.preview(state, PW, { stage: 7, rig: state.rig, W: true, mix: true, cylObj: state.view.cyl, crop: cr0 });
     self.postMessage({ t: 'final', w: fs.w, h: fs.h, seam: fs.data, mix: fm.data, seamLine: fs.seam }, [fs.data.buffer, fm.data.buffer]);
     self.postMessage({ t: 'done', mesh: buf, OW: ms.head.OW, OH: ms.head.OH }, [buf]);
