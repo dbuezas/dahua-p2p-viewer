@@ -634,8 +634,9 @@ class CamForm : Form
         if (t == null || t != big) return;
         // held down: a zoom speed for a moment (renewed by the next message), the screen moves at an even pace
         if (small) { t.VelZ = dir; t.VelZUntil = DateTime.Now.AddMilliseconds(150); StartSmooth(); return; }
-        double f = 1.25;
+        double f = 1.25, zb = t.TZoom;
         t.TZoom = Math.Max(1, Math.Min(4, dir > 0 ? t.TZoom * f : t.TZoom / f));
+        KeepCenter(t, zb, t.TZoom);
         if (t.TZoom < 1.01) { t.TZoom = 1; t.TPanX = t.TPanY = 0; }
         StartSmooth();
     }
@@ -648,6 +649,24 @@ class CamForm : Form
         if (!smoothTimer.Enabled) smoothLast = smoothClock.Elapsed.TotalSeconds;
         smoothTimer.Enabled = true;
     }
+    // Zoom from z0 to z1 keeping the picture point at the middle of the screen in the middle: the pan target is
+    // changed to match (pan is measured in parts of the zoom's extra size, so it would drift otherwise).
+    void KeepCenter(Tile t, double z0, double z1)
+    {
+        if (z1 <= 1.0005) { t.TPanX = t.TPanY = 0; return; }
+        int bw = t.Box.ClientSize.Width, bh = t.Box.ClientSize.Height; if (bw <= 0 || bh <= 0) return;
+        double x0, y0, fw, fh;
+        if (t.View != null) { double asp = t.View.Aspect(); fw = Math.Min(bw, bh * asp); fh = fw / asp; x0 = (bw - fw) / 2; y0 = (bh - fh) / 2; }
+        else if (t.Half == 0) { x0 = 0; y0 = 0; fw = bw; fh = bh; }
+        else { x0 = 0; y0 = t.Half == 1 ? 0 : -bh; fw = bw; fh = bh * 2; }
+        t.TPanX = KeepAxis(t.TPanX, z0, z1, bw, x0, fw); t.TPanY = KeepAxis(t.TPanY, z0, z1, bh, y0, fh);
+    }
+    static double KeepAxis(double p, double z0, double z1, double b, double x0, double f)
+    {
+        double c = b / 2, u = z0 <= 1.0005 ? (c - x0) / f : ((c - x0) * z0 + p * b * (z0 - 1) / 2) / (f * z0);   // picture point (0-1) at the middle
+        return Math.Max(-1, Math.Min(1, (u * f * z1 - (c - x0) * z1) * 2 / (b * (z1 - 1))));
+    }
+
     System.Diagnostics.Stopwatch smoothClock = System.Diagnostics.Stopwatch.StartNew(); double smoothLast;
     void SmoothTick()
     {
@@ -658,7 +677,7 @@ class CamForm : Form
         bool moving = false;
         if (t.VelZ != 0 && DateTime.Now < t.VelZUntil)
         {
-            t.TZoom = Math.Max(1, Math.Min(4, t.TZoom * Math.Exp(t.VelZ * 0.65 * dt)));
+            double zb = t.TZoom; t.TZoom = Math.Max(1, Math.Min(4, t.TZoom * Math.Exp(t.VelZ * 0.65 * dt))); KeepCenter(t, zb, t.TZoom);
             if (t.TZoom < 1.01 && t.VelZ < 0) { t.TZoom = 1; t.TPanX = t.TPanY = 0; }
             moving = true;
         }
