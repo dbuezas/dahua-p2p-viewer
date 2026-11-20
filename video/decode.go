@@ -25,6 +25,7 @@ func redact(s string) string { return credRe.ReplaceAllString(s, "//***@") }
 // Decoder streams frames from an input (RTSP URL or file path).
 type Decoder struct {
 	cmd    *exec.Cmd
+	reap   sync.Once // Wait exactly once, whoever sees the end first
 	Frames chan *Frame
 	W, H   int
 	Info   string // ffmpeg's lines about the input video (codec) and hardware decoding
@@ -95,6 +96,7 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 	case <-time.After(25 * time.Second):
 		cmd.Process.Kill()
 		<-got
+		cmd.Wait()
 		return nil, fmt.Errorf("ffmpeg: sin video en 25 s")
 	}
 	if first.err != nil {
@@ -145,6 +147,7 @@ func readPGMHeader(r *bufio.Reader) (int, int, error) {
 // read: the first header was already read by Open; then frame, header, frame...
 func (d *Decoder) read(r *bufio.Reader) {
 	defer close(d.Frames)
+	defer d.wait() // ffmpeg ended by itself: collect its exit, or it stays a zombie process
 	w, h := d.W, d.H
 	for {
 		buf := make([]byte, w*h*3/2)
@@ -198,9 +201,12 @@ func clamp8(v float32) uint8 {
 func (d *Decoder) Close() {
 	if d.cmd != nil && d.cmd.Process != nil {
 		d.cmd.Process.Kill()
-		go d.cmd.Wait() // collect its exit, or it stays a zombie process (Linux, Mac)
+		go d.wait()
 	}
 }
+
+// wait collects ffmpeg's exit once (Linux and Mac keep a zombie process until then).
+func (d *Decoder) wait() { d.reap.Do(func() { d.cmd.Wait() }) }
 
 // lastLine keeps the last error line ffmpeg wrote (to say why it stopped).
 type lastLine struct {
