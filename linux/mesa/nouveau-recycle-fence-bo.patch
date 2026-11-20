@@ -52,7 +52,7 @@
     if (nv->fence) {
 --- a/src/gallium/drivers/nouveau/nouveau_fence.h
 +++ b/src/gallium/drivers/nouveau/nouveau_fence.h
-@@ -40,17 +40,26 @@
+@@ -40,17 +40,25 @@
     simple_mtx_t lock;
     void (*emit)(struct pipe_context *, uint32_t *sequence, struct nouveau_bo *wait);
     uint32_t (*update)(struct pipe_screen *);
@@ -74,8 +74,17 @@
  static inline void
  nouveau_fence_list_destroy(struct nouveau_fence_list *fence_list)
  {
-+   nouveau_fence_list_free_bos(fence_list);
 +   simple_mtx_destroy(&fence_list->bo_lock);
     simple_mtx_destroy(&fence_list->lock);
  }
+ 
+--- a/src/gallium/drivers/nouveau/nouveau_screen.c
++++ b/src/gallium/drivers/nouveau/nouveau_screen.c
+@@ -470,6 +470,7 @@
+    if (screen->has_svm)
+       os_munmap(screen->svm_cutout, screen->svm_cutout_size);
+ 
++   nouveau_fence_list_free_bos(&screen->fence);
+    nouveau_mm_destroy(screen->mm_GART);
+    nouveau_mm_destroy(screen->mm_VRAM);
  
