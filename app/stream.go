@@ -31,6 +31,7 @@ type stream struct {
 	shown     time.Time     // when the last frame went on screen
 	gaps      int           // frames that came more than 300 ms after the one before
 	jerks     int           // frames shown more than 50 ms later than the video's own timing says
+	holes     int           // gaps in the video itself: a frame more than 1.5 frame times after the last
 	shownN    int           // frames shown since the last stats line
 	shownPTS  float64       // video time of the frame on screen (-1: unknown)
 	pano      bool          // split channel shown as one panorama
@@ -322,6 +323,10 @@ func (s *stream) present() {
 			nextPTS = s.queue[0].pts
 		}
 		if s.nfr > 0 {
+			// a hole in the video itself (camera or network: the frames are not there)
+			if d := f.pts - s.shownPTS; f.pts >= 0 && s.shownPTS >= 0 && d > 1.5*interval.Seconds() && d < 10 {
+				s.holes++
+			}
 			// a jerk: this frame came later after the previous one than the video says
 			if d := f.pts - s.shownPTS; f.pts >= 0 && s.shownPTS >= 0 && d > 0 && d < 1 &&
 				now.Sub(s.shown) > time.Duration(d*float64(time.Second))+50*time.Millisecond {
