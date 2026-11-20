@@ -33,6 +33,8 @@ The old app is kept in [`deprecada/`](deprecada/).
 | `video/` | ffmpeg decoder |
 | `calib/` | panorama calibration and mesh |
 | `web/` | remote control and calibration pages, WebSocket server |
+| `compartir/` | the configuration link for the QR code (see below) |
+| `mostrar/` | prints the settings and their QR codes in a terminal |
 | `app/` | desktop app |
 | `mobile/` | Go core for Android (`gomobile bind`) |
 | `android/` | Android app (Java) |
@@ -53,6 +55,25 @@ The old app is kept in [`deprecada/`](deprecada/).
 `camaras.ini` keys (all optional): `sn`, `ptz` (PTZ camera channels), `ptz_velocidad`,
 `ptz_invertir_pan`, `dividir` (dual-lens camera channel), `colchon_ms` (playout cushion),
 `puerto_web` (remote control port), `servidores` (cloud servers).
+
+## Copy the configuration to a phone
+
+One QR code carries the whole configuration except the panorama calibration: serial, NVR
+user and password, the `camaras.ini` keys and the `hd`/`orden`/`panoramica` lists. It is a link
+
+```
+camaras://config?v=1&d=<base64url, no padding, of a small JSON>
+```
+
+(`compartir/` makes and reads it; `v` is the format version). Scanned with an Android phone's
+camera, it opens the app, which shows what it holds (password hidden) and asks
+**Importar** / **Cancelar**. The QR holds the password, so it only shows on request:
+
+- **TV / desktop app**: key **C**, or the button at the bottom of the phone remote page. It
+  hides by itself after 60 s (C or Esc sooner).
+- **Android app**: long press outside the cameras -> Ajustes -> **Compartir configuración**
+  (full screen until Cerrar; no screenshots while it shows).
+- **Terminal**: `cd mostrar && go run .` prints it too ("QR para importar en la app").
 
 ## Build
 
