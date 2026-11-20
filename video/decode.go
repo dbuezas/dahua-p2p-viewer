@@ -84,7 +84,9 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 	}
 	// showinfo: one stderr line per frame with its time in the video (pts_time), so
 	// the frames can be shown at the camera's real pace, like a video player does
-	args = append(args, "-vf", fmt.Sprintf("scale='trunc(min(%d,iw)/8)*8':-2:flags=fast_bilinear,showinfo", mw),
+	// (checksum=0: showinfo otherwise sums every picture, which the app never uses:
+	// 6% of a core on the 2304x2592 panorama; older ffmpeg builds lack the option)
+	args = append(args, "-vf", fmt.Sprintf("scale='trunc(min(%d,iw)/8)*8':-2:flags=fast_bilinear,%s", mw, showinfoFilter()),
 		"-f", "image2pipe", "-c:v", "pgmyuv", "-pix_fmt", "yuv420p", "-")
 	cmd := exec.Command("ffmpeg", args...)
 	hideWindow(cmd)
@@ -315,4 +317,21 @@ func (l *lastLine) find(words ...string) string {
 		}
 	}
 	return strings.Join(out, " | ")
+}
+
+var (
+	showinfoOnce sync.Once
+	showinfoArg  = "showinfo"
+)
+
+// showinfoFilter is "showinfo=checksum=0" when this ffmpeg knows the option (asked once).
+func showinfoFilter() string {
+	showinfoOnce.Do(func() {
+		cmd := exec.Command("ffmpeg", "-hide_banner", "-h", "filter=showinfo")
+		hideWindow(cmd)
+		if out, err := cmd.Output(); err == nil && strings.Contains(string(out), "checksum") {
+			showinfoArg = "showinfo=checksum=0"
+		}
+	})
+	return showinfoArg
 }

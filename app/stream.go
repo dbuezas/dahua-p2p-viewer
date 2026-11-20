@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -86,6 +87,10 @@ func (s *stream) run() {
 			s.g.mu.Lock()
 			maxW = s.g.sw // never decode wider than the screen
 			s.g.mu.Unlock()
+		}
+		// CAMARAS_MAXW overrides it, for measurements (-1 = never shrink)
+		if v, err := strconv.Atoi(os.Getenv("CAMARAS_MAXW")); err == nil && sub == 0 {
+			maxW = v
 		}
 		d, err := video.OpenScaled(s.rtspURL(sub), true, slow, maxW)
 		if err != nil {
