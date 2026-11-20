@@ -11,10 +11,19 @@
             android:name=".MainActivity"
             android:exported="true"
             android:screenOrientation="fullSensor"
+            android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- the configuration QR (camaras://config?v=1&d=...): scanned with the camera, it
+                 opens here and the app asks before importing -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="camaras" android:host="config" />
             </intent-filter>
         </activity>
     </application>
