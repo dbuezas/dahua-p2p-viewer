@@ -5,6 +5,7 @@ package video
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"image"
 	"io"
@@ -25,7 +26,8 @@ func redact(s string) string { return credRe.ReplaceAllString(s, "//***@") }
 // Decoder streams frames from an input (RTSP URL or file path).
 type Decoder struct {
 	cmd    *exec.Cmd
-	reap   sync.Once // Wait exactly once, whoever sees the end first
+	pts    chan float64 // each frame's time in the video (s), from ffmpeg's showinfo lines
+	reap   sync.Once    // Wait exactly once, whoever sees the end first
 	Frames chan *Frame
 	W, H   int
 	Info   string // ffmpeg's lines about the input video (codec) and hardware decoding
@@ -70,7 +72,9 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 	if mw <= 0 {
 		mw = 1 << 16
 	}
-	args = append(args, "-vf", fmt.Sprintf("scale='trunc(min(%d,iw)/8)*8':-2:flags=fast_bilinear", mw),
+	// showinfo: one stderr line per frame with its time in the video (pts_time), so
+	// the frames can be shown at the camera's real pace, like a video player does
+	args = append(args, "-vf", fmt.Sprintf("scale='trunc(min(%d,iw)/8)*8':-2:flags=fast_bilinear,showinfo", mw),
 		"-f", "image2pipe", "-c:v", "pgmyuv", "-pix_fmt", "yuv420p", "-")
 	cmd := exec.Command("ffmpeg", args...)
 	hideWindow(cmd)
@@ -79,7 +83,8 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 		return nil, err
 	}
 	tail := &lastLine{}
-	cmd.Stderr = tail
+	pts := make(chan float64, 512)
+	cmd.Stderr = &stderrSplit{tail: tail, pts: pts}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -104,7 +109,7 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 		cmd.Wait()
 		return nil, fmt.Errorf("ffmpeg: %v %s", first.err, redact(tail.get()))
 	}
-	d := &Decoder{cmd: cmd, Frames: make(chan *Frame, 2), W: first.w, H: first.h, Info: tail.find("Video:", "Failed", "failed", "hwaccel")}
+	d := &Decoder{cmd: cmd, pts: pts, Frames: make(chan *Frame, 2), W: first.w, H: first.h, Info: tail.find("Video:", "Failed", "failed", "hwaccel")}
 	go d.read(br)
 	return d, nil
 }
@@ -115,6 +120,7 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 type Frame struct {
 	W, H int
 	Pix  []byte
+	PTS  float64 // time in the video, seconds; -1 = unknown
 }
 
 // readPGMHeader reads one pgmyuv header ("P5\n<w> <h>\n255\n"); h is 3/2 of the
@@ -155,7 +161,7 @@ func (d *Decoder) read(r *bufio.Reader) {
 			return
 		}
 		select {
-		case d.Frames <- &Frame{W: w, H: h, Pix: buf}:
+		case d.Frames <- &Frame{W: w, H: h, Pix: buf, PTS: d.nextPTS()}:
 		default: // drop a frame if the UI is behind, so we stay live
 		}
 		nw, nh, err := readPGMHeader(r)
@@ -207,6 +213,57 @@ func (d *Decoder) Close() {
 
 // wait collects ffmpeg's exit once (Linux and Mac keep a zombie process until then).
 func (d *Decoder) wait() { d.reap.Do(func() { d.cmd.Wait() }) }
+
+// nextPTS: the time of the frame just read. ffmpeg writes its showinfo line before
+// the frame, on another pipe, so wait a moment for it; -1 if it does not come.
+func (d *Decoder) nextPTS() float64 {
+	select {
+	case p := <-d.pts:
+		return p
+	case <-time.After(300 * time.Millisecond):
+		return -1
+	}
+}
+
+// stderrSplit takes the per-frame showinfo lines out of ffmpeg's stderr (their
+// times go to pts); every other line goes to the error tail as before.
+type stderrSplit struct {
+	tail *lastLine
+	pts  chan float64
+	part []byte
+}
+
+func (s *stderrSplit) Write(p []byte) (int, error) {
+	s.part = append(s.part, p...)
+	for {
+		i := bytes.IndexByte(s.part, '\n')
+		if i < 0 {
+			break
+		}
+		ln := s.part[:i+1]
+		if j := bytes.Index(ln, []byte("pts_time:")); j >= 0 {
+			f := strings.Fields(string(ln[j+len("pts_time:"):]))
+			t := -1.0
+			if len(f) > 0 {
+				if v, err := strconv.ParseFloat(f[0], 64); err == nil {
+					t = v
+				}
+			}
+			select {
+			case s.pts <- t:
+			default: // nobody reads (should not happen): never block ffmpeg
+			}
+		} else if !bytes.Contains(ln, []byte("Parsed_showinfo")) {
+			s.tail.Write(ln)
+		}
+		s.part = s.part[i+1:]
+	}
+	if len(s.part) > 4096 { // a line that never ends: keep the tail working
+		s.tail.Write(s.part)
+		s.part = nil
+	}
+	return len(p), nil
+}
 
 // lastLine keeps the last error line ffmpeg wrote (to say why it stopped).
 type lastLine struct {

@@ -25,7 +25,7 @@ func (g *game) askPassword(msg string) {
 	}
 	ch := g.passCh
 	g.mu.Unlock()
-	ebiten.ScheduleFrame()
+	redraw()
 	p := <-ch
 	if err := savePassword(g.user, p); err != nil {
 		log.Printf("no pude guardar la clave: %v", err)
@@ -47,7 +47,7 @@ func (g *game) updatePass() {
 		g.status = "Conectando con el grabador..."
 		g.passCh <- p
 	}
-	ebiten.ScheduleFrame() // keep reading keys while the screen shows
+	redraw() // keep reading keys while the screen shows
 }
 
 // drawPass draws the password screen: the question, dots for the typed letters.

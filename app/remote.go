@@ -15,8 +15,6 @@ import (
 	"strings"
 	"time"
 	"web"
-
-	"github.com/hajimehoshi/ebiten/v2"
 )
 
 // The phone remote: the same page and protocol as the old PC app, so the phone
@@ -98,7 +96,7 @@ func (g *game) startRemote() {
 			return
 		case "/api/quit": // close the app cleanly (used by the tests instead of killing it)
 			g.quit.Store(true)
-			ebiten.ScheduleFrame()
+			redraw()
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(g.stateJSON()))
@@ -231,14 +229,21 @@ func (g *game) command(cmd string) {
 		} else { // a camera without PTZ: the joystick moves the zoomed picture
 			g.mu.Lock()
 			if t == g.big && t.zoomT > 1 {
-				k := 0.004 / t.zoomT
-				t.panTX = clamp(t.panTX+float64(dx)*k, -1, 1)
-				t.panTY = clamp(t.panTY+float64(dy)*k, -1, 1)
+				// a speed, not a jump: the TV moves a little every frame (the phone
+				// sends every 150 ms; jumps that often looked jerky)
+				k := 0.5 * 0.004 / t.zoomT / 0.15 // half the old speed: the user found it too fast
+				t.panVX, t.panVY = float64(dx)*k, float64(dy)*k
+				t.panVEnd = time.Now().Add(400 * time.Millisecond)
 			}
 			g.mu.Unlock()
 		}
 	case "ptzstop":
 		g.ptz.release()
+		g.mu.Lock()
+		for _, t := range g.tiles {
+			t.panVX, t.panVY = 0, 0
+		}
+		g.mu.Unlock()
 	case "zoom":
 		if t != nil && len(p) > 2 {
 			g.mu.Lock()
@@ -340,7 +345,7 @@ func (g *game) setPano(on bool) {
 
 func (g *game) stateChanged() {
 	g.stateVer.Add(1)
-	ebiten.ScheduleFrame()
+	redraw()
 }
 
 // snapshot: the current picture of square i as a small JPEG (its half for a

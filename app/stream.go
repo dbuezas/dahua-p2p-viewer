@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hajimehoshi/ebiten/v2"
-
 	"calib"
 	"video"
 )
@@ -19,9 +17,10 @@ import (
 // stream is one NVR channel's live video, always running, shared by all the
 // squares that show it (a split channel feeds its two halves or its panorama).
 type stream struct {
-	g     *game
-	ch    int  // 0-based NVR channel (RTSP channel = ch+1)
-	split bool // two cameras stacked top + bottom
+	paceLog time.Time // last "ritmo" diagnostic line
+	g       *game
+	ch      int  // 0-based NVR channel (RTSP channel = ch+1)
+	split   bool // two cameras stacked top + bottom
 
 	mu        sync.Mutex
 	hd        bool          // main stream instead of the sub stream
@@ -206,8 +205,9 @@ func (g *game) watchdog() {
 
 // qframe is one decoded frame (and its panorama) waiting in the cushion.
 type qframe struct {
-	f  *video.Frame
-	pf *image.RGBA
+	f   *video.Frame
+	pf  *image.RGBA
+	pts float64 // time in the video (s); -1 = unknown
 }
 
 func (f qframe) bytes() int {
@@ -226,13 +226,14 @@ func (s *stream) push(img *video.Frame, pf *image.RGBA) {
 	now := time.Now()
 	s.mu.Lock()
 	s.last = now
+	pts := img.PTS
 	if pf != nil {
 		// panorama: only the (small) panorama waits in the cushion; the whole
 		// picture is kept just as the latest one (snapshots, calibration)
 		s.frame = img
 		img = nil
 	}
-	s.queue = append(s.queue, qframe{img, pf})
+	s.queue = append(s.queue, qframe{img, pf, pts})
 	s.arrivals = append(s.arrivals, now)
 	if len(s.arrivals) > 60 {
 		s.arrivals = s.arrivals[len(s.arrivals)-60:]
@@ -277,6 +278,13 @@ func (s *stream) present() {
 			continue
 		}
 		lag := time.Duration(n) * interval
+		// with the frames' own times (a real player's way): the cushion is the video
+		// time waiting, and the pace does not depend on when the frames arrived
+		// (after a stall they come in a burst, which looked like a very fast camera)
+		if a, b := s.queue[0].pts, s.queue[n-1].pts; n > 1 && a >= 0 && b > a && b-a < 30 {
+			interval = time.Duration((b - a) / float64(n-1) * float64(time.Second))
+			lag = time.Duration((b - a) * float64(time.Second))
+		}
 		if filling {
 			if s.frame != nil && target > 0 && lag < target {
 				s.mu.Unlock()
@@ -289,6 +297,20 @@ func (s *stream) present() {
 			s.mu.Unlock()
 			time.Sleep(next.Sub(now))
 			continue
+		}
+		// far behind after a long stall (more than 3 cushions): jump ahead to one
+		// cushion instead of playing the backlog fast (a live view, not a recording)
+		if target > 0 && lag > target*3 {
+			last := s.queue[n-1].pts
+			for len(s.queue) > 1 && (last < 0 || s.queue[0].pts < 0 || time.Duration((last-s.queue[0].pts)*float64(time.Second)) > target) {
+				if last < 0 || s.queue[0].pts < 0 { // no times: keep the newest frames for one cushion
+					if time.Duration(len(s.queue))*interval <= target {
+						break
+					}
+				}
+				s.queue = s.queue[1:]
+			}
+			log.Printf("canal %d: %.1f s atrasado, salto al presente", s.ch, lag.Seconds())
 		}
 		f := s.queue[0]
 		s.queue = s.queue[1:]
@@ -310,17 +332,28 @@ func (s *stream) present() {
 			s.nfr, s.tfr = 0, now
 		}
 		s.mu.Unlock()
-		ebiten.ScheduleFrame()
+		redraw()
 		// keep the cushion near its size: a bit faster when too full, slower when
 		// almost empty (never noticeable)
 		step := interval
+		if n > 1 { // the time to the next frame, as the video says
+			if d := s.queue[0].pts - f.pts; f.pts >= 0 && d > 0 && d < 1 {
+				step = time.Duration(d * float64(time.Second))
+			}
+		}
+		// diagnostic: say when the pace looks off (a burst after a stall shows as a
+		// much shorter interval, or a big cushion), at most once every 5 s per camera
+		if (interval < 40*time.Millisecond || lag > target*2) && now.Sub(s.paceLog) > 5*time.Second {
+			s.paceLog = now
+			log.Printf("canal %d: ritmo %d ms/cuadro, colchon %d cuadros (%.1f s)", s.ch, interval.Milliseconds(), n, lag.Seconds())
+		}
 		switch {
 		case target == 0:
 			step = 0
 		case lag > target*3/2:
-			step = interval * 8 / 10
+			step = step * 8 / 10
 		case lag < target/2:
-			step = interval * 12 / 10
+			step = step * 12 / 10
 		}
 		next = next.Add(step)
 		if next.Before(now.Add(-200 * time.Millisecond)) {

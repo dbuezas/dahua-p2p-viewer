@@ -16,11 +16,15 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px}
 .hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
 #pano button.on{background:#fc0;color:#000;font-weight:bold}
-#ptz{display:none;align-items:center;justify-content:center;gap:24px;padding:10px}
+#ptz{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;display:none;align-items:center;justify-content:center;gap:24px;padding:10px}
 #pad{width:170px;height:170px;border-radius:50%;background:#222;border:2px solid #555;position:relative;touch-action:none}
 #knob{width:60px;height:60px;border-radius:50%;background:#fc0;position:absolute;left:55px;top:55px;pointer-events:none}
-#zoom{display:flex;flex-direction:column;gap:14px}#zoom button{width:64px;height:64px;font-size:28px;touch-action:none}
-</style></head><body>
+body.off #grid,body.off #ptz,body.off #pano,body.off header button{opacity:.3;pointer-events:none;filter:grayscale(1)}
+#off{display:none;position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);z-index:30;background:#000c;color:#fc0;padding:18px 26px;border-radius:12px;font-size:18px;font-weight:bold;pointer-events:none}
+body.off #off{display:block}
+#zoom{display:flex;flex-direction:column;gap:14px}#zoom button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;width:64px;height:64px;font-size:28px;touch-action:none}
+</style></head><body class=off>
+<div id=off>Conectando con la tele...</div>
 <header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
 <div id=cal style='display:none;position:fixed;inset:0;background:#000;z-index:20;overflow:auto;padding:10px'>
  <div style='display:flex;align-items:center;gap:8px'><b style='flex:1'>Calibrar panoramica (dos camaras a 9 cm)</b><button id=calx>Cerrar</button></div>
@@ -44,12 +48,12 @@ var ws=null,queue=[],lastMsg=0,net=document.getElementById('net');
 function connect(){
  var w=new WebSocket('ws://'+location.host+'/ws');ws=w;w.binaryType='arraybuffer';
  var stuck=setTimeout(function(){if(w.readyState!=1)w.close()},1500);
- w.onopen=function(){clearTimeout(stuck);net.textContent='';lastMsg=Date.now();while(queue.length)w.send(queue.shift())};
+ w.onopen=function(){clearTimeout(stuck);net.textContent='';document.body.classList.remove('off');lastMsg=Date.now();while(queue.length)w.send(queue.shift())};
  w.onmessage=function(e){lastMsg=Date.now();
   if(typeof e.data=='string'){draw(JSON.parse(e.data));return}
   var b=new Uint8Array(e.data),im=document.querySelectorAll('.cam img')[b[0]];if(!im)return;
   var old=im.src;im.src=URL.createObjectURL(new Blob([b.subarray(1)],{type:'image/jpeg'}));if(old.indexOf('blob:')==0)URL.revokeObjectURL(old)};
- w.onclose=function(){clearTimeout(stuck);if(ws!=w)return;net.textContent='reconectando...';setTimeout(connect,200)};
+ w.onclose=function(){clearTimeout(stuck);if(ws!=w)return;net.textContent='reconectando...';document.body.classList.add('off');setTimeout(connect,200)};
 }
 function cmd(c){queue=queue.filter(function(q){return q.split(' ')[0]+q.split(' ')[1]!=c.split(' ')[0]+c.split(' ')[1]});
  if(ws&&ws.readyState==1)ws.send(c);else queue.push(c)}

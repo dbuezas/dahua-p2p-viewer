@@ -53,6 +53,10 @@ type tile struct {
 
 	// digital zoom (big view): zoom 1-4, pan -1..1 of the extra size; t* = targets
 	zoom, zoomT, panX, panY, panTX, panTY float64
+	// the phone's joystick on a camera without PTZ: pan speed (per second) while
+	// held; the phone repeats it every 150 ms, so it stops by itself if that ends
+	panVX, panVY float64
+	panVEnd      time.Time
 }
 
 func (t *tile) units() int {
@@ -63,6 +67,11 @@ func (t *tile) units() int {
 }
 
 type game struct {
+	draws, drawGapMax atomic.Int64 // screen redraws and the longest pause between two (ns), for statsLog
+	lastDraw          time.Time    // only used inside Draw
+	drawnSize         image.Point  // screen size at the last real Draw
+	lastCursor        image.Point  // to notice mouse moves in Update
+
 	cfg        *config
 	tn         *p2ptunnel.Tunnel
 	serial     string
@@ -115,7 +124,7 @@ func (g *game) setStatus(s string) {
 	g.status = s
 	g.mu.Unlock()
 	log.Println(s)
-	ebiten.ScheduleFrame()
+	redraw()
 }
 
 // canPTZ: the "ptz" setting lists the channels whose camera really moves; a
@@ -295,6 +304,9 @@ func (g *game) Update() error {
 	}
 	g.layout()
 	mx, my := ebiten.CursorPosition()
+	if anyInput(image.Pt(mx, my), &g.lastCursor) {
+		redraw()
+	}
 	far := func() bool { return abs(mx-g.pressX) > 20 || abs(my-g.pressY) > 20 }
 
 	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
@@ -373,6 +385,12 @@ func (g *game) Update() error {
 	// smooth zoom and pan: each frame part of the way toward the target
 	moving := false
 	for _, t := range g.tiles {
+		if (t.panVX != 0 || t.panVY != 0) && time.Now().Before(t.panVEnd) {
+			dt := 1 / float64(ebiten.TPS())
+			t.panTX = clamp(t.panTX+t.panVX*dt, -1, 1)
+			t.panTY = clamp(t.panTY+t.panVY*dt, -1, 1)
+			moving = true
+		}
 		for _, v := range []*[2]*float64{{&t.zoom, &t.zoomT}, {&t.panX, &t.panTX}, {&t.panY, &t.panTY}} {
 			cur, tgt := v[0], v[1]
 			*cur += 0.25 * (*tgt - *cur)
@@ -384,7 +402,7 @@ func (g *game) Update() error {
 		}
 	}
 	if moving || g.dragging {
-		ebiten.ScheduleFrame()
+		redraw()
 	}
 	return nil
 }
@@ -525,7 +543,26 @@ func (g *game) drawTile(screen *ebiten.Image, t *tile) {
 	}
 }
 
+// dirty: something on screen changed since the last Draw. The screen is kept between
+// frames, so Draw skips the work when nothing changed; it still runs every refresh
+// (vsync), which is what stops tearing.
+var dirty atomic.Bool
+
+// redraw asks for a new picture on the next screen refresh.
+func redraw() { dirty.Store(true) }
+
 func (g *game) Draw(screen *ebiten.Image) {
+	sz := screen.Bounds().Size()
+	if !dirty.Swap(false) && sz == g.drawnSize && !alwaysDraw {
+		return
+	}
+	g.drawnSize = sz
+	now := time.Now()
+	if gap := int64(now.Sub(g.lastDraw)); !g.lastDraw.IsZero() && gap > g.drawGapMax.Load() {
+		g.drawGapMax.Store(gap)
+	}
+	g.lastDraw = now
+	g.draws.Add(1)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.askPass {
@@ -763,7 +800,25 @@ func (g *game) statsLog() {
 		}
 		sort.Strings(parts)
 		log.Println("video:", strings.Join(parts, "; "))
+		log.Printf("pantalla: %.1f dibujos/s, la pausa mas larga %d ms", float64(g.draws.Swap(0))/60,
+			g.drawGapMax.Swap(0)/1e6)
 	}
+}
+
+// alwaysDraw (FPSFULL=1, for measurements): draw every refresh even when nothing changed.
+var alwaysDraw bool
+
+// anyInput: a key, button, wheel, touch or mouse move since the last Update.
+func anyInput(cur image.Point, last *image.Point) bool {
+	moved := cur != *last
+	*last = cur
+	wx, wy := ebiten.Wheel()
+	return moved || wx != 0 || wy != 0 ||
+		len(inpututil.AppendJustPressedKeys(nil)) > 0 || len(inpututil.AppendJustReleasedKeys(nil)) > 0 ||
+		len(inpututil.AppendJustPressedTouchIDs(nil)) > 0 || len(ebiten.AppendTouchIDs(nil)) > 0 ||
+		inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) || inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) ||
+		inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight) || inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonRight) ||
+		inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonMiddle) || inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonMiddle)
 }
 
 func main() {
@@ -824,15 +879,15 @@ func main() {
 	}
 	ebiten.SetWindowSize(1280, 720)
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
-	// draw only when something changed (a new frame, input, an animation)
-	if os.Getenv("FPSFULL") == "" {
-		ebiten.SetFPSMode(ebiten.FPSModeVsyncOffMinimum)
-		go func() { // a slow heartbeat keeps status texts current
-			for range time.Tick(time.Second) {
-				ebiten.ScheduleFrame()
-			}
-		}()
-	}
+	// vsync on (Ebiten's default: no tearing), but the picture is only drawn again
+	// when something changed (a new frame, input, an animation): the screen is kept
+	ebiten.SetScreenClearedEveryFrame(false)
+	alwaysDraw = os.Getenv("FPSFULL") != ""
+	go func() { // a slow heartbeat keeps status texts current
+		for range time.Tick(time.Second) {
+			redraw()
+		}
+	}()
 	if os.Getenv("WINDOWED") == "" {
 		ebiten.SetFullscreen(true)
 	}
