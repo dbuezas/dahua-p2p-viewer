@@ -6,6 +6,7 @@ import (
 	"image/jpeg"
 	"log"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -30,7 +31,8 @@ type stream struct {
 	shown     time.Time     // when the last frame went on screen
 	gaps      int           // frames that came more than 300 ms after the one before
 	jerks     int           // frames shown more than 50 ms later than the video's own timing says
-	holes     int           // gaps in the video itself: a frame more than 1.5 frame times after the last
+	holes     int           // gaps in the video itself: a frame more than 1.5 typical frame times after the last
+	deltas    []float64     // the last video-time steps between frames (their median is the camera's pace)
 	shownN    int           // frames shown since the last stats line
 	shownPTS  float64       // video time of the frame on screen (-1: unknown)
 	pano      bool          // split channel shown as one panorama
@@ -322,9 +324,15 @@ func (s *stream) present() {
 			nextPTS = s.queue[0].pts
 		}
 		if s.nfr > 0 {
-			// a hole in the video itself (camera or network: the frames are not there)
-			if d := f.pts - s.shownPTS; f.pts >= 0 && s.shownPTS >= 0 && d > 1.5*interval.Seconds() && d < 10 {
-				s.holes++
+			// a hole in the video itself (camera or network: the frames are not there):
+			// a step more than 1.5 times the camera's typical step (median of the last 31)
+			if d := f.pts - s.shownPTS; f.pts >= 0 && s.shownPTS >= 0 && d > 0 && d < 10 {
+				if len(s.deltas) >= 10 && d > 1.5*median(s.deltas) {
+					s.holes++
+				}
+				if s.deltas = append(s.deltas, d); len(s.deltas) > 31 {
+					s.deltas = s.deltas[1:]
+				}
 			}
 			// a jerk: this frame came later after the previous one than the video says
 			if d := f.pts - s.shownPTS; f.pts >= 0 && s.shownPTS >= 0 && d > 0 && d < 1 &&
@@ -376,4 +384,11 @@ func (s *stream) present() {
 			next = now
 		}
 	}
+}
+
+// median of a few numbers (a copy is sorted; the slice stays as it is)
+func median(v []float64) float64 {
+	c := append([]float64(nil), v...)
+	sort.Float64s(c)
+	return c[len(c)/2]
 }
