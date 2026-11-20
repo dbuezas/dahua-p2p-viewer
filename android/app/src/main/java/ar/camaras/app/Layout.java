@@ -70,14 +70,17 @@ final class Layout {
         return best;
     }
 
-    /** One camera big; the others float over its bottom edge as small pictures. */
+    /** One camera big; the others as small pictures along the bottom of the screen. */
     static RectF[] arrangeBig(int n, int big, float W, float H) {
         float fs = Math.min(W / 16, H / 9), gw = fs * 16, gh = fs * 9;
         float x0 = (W - gw) / 2, y0 = (H - gh) / 2;
+        // the small pictures: 10% of the screen's height (on a 16:9 screen that is the old 10% of the width),
+        // smaller only if they do not fit across; at the bottom of the screen, centred (not on the big picture:
+        // an upright phone has room below it)
         int m = n - 1;
-        float tw = m > 0 ? Math.min(W * 0.10f, (gw - 20) / m) : 0;
+        float tw = m > 0 ? Math.min(H * 0.10f * 16 / 9, (W - 20) / m) : 0;
         float th = tw * 9 / 16, gap = 10;
-        float tx = (W - m * tw) / 2, ty = y0 + gh - th - gap;
+        float tx = (W - m * tw) / 2, ty = H - th - gap;
         RectF[] list = new RectF[n];
         int k = 0;
         for (int i = 0; i < n; i++) {

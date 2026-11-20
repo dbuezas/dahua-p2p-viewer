@@ -111,21 +111,26 @@ func arrange(u []int, W, H int) []image.Rectangle {
 }
 
 // arrangeBig shows one camera big (the biggest 16:9 rectangle, centered); the
-// others float over its bottom edge as small pictures (10% of the screen width
-// each, in a centered row), so the big one keeps its full size.
+// others are small pictures in a centered row at the bottom of the screen (10% of
+// the screen height each), so the big one keeps its full size.
 func arrangeBig(n, bigIdx, W, H int) []image.Rectangle {
 	fs := math.Min(float64(W)/16, float64(H)/9)
 	gw, gh := fs*16, fs*9
 	x0, y0 := (float64(W)-gw)/2, (float64(H)-gh)/2
+	// the small pictures: 10% of the screen's height (on a 16:9 screen that is the
+	// old 10% of the width), smaller only if they do not fit across; at the bottom
+	// of the screen, centred (not on the big picture: upright phones have room below it)
 	m := n - 1
-	tw := float64(W) * 0.10
+	th := float64(H) * 0.10
+	tw := th * 16 / 9
 	if m > 0 {
-		tw = math.Min(tw, (gw-20)/float64(m))
+		tw = math.Min(tw, (float64(W)-20)/float64(m))
 	} else {
 		tw = 0
 	}
-	th, gap := tw*9/16, 10.0
-	tx, ty := (float64(W)-float64(m)*tw)/2, y0+gh-th-gap
+	th = tw * 9 / 16
+	gap := 10.0
+	tx, ty := (float64(W)-float64(m)*tw)/2, float64(H)-th-gap
 	list := make([]image.Rectangle, n)
 	k := 0
 	for i := 0; i < n; i++ {
