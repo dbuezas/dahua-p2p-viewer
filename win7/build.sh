@@ -6,7 +6,7 @@
 set -e -o pipefail
 R="$(cd "$(dirname "$0")/.." && pwd)"; W="${TMPDIR:-/tmp}/camaras-win7"
 rm -rf "$W"; mkdir -p "$W"; cp "$R/win7/go.work" "$W/"
-for m in tunnel nvr nvrlib calib video app web; do
+for m in tunnel nvr nvrlib calib compartir video app web; do
   mkdir -p "$W/$m"; cp "$R/win7/$m/"* "$W/$m/"
   (cd "$R/$m" && find . -maxdepth 1 -type f \( -name '*.go' -o -name '*.html' -o -name '*.js' \) ! -name '*_test.go' -exec cp {} "$W/$m/" \;)
   [ -d "$R/$m/icon" ] && cp -r "$R/$m/icon" "$W/$m/"

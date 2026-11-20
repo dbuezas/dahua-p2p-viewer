@@ -6,6 +6,7 @@ require github.com/hajimehoshi/ebiten/v2 v2.7.10
 
 require (
 	calib v0.0.0
+	compartir v0.0.0
 	dh-p2p v0.0.0
 	nvrlib v0.0.0
 	web v0.0.0
@@ -30,5 +31,7 @@ replace dh-p2p => ../tunnel
 replace video => ../video
 
 replace calib => ../calib
+
+replace compartir => ../compartir
 
 replace web => ../web

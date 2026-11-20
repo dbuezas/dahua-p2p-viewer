@@ -5,6 +5,7 @@ use (
 	./nvr
 	./nvrlib
 	./calib
+	./compartir
 	./video
 	./app
 	./web
