@@ -19,7 +19,8 @@ p.tip{color:#888;font-size:13px;margin:0 10px}
 #ptz{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;display:none;align-items:center;justify-content:center;gap:24px;padding:10px}
 #pad{width:170px;height:170px;border-radius:50%;background:#222;border:2px solid #555;position:relative;touch-action:none}
 #knob{width:60px;height:60px;border-radius:50%;background:#fc0;position:absolute;left:55px;top:55px;pointer-events:none}
-body.off #grid,body.off #ptz,body.off #pano,body.off header button{opacity:.3;pointer-events:none;filter:grayscale(1)}
+#share{padding:0 10px 20px}#share button.on{background:#fc0;color:#000;font-weight:bold}
+body.off #grid,body.off #ptz,body.off #pano,body.off #share,body.off header button{opacity:.3;pointer-events:none;filter:grayscale(1)}
 #off{display:none;position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);z-index:30;background:#000c;color:#fc0;padding:18px 26px;border-radius:12px;font-size:18px;font-weight:bold;pointer-events:none}
 body.off #off{display:block}
 #zoom{display:flex;flex-direction:column;gap:14px}#zoom button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;width:64px;height:64px;font-size:28px;touch-action:none}
@@ -39,6 +40,8 @@ body.off #off{display:block}
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=grid></div><img id=ghost>
 <div id=pano style='display:none;padding:0 10px 14px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=3>Si</button> <button id=calbtn>Calibrar</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4, linea blanca = costura.</p></div>
+<div id=share><button id=sharebtn>Mostrar en la tele el QR de configuracion</button>
+<p class=tip style='margin:4px 0 0'>Para copiar todo (serie, usuario, clave y ajustes) a la app de otro telefono: escanealo con su camara. Incluye la clave; se oculta solo en 60 s.</p></div>
 <script>
 var st={big:-1,cams:[]};
 // ONE connection that stays open (WebSocket) for everything; if it drops, connect again at once.
@@ -68,6 +71,7 @@ function draw(s){st=s;var g=document.getElementById('grid');
  var pb=document.getElementById('pano');pb.style.display=s.split?'':'none';
  [].forEach.call(pb.querySelectorAll('button'),function(b){b.classList.toggle('on',+b.dataset.pano==(+s.pano||0))});
  document.getElementById('msg').textContent=s.msg||'';
+ var sb=document.getElementById('sharebtn');sb.classList.toggle('on',!!s.share);sb.textContent=s.share?'Ocultar el QR de la tele':'Mostrar en la tele el QR de configuracion';
  document.getElementById('gridtip').style.display=s.pano&&!s.msg?'':'none';
  var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none'}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
@@ -105,6 +109,7 @@ function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='no
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
 document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)return;
  if(b.id=='calbtn'){calOpen();return}
+ if(b.id=='sharebtn'){st.share=!st.share;draw(st);cmd('compartir '+(st.share?1:0));return}
  if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==3&&!st.panoReady){calOpen();return}if(m==0&&!st.pano)return;st.pano=m;st.msg='';draw(st);cmd('pano '+m);return}
  if(b.dataset.all){setBig(-1);return}
  if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});

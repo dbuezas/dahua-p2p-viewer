@@ -21,7 +21,7 @@ import (
 // works the same. One WebSocket carries everything: the state (JSON) when it
 // changes and every 3 s, one camera picture per second in turn, and the phone's
 // commands ("big i", "hd i 0|1", "order k,k", "ptz i dx dy", "ptzstop", "zoom i 1|-1",
-// "pano 0|3"). Only the local network may connect.
+// "pano 0|3", "compartir 0|1"). Only the local network may connect.
 
 func (g *game) startRemote() {
 	port := g.webPort()
@@ -161,8 +161,9 @@ func (g *game) stateJSON() string {
 		Pano      int    `json:"pano"`
 		PanoReady bool   `json:"panoReady"`
 		Msg       string `json:"msg"`
+		Share     bool   `json:"share"` // the configuration QR is on the TV
 		Cams      []camJ `json:"cams"`
-	}{Big: -1, Msg: g.panoMsg, Cams: []camJ{}}
+	}{Big: -1, Msg: g.panoMsg, Share: g.shareImg != nil, Cams: []camJ{}}
 	for i, t := range g.tiles {
 		if t == g.big {
 			st.Big = i
@@ -262,6 +263,10 @@ func (g *game) command(cmd string) {
 			}
 			g.mu.Unlock()
 		}
+	case "compartir": // the configuration QR on the TV (share.go): "compartir 1" shows it, "compartir 0" hides it
+		g.mu.Lock()
+		g.showShare(len(p) > 1 && p[1] == "1")
+		g.mu.Unlock()
 	case "pano":
 		if len(p) > 1 {
 			g.setPano(p[1] != "0")
