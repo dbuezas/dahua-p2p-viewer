@@ -97,7 +97,8 @@ public class MainActivity extends Activity {
             try { prefs.edit().putString("pass", Secret.seal(given)).apply(); } catch (Exception e) { status = "No pude guardar la clave: " + e; }
             getIntent().removeExtra("clave");
         }
-        String link = importLink(getIntent());
+        String link = (getIntent().getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0 ? null : importLink(getIntent());
+        if (link != null && link.equals(prefs.getString("link_visto", ""))) link = null; // already answered
         if (link != null) {
             setIntent(new Intent());
             askImport(link, true);
@@ -113,7 +114,7 @@ public class MainActivity extends Activity {
     @Override protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
         String link = importLink(i);
-        if (link != null) askImport(link, false);
+        if (link != null && !link.equals(prefs.getString("link_visto", ""))) askImport(link, false);
     }
 
     private void hideBars() {
@@ -139,6 +140,8 @@ public class MainActivity extends Activity {
         AlertDialog.Builder dlg = new AlertDialog.Builder(this).setTitle(title).setView(l).setCancelable(false);
         if (canShare && !prefs.getString("serial", "").isEmpty())
             dlg.setNeutralButton("Compartir configuración", (d, w) -> showShare());
+        if (!prefs.getString("serial", "").isEmpty() && !prefs.getString("pass", "").isEmpty())
+            dlg.setNegativeButton("Cancelar", null);
         dlg.setPositiveButton("Guardar", (d, w) -> {
             SharedPreferences.Editor e = prefs.edit()
                     .putString("serial", sn.getText().toString().trim())
@@ -516,6 +519,11 @@ public class MainActivity extends Activity {
         wv.getSettings().setJavaScriptEnabled(true);
         wv.getSettings().setDomStorageEnabled(true);
         wv.setWebViewClient(new android.webkit.WebViewClient() {
+            // the page's "Cerrar" (in-app mode) asks to close the whole calibration
+            @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView v, android.webkit.WebResourceRequest req) {
+                if ("camaras-app".equals(req.getUrl().getScheme())) { closeCalib(); return true; }
+                return false;
+            }
             @Override public void onPageFinished(android.webkit.WebView v, String u) {
                 // open the calibration right away (the page's "Calibrar" button)
                 ui.postDelayed(() -> v.evaluateJavascript("document.getElementById('calbtn').click()", null), 1500);
@@ -523,7 +531,7 @@ public class MainActivity extends Activity {
         });
         ((FrameLayout) gl.getParent()).addView(wv);
         calView = wv;
-        wv.loadUrl(url);
+        wv.loadUrl(url + (url.contains("?") ? "&" : "?") + "app=1");
         // the mesh arrives through the page's "Usar en la tele": then use it here
         ui.postDelayed(new Runnable() {
             @Override public void run() {
@@ -567,7 +575,9 @@ public class MainActivity extends Activity {
             items.add(panoOn() ? "Cámaras separadas" : "Cámaras juntas (panorámica)");
             items.add("Calibrar panorámica");
         }
+        items.add("Compartir configuración (QR)");
         new AlertDialog.Builder(this).setTitle(t.name).setItems(items.toArray(new String[0]), (d, which) -> {
+            if (items.get(which).startsWith("Compartir")) { showShare(); return; }
             if (which == 0) {
                 Set<Integer> s = hdSet();
                 if (hd) s.remove(ch); else s.add(ch);
@@ -599,6 +609,8 @@ public class MainActivity extends Activity {
 
     /** Shows what the link holds and imports it on "Importar"; starting: the app was opened by the link. */
     private void askImport(String link, boolean starting) {
+        // answered once (import, cancel or error) is enough: Android may hand the same link again
+        prefs.edit().putString("link_visto", link).apply();
         String js, summary;
         try {
             js = Camaras.configFromURI(link);

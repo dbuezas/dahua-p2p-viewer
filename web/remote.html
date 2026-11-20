@@ -114,6 +114,7 @@ document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)retur
  if(b.dataset.all){setBig(-1);return}
  if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
 // ---- Panorama calibration on this phone (mode 3): calib.js runs in a worker and sends pictures of its work. ----
+var IN_APP=/[?&]app=1(&|$)/.test(location.search);
 var calW=null,calMesh=null,calBox=document.getElementById('cal'),calCv=document.getElementById('calc'),calGo=document.getElementById('calgo');
 function calText(t,f){document.getElementById('calt').textContent=t;if(f!=null)document.getElementById('calp').style.width=Math.round(f*100)+'%'}
 function calOpen(){calBox.style.display='block';calRun()}
@@ -228,6 +229,10 @@ function calOver(g,m,a){var W=m.w,H=m.h,lw=Math.max(1.5,W/400);
 calGo.addEventListener('click',function(){if(!calMesh||!ws||ws.readyState!=1){calText('Sin conexion con la tele, proba de nuevo');return}
  ws.send(calMesh);calBox.style.display='none';st.pano=3;draw(st)});
 document.getElementById('calre').addEventListener('click',calRun);
-document.getElementById('calx').addEventListener('click',function(){calBox.style.display='none';if(calW){calW.terminate();calW=null}});
+document.getElementById('calx').addEventListener('click',function(){calBox.style.display='none';if(calW){calW.terminate();calW=null}
+ if(IN_APP)location.href='camaras-app://cerrar'});
+// Inside the Android app (?app=1) this page is only the calibration: the result stays on the phone, there is no
+// TV to show a QR on, and "Cerrar" closes the whole page.
+if(IN_APP){calGo.textContent='Usar esta calibracion';var shareDiv=document.getElementById('share');if(shareDiv)shareDiv.style.display='none'}
 connect();
 </script></body></html>
