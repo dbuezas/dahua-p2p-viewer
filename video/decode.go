@@ -74,7 +74,13 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 	if v := os.Getenv("FFMPEG_THREADS"); v != "" {
 		threads = v
 	}
-	args = append(args, "-threads", threads, "-i", input, "-an", "-vsync", "passthrough")
+	args = append(args, "-threads", threads)
+	// quality trades, for comparing by eye (off by default): FFMPEG_SKIP_LOOP=1 skips
+	// the deblocking filter (~5% of a core on the HD panorama, slightly blockier)
+	if os.Getenv("FFMPEG_SKIP_LOOP") == "1" {
+		args = append(args, "-skip_loop_filter", "all")
+	}
+	args = append(args, "-i", input, "-an", "-vsync", "passthrough")
 	// YUV 4:2:0 as it comes from the camera (1.5 bytes per pixel, no colour
 	// conversion here: the graphics card does it). Width a multiple of 8 (the
 	// graphics card reads 4 bytes at a time), never wider than maxW.
@@ -86,7 +92,7 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 	// the frames can be shown at the camera's real pace, like a video player does
 	// (checksum=0: showinfo otherwise sums every picture, which the app never uses:
 	// 6% of a core on the 2304x2592 panorama; older ffmpeg builds lack the option)
-	args = append(args, "-vf", fmt.Sprintf("scale='trunc(min(%d,iw)/8)*8':-2:flags=fast_bilinear,%s", mw, showinfoFilter()),
+	args = append(args, "-vf", fmt.Sprintf("scale='trunc(min(%d,iw)/8)*8':-2:flags=%s,%s", mw, scaleFlags(), showinfoFilter()),
 		"-f", "image2pipe", "-c:v", "pgmyuv", "-pix_fmt", "yuv420p", "-")
 	cmd := exec.Command("ffmpeg", args...)
 	hideWindow(cmd)
@@ -334,4 +340,12 @@ func showinfoFilter() string {
 		}
 	})
 	return showinfoArg
+}
+
+// scaleFlags: how ffmpeg shrinks; FFMPEG_SCALE=neighbor is cheaper (~5%) but has jaggier edges
+func scaleFlags() string {
+	if v := os.Getenv("FFMPEG_SCALE"); v == "neighbor" || v == "bilinear" || v == "area" {
+		return v
+	}
+	return "fast_bilinear"
 }
