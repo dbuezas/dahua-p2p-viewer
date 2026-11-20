@@ -550,15 +550,33 @@ var Calib = (function () {
     }
     // both lenses exactly as they will be drawn
     var la = new Float32Array(w * h), lb = new Float32Array(w * h), ok = new Uint8Array(w * h), r = [0, 0, 0], qa = [0, 0], qb = [0, 0];
+    // which lens is left: where only A shows, on average (does not depend on the seam)
+    var sA = 0, nA = 0; for (y = 0; y < c.CH; y += 8) for (x = 0; x < c.CW; x += 8) { cylRay(c, x, y, r); if (toA(g, r, 0, qa) && !toB(g, r, 0, qb)) { sA += x; nA++; } }
+    st.aLeft = nA === 0 || sA / nA < c.CW / 2;
+    // the camera's clock (top right of lens A, drawn by the camera) is never cut by the seam: every point of lens A
+    // in OSD (lens A fractions x0, y0, x1, y1) stays on A's side, OSD_GAP cells away (details blend over +-3 px).
+    // Measured on this camera: sub stream 0.62-0.98 x 0.05-0.11, main (HD) stream 0.80-0.995 x 0.06-0.09; the box
+    // is their union with a margin, so one rule holds in both qualities.
+    var OSD = st.o.osdBox || [0.60, 0.035, 1.0, 0.125], OSD_GAP = 4;
+    var segLo = new Int32Array(h).fill(0), segHi = new Int32Array(h).fill(w - 1);
     for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
       var k = y * w + x; cylRay(c, x * S + S / 2, y * S + S / 2, r);
       if (toA(g, r, 0, qa) && toB(g, r, 2 * hwA[y], qb)) { ok[k] = 1; la[k] = bil(st.inp.A, LW, LH, qa[0], qa[1]); lb[k] = bil(st.inp.B, LW, LH, qb[0], qb[1]); }
+      if (toA(g, r, 0, qa) && qa[0] >= OSD[0] * LW && qa[0] <= OSD[2] * LW && qa[1] >= OSD[1] * LH && qa[1] <= OSD[3] * LH) {
+        if (st.aLeft) segLo[y] = Math.max(segLo[y], x + OSD_GAP); else segHi[y] = Math.min(segHi[y], x - OSD_GAP);
+      }
+    }
+    // a row with no room left: the seam goes to the last place it can (the far end of the shared part)
+    for (y = 0; y < h; y++) {
+      var xl = -1, xr = -1; for (x = 1; x < w - 1; x++) if (ok[y * w + x] && ok[y * w + x - 1] && ok[y * w + x + 1]) { if (xl < 0) xl = x; xr = x; }
+      if (xr >= 0 && segLo[y] > xr) segLo[y] = xr;
+      if (xl >= 0 && segHi[y] < xl) segHi[y] = xl;
     }
     var ea = gradMag(la, w, h), eb = gradMag(lb, w, h), INF = 1e18, prev = new Float64Array(w).fill(INF), from = new Int32Array(w * h), rowOk = new Uint8Array(h);
     for (y = 0; y < h; y++) {
       var cur = new Float64Array(w).fill(INF);
       for (x = 1; x < w - 1; x++) {
-        var k2 = y * w + x; if (!ok[k2] || !ok[k2 - 1] || !ok[k2 + 1]) continue;
+        var k2 = y * w + x; if (!ok[k2] || !ok[k2 - 1] || !ok[k2 + 1] || x < segLo[y] || x > segHi[y]) continue;
         // edges that differ, and brightness that differs a little (both as drawn)
         var D = Math.abs(ea[k2] - eb[k2]) + 0.15 * Math.abs(la[k2] - lb[k2]) + 0.5;
         // the person may say where the seam should go: it stays near there
@@ -584,9 +602,6 @@ var Calib = (function () {
     }
     for (y = 0; y < c.CH; y++) { var yh = Math.min(h - 1, Math.floor(y / S)); seamC[y] = hx[yh] < 0 ? -1 : hx[yh] * S + S / 2; Ws[y] = hwA[yh]; }
     st.ws = { seam: seamC, W: Ws };
-    // which lens is left: where only A shows, on average
-    var sA = 0, nA = 0; for (y = 0; y < c.CH; y += 8) for (x = 0; x < c.CW; x += 8) { cylRay(c, x, y, r); if (toA(g, r, 0, qa) && !toB(g, r, 0, qb)) { sA += x; nA++; } }
-    st.aLeft = nA === 0 || sA / nA < c.CW / 2;
   }
   // B's pixel for cylinder point (cx, cy): at the distance of that row's seam point
   function toBrow(st, r, cy, q) { var ws = st.ws, w = ws ? ws.W[Math.max(0, Math.min(ws.W.length - 1, Math.round(cy)))] : 0; return toB(st.rig, r, 2 * w, q); }

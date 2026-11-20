@@ -1182,6 +1182,10 @@ func rowW(st *State, y float64) float64 {
 	return k[i] + (k[i+1]-k[i])*(f-float64(i))
 }
 
+// OSDBox: where the camera draws its clock on lens A (fractions of the lens picture: x0, y0, x1, y1); the seam
+// never cuts it. See seam().
+var OSDBox = [4]float64{0.60, 0.035, 1.0, 0.125}
+
 func seam(st *State, flat bool) {
 	c, g := &st.cyl, &st.rig
 	const S = 2
@@ -1338,6 +1342,28 @@ func seam(st *State, flat bool) {
 	la, lb, ok := make([]float32, w*h), make([]float32, w*h), make([]bool, w*h)
 	var r [3]float64
 	var qa, qb [2]float64
+	// which lens is left: where only A shows, on average (does not depend on the seam)
+	sA, nA := 0.0, 0
+	for y := 0; y < c.CH; y += 8 {
+		for x := 0; x < c.CW; x += 8 {
+			cylRay(c, float64(x), float64(y), &r)
+			if toA(g, &r, 0, &qa) && !toB(g, &r, 0, &qb) {
+				sA += float64(x)
+				nA++
+			}
+		}
+	}
+	st.aLeft = nA == 0 || sA/float64(nA) < float64(c.CW)/2
+	// the camera's clock (top right of lens A, drawn by the camera) is never cut by the seam: every point of lens
+	// A in OSDBox (lens A fractions x0, y0, x1, y1) stays on A's side, osdGap cells away (details blend over +-3 px).
+	// Measured on this camera: sub stream 0.62-0.98 x 0.05-0.11, main (HD) stream 0.80-0.995 x 0.06-0.09; the box
+	// is their union with a margin, so one rule holds in both qualities. (Same as web/calib.js.)
+	osd := OSDBox
+	const osdGap = 4
+	segLo, segHi := make([]int, h), make([]int, h)
+	for y := range segHi {
+		segHi[y] = w - 1
+	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			k := y*w + x
@@ -1347,6 +1373,31 @@ func seam(st *State, flat bool) {
 				la[k] = float32(bil(st.A, LW, LH, qa[0], qa[1]))
 				lb[k] = float32(bil(st.B, LW, LH, qb[0], qb[1]))
 			}
+			if toA(g, &r, 0, &qa) && qa[0] >= osd[0]*LW && qa[0] <= osd[2]*LW && qa[1] >= osd[1]*LH && qa[1] <= osd[3]*LH {
+				if st.aLeft {
+					segLo[y] = max(segLo[y], x+osdGap)
+				} else {
+					segHi[y] = min(segHi[y], x-osdGap)
+				}
+			}
+		}
+	}
+	// a row with no room left: the seam goes to the last place it can (the far end of the shared part)
+	for y := 0; y < h; y++ {
+		xl, xr := -1, -1
+		for x := 1; x < w-1; x++ {
+			if ok[y*w+x] && ok[y*w+x-1] && ok[y*w+x+1] {
+				if xl < 0 {
+					xl = x
+				}
+				xr = x
+			}
+		}
+		if xr >= 0 && segLo[y] > xr {
+			segLo[y] = xr
+		}
+		if xl >= 0 && segHi[y] < xl {
+			segHi[y] = xl
 		}
 	}
 	ea, eb := gradMag(la, w, h), gradMag(lb, w, h)
@@ -1364,7 +1415,7 @@ func seam(st *State, flat bool) {
 		}
 		for x := 1; x < w-1; x++ {
 			k2 := y*w + x
-			if !ok[k2] || !ok[k2-1] || !ok[k2+1] {
+			if !ok[k2] || !ok[k2-1] || !ok[k2+1] || x < segLo[y] || x > segHi[y] {
 				continue
 			}
 			Dv := math.Abs(float64(ea[k2])-float64(eb[k2])) + 0.15*math.Abs(float64(la[k2])-float64(lb[k2])) + 0.5
@@ -1430,17 +1481,6 @@ func seam(st *State, flat bool) {
 		Ws[y] = hwA[yh]
 	}
 	st.ws = &WS{Seam: seamC, W: Ws}
-	sA, nA := 0.0, 0
-	for y := 0; y < c.CH; y += 8 {
-		for x := 0; x < c.CW; x += 8 {
-			cylRay(c, float64(x), float64(y), &r)
-			if toA(g, &r, 0, &qa) && !toB(g, &r, 0, &qb) {
-				sA += float64(x)
-				nA++
-			}
-		}
-	}
-	st.aLeft = nA == 0 || sA/float64(nA) < float64(c.CW)/2
 }
 
 func toBrow(st *State, r *[3]float64, cy float64, q *[2]float64) bool {
