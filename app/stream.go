@@ -314,6 +314,10 @@ func (s *stream) present() {
 		}
 		f := s.queue[0]
 		s.queue = s.queue[1:]
+		nextPTS := -1.0 // read now, under the lock (the queue changes after Unlock)
+		if len(s.queue) > 0 {
+			nextPTS = s.queue[0].pts
+		}
 		if s.nfr > 0 {
 			if gap := now.Sub(s.shown); gap > s.gapMax {
 				s.gapMax = gap
@@ -336,10 +340,9 @@ func (s *stream) present() {
 		// keep the cushion near its size: a bit faster when too full, slower when
 		// almost empty (never noticeable)
 		step := interval
-		if n > 1 { // the time to the next frame, as the video says
-			if d := s.queue[0].pts - f.pts; f.pts >= 0 && d > 0 && d < 1 {
-				step = time.Duration(d * float64(time.Second))
-			}
+		// the time to the next frame, as the video says
+		if d := nextPTS - f.pts; nextPTS >= 0 && f.pts >= 0 && d > 0 && d < 1 {
+			step = time.Duration(d * float64(time.Second))
 		}
 		// diagnostic: say when the pace looks off (a burst after a stall shows as a
 		// much shorter interval, or a big cushion), at most once every 5 s per camera
