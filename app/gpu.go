@@ -3,6 +3,9 @@ package main
 import (
 	"log"
 	"math"
+	"os"
+	"strconv"
+	"sync"
 
 	"github.com/hajimehoshi/ebiten/v2"
 
@@ -21,6 +24,7 @@ const yuvKage = `//kage:unit pixels
 package main
 
 var Size vec2
+var Sharp float // 0 = off; 0..1 = AMD CAS sharpening of the brightness (CAMARAS_NITIDEZ)
 
 func byteAt(idx float, row float) float {
 	col := floor(idx / 4)
@@ -43,6 +47,20 @@ func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 	w := Size.x
 	h := Size.y
 	y := byteAt(p.x, p.y)
+	if Sharp > 0 {
+		// CAS (AMD FidelityFX contrast adaptive sharpening) on the brightness, cross
+		// of 4 neighbours: strong where the local contrast is low, weak near hard
+		// edges (no halos)
+		n := byteAt(p.x, max(p.y-1, 0))
+		so := byteAt(p.x, min(p.y+1, h-1))
+		we := byteAt(max(p.x-1, 0), p.y)
+		ea := byteAt(min(p.x+1, w-1), p.y)
+		mn := min(min(min(n, so), min(we, ea)), y)
+		mx := max(max(max(n, so), max(we, ea)), y)
+		amp := sqrt(clamp(min(mn, 1-mx)/max(mx, 1.0/255.0), 0, 1))
+		k := -amp / mix(8.0, 5.0, Sharp)
+		y = clamp((y+k*(n+so+we+ea))/(1+4*k), 0, 1)
+	}
 	crow := h + floor(p.y/2)
 	u := byteAt(floor(p.x/2), crow)
 	v := byteAt(w/2+floor(p.x/2), crow)
@@ -261,7 +279,7 @@ func (gs *gpuState) rgbOf(f *video.Frame, ver int) *ebiten.Image {
 	v, i := quad(f.W, f.H)
 	op := &ebiten.DrawTrianglesShaderOptions{Blend: ebiten.BlendCopy}
 	op.Images[0] = gs.pack
-	op.Uniforms = map[string]any{"Size": []float32{float32(f.W), float32(f.H)}}
+	op.Uniforms = map[string]any{"Size": []float32{float32(f.W), float32(f.H)}, "Sharp": sharpness()}
 	gs.rgb.DrawTrianglesShader(v, i, yuvShader, op)
 	gs.ver = ver
 	return gs.rgb
@@ -351,4 +369,18 @@ func meshTextures(m *mesh3) (*ebiten.Image, *ebiten.Image) {
 	st := ebiten.NewImage(m.OH, 1)
 	st.WritePixels(seam)
 	return mt, st
+}
+
+var sharpOnce sync.Once
+var sharpVal float32
+
+// sharpness: CAMARAS_NITIDEZ (0 = off, up to 1), read once.
+func sharpness() float32 {
+	sharpOnce.Do(func() {
+		if v, err := strconv.ParseFloat(os.Getenv("CAMARAS_NITIDEZ"), 64); err == nil {
+			sharpVal = float32(math.Max(0, math.Min(1, v)))
+			log.Printf("nitidez: %.2f", sharpVal)
+		}
+	})
+	return sharpVal
 }
