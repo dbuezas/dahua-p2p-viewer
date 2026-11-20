@@ -198,6 +198,7 @@ func clamp8(v float32) uint8 {
 func (d *Decoder) Close() {
 	if d.cmd != nil && d.cmd.Process != nil {
 		d.cmd.Process.Kill()
+		go d.cmd.Wait() // collect its exit, or it stays a zombie process (Linux, Mac)
 	}
 }
 

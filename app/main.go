@@ -817,7 +817,11 @@ func main() {
 	keepAwake()
 
 	ebiten.SetWindowTitle("Camaras")
-	setWindowIcon()
+	// the icon only in a window: Ebiten cannot set it in fullscreen, keeps it
+	// pending and converts the pictures again on every frame (half the CPU on Linux)
+	if os.Getenv("WINDOWED") != "" {
+		setWindowIcon()
+	}
 	ebiten.SetWindowSize(1280, 720)
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
 	// draw only when something changed (a new frame, input, an animation)
