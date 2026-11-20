@@ -30,6 +30,9 @@ type stream struct {
 	gapMax    time.Duration // longest time between two frames since the last stats line
 	shown     time.Time     // when the last frame went on screen
 	gaps      int           // frames that came more than 300 ms after the one before
+	jerks     int           // frames shown more than 50 ms later than the video's own timing says
+	shownN    int           // frames shown since the last stats line
+	shownPTS  float64       // video time of the frame on screen (-1: unknown)
 	pano      bool          // split channel shown as one panorama
 	frame     *video.Frame  // latest frame on screen (whole picture, YUV)
 	pframe    *image.RGBA   // latest panorama (pano mode)
@@ -319,6 +322,11 @@ func (s *stream) present() {
 			nextPTS = s.queue[0].pts
 		}
 		if s.nfr > 0 {
+			// a jerk: this frame came later after the previous one than the video says
+			if d := f.pts - s.shownPTS; f.pts >= 0 && s.shownPTS >= 0 && d > 0 && d < 1 &&
+				now.Sub(s.shown) > time.Duration(d*float64(time.Second))+50*time.Millisecond {
+				s.jerks++
+			}
 			if gap := now.Sub(s.shown); gap > s.gapMax {
 				s.gapMax = gap
 			}
@@ -329,7 +337,8 @@ func (s *stream) present() {
 		if f.f != nil {
 			s.frame = f.f
 		}
-		s.pframe, s.shown = f.pf, now
+		s.pframe, s.shown, s.shownPTS = f.pf, now, f.pts
+		s.shownN++
 		s.ver++
 		if s.nfr++; now.Sub(s.tfr) > 10*time.Second {
 			s.fps = float64(s.nfr) / now.Sub(s.tfr).Seconds()

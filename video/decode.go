@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -64,7 +65,16 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 	}
 	// -vsync passthrough: only the camera's real frames (no repeated ones to keep a
 	// fixed rate: they waste CPU and would hide a stalled stream from the watchdog)
-	args = append(args, "-i", input, "-an", "-vsync", "passthrough")
+	// one decoding thread per camera: with the default (one per CPU thread) frame
+	// threading cost 35-40% more CPU on the TV PC (i7 Q720) for the same video and
+	// holds frames back; one thread still decodes the biggest stream (2592x1520
+	// HEVC) 2.5x faster than real time there, and each camera has its own process
+	// (FFMPEG_THREADS overrides it, for measurements; 0 = ffmpeg's default)
+	threads := "1"
+	if v := os.Getenv("FFMPEG_THREADS"); v != "" {
+		threads = v
+	}
+	args = append(args, "-threads", threads, "-i", input, "-an", "-vsync", "passthrough")
 	// YUV 4:2:0 as it comes from the camera (1.5 bytes per pixel, no colour
 	// conversion here: the graphics card does it). Width a multiple of 8 (the
 	// graphics card reads 4 bytes at a time), never wider than maxW.

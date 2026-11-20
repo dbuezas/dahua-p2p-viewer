@@ -827,9 +827,13 @@ func (g *game) statsLog() {
 		var parts []string
 		for _, s := range g.streamList() {
 			s.mu.Lock()
-			parts = append(parts, fmt.Sprintf("canal %d %dx%d %.1f cuadros/s (cortes >0.3s: %d, el mas largo %.1fs)",
-				s.ch, s.w, s.h, s.fps, s.gaps, s.gapMax.Seconds()))
-			s.gaps, s.gapMax = 0, 0
+			pct := 0.0
+			if s.shownN > 0 {
+				pct = 100 * float64(s.jerks) / float64(s.shownN)
+			}
+			parts = append(parts, fmt.Sprintf("canal %d %dx%d %.1f cuadros/s (tirones >50ms: %.1f%%, cortes >0.3s: %d, el mas largo %.1fs)",
+				s.ch, s.w, s.h, float64(s.shownN)/60, pct, s.gaps, s.gapMax.Seconds()))
+			s.gaps, s.gapMax, s.jerks, s.shownN = 0, 0, 0, 0
 			s.mu.Unlock()
 		}
 		sort.Strings(parts)
