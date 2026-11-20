@@ -1,0 +1,6 @@
+.gradle/
+build/
+app/build/
+local.properties
+camaras.aar
+camaras-sources.jar

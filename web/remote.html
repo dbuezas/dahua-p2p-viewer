@@ -1,0 +1,224 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Camaras</title><style>
+body{margin:0;background:#111;color:#eee;font-family:sans-serif}
+header{position:sticky;top:0;background:#111;padding:10px;display:flex;gap:10px;align-items:center;z-index:1}
+h1{font-size:18px;margin:0;flex:1}
+button{font-size:16px;padding:10px 14px;border:0;border-radius:8px;background:#333;color:#eee}
+button:disabled{opacity:.35}
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;padding:10px}
+.cam{background:#000;border-radius:8px;overflow:hidden;border:3px solid transparent}
+.cam.big{border-color:#fc0}
+.cam img{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#222;touch-action:none;-webkit-user-drag:none;user-select:none}
+.cam.target{border-color:#4af}.cam.drag{opacity:.5}
+.cam.wide{grid-column:1/-1}.cam.wide img{aspect-ratio:16/5;object-fit:contain}
+#ghost{position:fixed;width:140px;pointer-events:none;opacity:.8;border-radius:6px;display:none;z-index:9}
+p.tip{color:#888;font-size:13px;margin:0 10px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:6px}
+.hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
+#pano button.on{background:#fc0;color:#000;font-weight:bold}
+#ptz{display:none;align-items:center;justify-content:center;gap:24px;padding:10px}
+#pad{width:170px;height:170px;border-radius:50%;background:#222;border:2px solid #555;position:relative;touch-action:none}
+#knob{width:60px;height:60px;border-radius:50%;background:#fc0;position:absolute;left:55px;top:55px;pointer-events:none}
+#zoom{display:flex;flex-direction:column;gap:14px}#zoom button{width:64px;height:64px;font-size:28px;touch-action:none}
+</style></head><body>
+<header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
+<div id=cal style='display:none;position:fixed;inset:0;background:#000;z-index:20;overflow:auto;padding:10px'>
+ <div style='display:flex;align-items:center;gap:8px'><b style='flex:1'>Calibrar panoramica (dos camaras a 9 cm)</b><button id=calx>Cerrar</button></div>
+ <p id=calt style='margin:8px 0;min-height:2.6em'></p><div style='height:6px;background:#333;border-radius:3px'><div id=calp style='height:6px;width:0;background:#fc0;border-radius:3px'></div></div>
+ <canvas id=calc style='width:100%;margin-top:10px;background:#111;touch-action:none'></canvas>
+ <p class=tip style='margin:6px 0'>Lineas: donde cada lente ve el mismo punto (verde = encaja, rojo = no).</p>
+ <div id=calhand style='display:none;margin:10px 0'><button id=calfine style='width:100%;background:#fc0;color:#000;font-weight:bold'>Listo, afinar</button></div>
+ <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button><button id=calmix style='flex:1;display:none'>Ver superpuestas</button></div>
+</div>
+<p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
+<p class=tip id=msg style='color:#fc0'></p>
+<div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
+<div id=grid></div><img id=ghost>
+<div id=pano style='display:none;padding:0 10px 14px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=3>Si</button> <button id=calbtn>Calibrar</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4, linea blanca = costura.</p></div>
+<script>
+var st={big:-1,cams:[]};
+// ONE connection that stays open (WebSocket) for everything; if it drops, connect again at once.
+// Buttons change on the phone right away; the TV follows when the command arrives.
+var ws=null,queue=[],lastMsg=0,net=document.getElementById('net');
+// Opening sometimes gets stuck on the PC's Wi-Fi: if it is not open in 1.5 s, drop it and try again.
+function connect(){
+ var w=new WebSocket('ws://'+location.host+'/ws');ws=w;w.binaryType='arraybuffer';
+ var stuck=setTimeout(function(){if(w.readyState!=1)w.close()},1500);
+ w.onopen=function(){clearTimeout(stuck);net.textContent='';lastMsg=Date.now();while(queue.length)w.send(queue.shift())};
+ w.onmessage=function(e){lastMsg=Date.now();
+  if(typeof e.data=='string'){draw(JSON.parse(e.data));return}
+  var b=new Uint8Array(e.data),im=document.querySelectorAll('.cam img')[b[0]];if(!im)return;
+  var old=im.src;im.src=URL.createObjectURL(new Blob([b.subarray(1)],{type:'image/jpeg'}));if(old.indexOf('blob:')==0)URL.revokeObjectURL(old)};
+ w.onclose=function(){clearTimeout(stuck);if(ws!=w)return;net.textContent='reconectando...';setTimeout(connect,200)};
+}
+function cmd(c){queue=queue.filter(function(q){return q.split(' ')[0]+q.split(' ')[1]!=c.split(' ')[0]+c.split(' ')[1]});
+ if(ws&&ws.readyState==1)ws.send(c);else queue.push(c)}
+// The PC sends its state every 3 s: 6 s of silence means the connection is dead, so drop it and connect again.
+setInterval(function(){if(ws&&ws.readyState==1&&Date.now()-lastMsg>6000)ws.close()},1000);
+function draw(s){st=s;var g=document.getElementById('grid');
+ while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
+  d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd data-hd='+i+'>HD</button></div>';g.appendChild(d)}
+ while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
+ s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd);
+  d.classList.toggle('wide',/\.3$/.test(c.k))});
+ var pb=document.getElementById('pano');pb.style.display=s.split?'':'none';
+ [].forEach.call(pb.querySelectorAll('button'),function(b){b.classList.toggle('on',+b.dataset.pano==(+s.pano||0))});
+ document.getElementById('msg').textContent=s.msg||'';
+ document.getElementById('gridtip').style.display=s.pano&&!s.msg?'':'none';
+ var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none'}
+// Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
+var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
+function padMove(e){var r=pad.getBoundingClientRect(),dx=e.clientX-r.left-r.width/2,dy=e.clientY-r.top-r.height/2,m=Math.hypot(dx,dy),max=r.width/2-30;
+ if(m>max){dx=dx*max/m;dy=dy*max/m}knob.style.left=(55+dx)+'px';knob.style.top=(55+dy)+'px';
+ if(Date.now()-lastSend>150&&Math.hypot(dx,dy)>8){lastSend=Date.now();cmd('ptz '+st.big+' '+Math.round(dx*2.5)+' '+Math.round(dy*2.5))}}
+pad.addEventListener('pointerdown',function(e){padOn=true;pad.setPointerCapture(e.pointerId);padMove(e);e.preventDefault()});
+pad.addEventListener('pointermove',function(e){if(padOn)padMove(e)});
+// Keep sending while the finger is held still (the picture of a camera without PTZ moves one step per command).
+var padLast=null;setInterval(function(){if(padOn&&padLast)padMove(padLast)},50);
+pad.addEventListener('pointermove',function(e){padLast=e});pad.addEventListener('pointerdown',function(e){padLast=e});
+function padEnd(){if(!padOn)return;padOn=false;padLast=null;knob.style.left='55px';knob.style.top='55px';cmd('ptzstop')}
+pad.addEventListener('pointerup',padEnd);pad.addEventListener('pointercancel',padEnd);
+// Zoom buttons (digital zoom on the TV): one big step per tap; held, small steps every 60 ms (the TV glides).
+[['zin',1],['zout',-1]].forEach(function(z){var b=document.getElementById(z[0]),rep=null,wait=null;
+ function step(sm){ws&&ws.readyState==1&&ws.send('zoom '+st.big+' '+z[1]+(sm?' s':''))}
+ function end(){clearInterval(rep);clearTimeout(wait);rep=null}
+ b.addEventListener('pointerdown',function(e){e.preventDefault();b.setPointerCapture(e.pointerId);end();step();wait=setTimeout(function(){rep=setInterval(function(){step(1)},60)},300)});
+ b.addEventListener('pointerup',end);b.addEventListener('pointercancel',end)});
+function setBig(i){st.big=i;draw(st);cmd('big '+i)}
+// Tap = big; drag onto another camera = swap (pointer events work with fingers and mouse).
+var drag=null,ghost=document.getElementById('ghost');
+function camAt(x,y){var e=document.elementFromPoint(x,y);while(e&&!(e.classList&&e.classList.contains('cam')))e=e.parentNode;return e}
+document.addEventListener('pointerdown',function(e){if(!e.target.dataset||e.target.dataset.i==null)return;e.preventDefault();
+ drag={i:+e.target.dataset.i,x:e.clientX,y:e.clientY,moved:false,el:e.target.parentNode,to:null};});
+document.addEventListener('pointermove',function(e){if(!drag)return;
+ if(!drag.moved&&Math.abs(e.clientX-drag.x)+Math.abs(e.clientY-drag.y)>15){drag.moved=true;drag.el.classList.add('drag');ghost.src=drag.el.querySelector('img').src;ghost.style.display='block'}
+ if(!drag.moved)return;ghost.style.left=(e.clientX-70)+'px';ghost.style.top=(e.clientY-40)+'px';
+ var c=camAt(e.clientX,e.clientY);if(drag.to&&drag.to!=c)drag.to.classList.remove('target');drag.to=c&&c!=drag.el?c:null;if(drag.to)drag.to.classList.add('target')});
+function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='none';d.el.classList.remove('drag');if(d.to)d.to.classList.remove('target');
+ if(!d.moved){setBig(st.big==d.i?-1:d.i);return}
+ if(d.to){var j=[].indexOf.call(d.to.parentNode.children,d.to),a=d.el.querySelector('img'),b=d.to.querySelector('img'),t=a.src;a.src=b.src;b.src=t;
+  var x=st.cams[d.i];st.cams[d.i]=st.cams[j];st.cams[j]=x;draw(st);cmd('order '+st.cams.map(function(c){return c.k}).join(','))}}
+document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
+document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)return;
+ if(b.id=='calbtn'){calOpen();return}
+ if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==3&&!st.panoReady){calOpen();return}if(m==0&&!st.pano)return;st.pano=m;st.msg='';draw(st);cmd('pano '+m);return}
+ if(b.dataset.all){setBig(-1);return}
+ if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
+// ---- Panorama calibration on this phone (mode 3): calib.js runs in a worker and sends pictures of its work. ----
+var calW=null,calMesh=null,calBox=document.getElementById('cal'),calCv=document.getElementById('calc'),calGo=document.getElementById('calgo');
+function calText(t,f){document.getElementById('calt').textContent=t;if(f!=null)document.getElementById('calp').style.width=Math.round(f*100)+'%'}
+function calOpen(){calBox.style.display='block';calRun()}
+// The result, zoomed on the seam, as drawn (seam) or both lenses half and half (shows how well they really fit).
+var calFinal=null,calFinalMix=false;
+document.getElementById('calmix').addEventListener('click',function(){var m=calFinal;if(!m)return;calFinalMix=!calFinalMix;this.textContent=calFinalMix?'Ver costura':'Ver superpuestas';
+ calCv.width=m.w;calCv.height=m.h;calCv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(calFinalMix?m.mix:m.seam),m.w,m.h),0,0)});
+function calRun(){calQ=[];calBusy=false;calFinal=null;document.getElementById('calmix').style.display='none';calMesh=null;calGo.disabled=true;calText('Sacando una foto de las camaras 3 y 4...',0);
+ Promise.all([fetch('/calibsnap?t='+Date.now()).then(function(r){if(!r.ok)throw Error('no pude sacar la foto');return r.blob()}).then(function(bl){return createImageBitmap(bl)}),
+  fetch('/calibprev?t='+Date.now()).then(function(r){return r.json()}).catch(function(){return {}})]).then(function(res){var bm=res[0],prev=res[1];
+  // each lens as 640x360; shrink in two steps so fine detail does not shimmer
+  var c1=document.createElement('canvas');c1.width=1280;c1.height=1440;c1.getContext('2d').drawImage(bm,0,0,1280,1440);
+  var c2=document.createElement('canvas');c2.width=640;c2.height=720;var x=c2.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(c1,0,0,640,720);
+  var a=x.getImageData(0,0,640,360).data,b=x.getImageData(0,360,640,360).data;
+  function gray(c){var g=new Float32Array(640*360);for(var i=0;i<g.length;i++)g[i]=0.299*c[4*i]+0.587*c[4*i+1]+0.114*c[4*i+2];return g}
+  if(calW)calW.terminate();calW=new Worker('/calib.js');calW.onmessage=calMsg;
+  calW.onerror=function(e){calText('Error: '+e.message)};
+  calW.postMessage({t:'load',pw:Math.min(900,Math.round(calBox.clientWidth*(window.devicePixelRatio||1))),inp:{A:gray(a),B:gray(b),Ac:a,Bc:b},o:{clip:1,outW:1400}});
+  // step 1: the person lines the lenses up roughly (from the last calibration, or a usual place)
+  calHand={pan:prev.pan!=null?prev.pan:-0.7,tilt:prev.tilt!=null?prev.tilt:-0.05,busy:false,again:false,rpp:0.003};
+  document.getElementById('calhand').style.display='block';
+  calText('Paso 1: arrastra la imagen hasta que las dos camaras coincidan mas o menos (se ven una sobre otra). Despues toca Listo.',0);calView();
+ }).catch(function(e){calText('Error: '+e.message)})}
+var calHand=null,calDrag=null;
+function calView(){if(!calHand||!calW)return;if(calHand.busy){calHand.again=true;return}calHand.busy=true;calW.postMessage({t:'view',pan:calHand.pan,tilt:calHand.tilt})}
+calCv.addEventListener('pointerdown',function(e){if(!calHand)return;calCv.setPointerCapture(e.pointerId);calDrag={x:e.clientX,y:e.clientY,pan:calHand.pan,tilt:calHand.tilt}});
+calCv.addEventListener('pointermove',function(e){if(!calDrag||!calHand)return;var k=calHand.rpp*calCv.width/calCv.clientWidth;
+ calHand.pan=calDrag.pan-(e.clientX-calDrag.x)*k;calHand.tilt=calDrag.tilt+(e.clientY-calDrag.y)*k;calView()});
+function calDragEnd(){calDrag=null}
+calCv.addEventListener('pointerup',calDragEnd);calCv.addEventListener('pointercancel',calDragEnd);
+document.getElementById('calfine').addEventListener('click',function(){if(!calHand||!calW)return;var h=calHand;calHand=null;document.getElementById('calhand').style.display='none';
+ calText('Afinando...',0.05);calQ=[];calBusy=false;calW.postMessage({t:'start',start:{pan:h.pan,tilt:h.tilt}})});
+// The worker sends one frame per step of its work, faster or slower than they should be seen: they wait in a queue
+// and play at their own pace (hold ms each), with cross-fades; lines, dots and the seam are drawn over each frame.
+var calQ=[],calBusy=false,calImg=document.createElement('canvas'),calOld=document.createElement('canvas');
+function calMsg(e){var m=e.data;
+ if(m.t=='view'){if(!calHand)return;calHand.busy=false;calHand.rpp=m.rpp;calCv.width=m.w;calCv.height=m.h;calCv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(m.img),m.w,m.h),0,0);if(calHand.again){calHand.again=false;calView()}return}
+ calQ.push(m);if(!calBusy)calNext()}
+function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
+ if(m.t=='error'){calText('No pude: '+m.text);calQ=[];calBusy=false;return}
+ if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calNext();return}
+ if(m.t=='final'){calFinal=m;calFinalMix=false;var bm=document.getElementById('calmix');bm.style.display='';bm.textContent='Ver superpuestas';calNext();return}
+ if(m.kind=='text'){calText(m.text,m.frac);setTimeout(calNext,0);return}
+ calText(m.text,m.frac);
+ if(m.kind=='slide'){calSlide(m);return}
+ if(m.kind=='move'){calMove(m);return}
+ // a frame waiting long in the queue plays faster (never more than ~6 s behind the work)
+ var hold=m.hold*(calQ.length>60?0.4:calQ.length>30?0.7:1),fade=m.fade||0;
+ var same=calCv.width==m.w&&calCv.height==m.h;
+ if(fade&&same){calOld.width=m.w;calOld.height=m.h;calOld.getContext('2d').drawImage(calCv,0,0)}
+ calImg.width=m.w;calImg.height=m.h;calImg.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(m.img),m.w,m.h),0,0);
+ if(!same){calCv.width=m.w;calCv.height=m.h}
+ var t0=performance.now();
+ var anim=m.anim||0;
+ (function step(){var el=performance.now()-t0,a=fade&&same?Math.min(1,el/fade):1,p=anim?Math.min(1,el/anim):1,g=calCv.getContext('2d');
+  if(a<1){g.globalAlpha=1;g.drawImage(calOld,0,0);g.globalAlpha=a*a*(3-2*a)}
+  g.drawImage(calImg,0,0);g.globalAlpha=1;calOver(g,m,p);
+  if(a<1||p<1)requestAnimationFrame(step);else setTimeout(calNext,Math.max(0,hold-el))})()}
+// Lens B sliding into place: two layers composed every screen frame (A; B where A has nothing; B half over A),
+// while the view zooms from crop0 to crop1 and the pair lines move with lens B.
+var calLA=document.createElement('canvas'),calLB=document.createElement('canvas'),calLS=document.createElement('canvas'),calComp=document.createElement('canvas');
+function calSlide(m){var W=m.outW,H=m.outH;calLast=m;calMv=[0,0];
+ [[calLA,m.A],[calLB,m.B]].forEach(function(x){x[0].width=m.w;x[0].height=m.h;x[0].getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(x[1]),m.w,m.h),0,0)});
+ calComp.width=m.w;calComp.height=m.h;calCv.width=W;calCv.height=H;var t0=performance.now();
+ (function step(){var el=performance.now()-t0,p=Math.min(1,el/m.dur),e=p*p*(3-2*p),dx=m.off[0]*(1-e),dy=m.off[1]*(1-e),k=calComp.getContext('2d');
+  // lens B: one shift for all, or (settling at the distances) its own shift per thin strip of rows
+  // (strips go first into their own picture, whole pixels, one row of overlap: no seams, no double see-through)
+  var srcB=calLB;
+  if(m.rows){var R=m.rows,bk=calLS.getContext('2d');calLS.width=m.w;calLS.height=m.h;bk.clearRect(0,0,m.w,m.h);
+   for(var y=0;y<m.h;y+=3){var hh=Math.min(4,m.h-y);bk.drawImage(calLB,0,y,m.w,hh,Math.round(R[2*y]*e),Math.round(y+R[2*y+1]*e),m.w,hh)}srcB=calLS}
+  var drawB=function(){k.drawImage(srcB,m.rows?0:dx,m.rows?0:dy)};
+  k.globalCompositeOperation='source-over';k.globalAlpha=1;k.clearRect(0,0,m.w,m.h);k.drawImage(calLA,0,0);
+  k.globalCompositeOperation='destination-over';drawB();
+  k.globalCompositeOperation='source-atop';k.globalAlpha=0.5;drawB();
+  // view: from crop0 to crop1, with the output's shape (centre and width move, height follows)
+  var c0=m.crop0,c1=m.crop1,cx=(c0[0]+c0[2])/2*(1-e)+(c1[0]+c1[2])/2*e,cy=(c0[1]+c0[3])/2*(1-e)+(c1[1]+c1[3])/2*e,sw=(c0[2]-c0[0])*(1-e)+(c1[2]-c1[0])*e,sh=sw*H/W;
+  var g=calCv.getContext('2d');g.fillStyle='#000';g.fillRect(0,0,W,H);g.drawImage(calComp,cx-sw/2,cy-sh/2,sw,sh,0,0,W,H);
+  var f=W/sw,ox=cx-sw/2,oy=cy-sh/2,L=m.lines||[],lw=Math.max(1.5,W/400);g.lineWidth=lw;
+  for(var i=0;i<L.length;i+=8){var bx=L[i+2]*(1-e)+L[i+4]*e,by=L[i+3]*(1-e)+L[i+5]*e,er=L[i+6]*(1-e)+L[i+7]*e;
+   g.strokeStyle=er<2?'rgba(60,255,60,.9)':er<6?'rgba(255,200,0,.9)':'rgba(255,60,60,.9)';g.beginPath();g.moveTo((L[i]-ox)*f,(L[i+1]-oy)*f);g.lineTo((bx-ox)*f,(by-oy)*f);g.stroke();
+   g.fillStyle=g.strokeStyle;g.beginPath();g.arc((L[i]-ox)*f,(L[i+1]-oy)*f,lw*1.3,0,7);g.fill()}
+  if(p<1)requestAnimationFrame(step);else setTimeout(calNext,Math.max(0,m.hold-el))})()}
+// A better result during the search: lens B's picture (from the last slide's pictures) moves to where it should be
+// (the worker only sends how far); the view stays.
+var calLast=null,calMv=[0,0];
+function calMove(mv){var m=calLast;if(!m){calNext();return}var W=m.outW,H=m.outH,s=m.sc||1,a0=calMv.slice(),a1=[mv.move[0]/s,mv.move[1]/s],t0=performance.now();
+ (function step(){var el=performance.now()-t0,p=Math.min(1,el/(mv.dur||120)),e=p*p*(3-2*p),dx=a0[0]+(a1[0]-a0[0])*e,dy=a0[1]+(a1[1]-a0[1])*e,k=calComp.getContext('2d');
+  k.globalCompositeOperation='source-over';k.globalAlpha=1;k.clearRect(0,0,m.w,m.h);k.drawImage(calLA,0,0);
+  k.globalCompositeOperation='destination-over';k.drawImage(calLB,dx,dy);
+  k.globalCompositeOperation='source-atop';k.globalAlpha=0.5;k.drawImage(calLB,dx,dy);
+  var c1=m.crop1,sw=c1[2]-c1[0],sh=sw*H/W,cx=(c1[0]+c1[2])/2,cy=(c1[1]+c1[3])/2,g=calCv.getContext('2d');
+  g.fillStyle='#000';g.fillRect(0,0,W,H);g.drawImage(calComp,cx-sw/2,cy-sh/2,sw,sh,0,0,W,H);
+  if(p<1)requestAnimationFrame(step);else{calMv=a1;setTimeout(calNext,Math.max(0,(mv.hold||150)-el))}})()}
+function calOver(g,m,a){var W=m.w,H=m.h,lw=Math.max(1.5,W/400);
+ // the final cut closing in: everything outside the kept box darkens, the box frame moves in from the edges
+ if(m.cut){var e=a*a*(3-2*a),c=m.cut,x0=c[0]*e,y0=c[1]*e,x1=W+(c[2]-W)*e,y1=H+(c[3]-H)*e;g.save();g.fillStyle='rgba(0,0,0,'+(0.75*e)+')';
+  g.fillRect(0,0,W,y0);g.fillRect(0,y1,W,H-y1);g.fillRect(0,y0,x0,y1-y0);g.fillRect(x1,y0,W-x1,y1-y0);g.strokeStyle='#fc0';g.lineWidth=lw*1.5;g.strokeRect(x0,y0,x1-x0,y1-y0);g.restore()}
+ // measuring scan line (animated top to bottom when scanAnim; dots appear as it passes)
+ var scanY=m.scanAnim?a*H:null;if(scanY!=null)m.scan=scanY;
+ if(m.scan!=null){var gr=g.createLinearGradient(0,m.scan-W/40,0,m.scan);gr.addColorStop(0,'rgba(80,200,255,0)');gr.addColorStop(1,'rgba(80,200,255,0.5)');g.fillStyle=gr;g.fillRect(0,m.scan-W/40,W,W/40)}
+ // pairs: from where lens A shows a point to where lens B shows it (green = fits)
+ var L=m.lines||[];g.lineWidth=lw;
+ for(var i=0;i<L.length;i+=5){var er=L[i+4];g.strokeStyle=er<2?'rgba(60,255,60,.9)':er<6?'rgba(255,200,0,.9)':'rgba(255,60,60,.9)';g.beginPath();g.moveTo(L[i],L[i+1]);g.lineTo(L[i+2],L[i+3]);g.stroke();
+  g.fillStyle=g.strokeStyle;g.beginPath();g.arc(L[i],L[i+1],lw*1.3,0,7);g.fill()}
+ // distances: glowing dots, warm = near, cold = far
+ var D=m.dots||[];g.save();g.shadowBlur=W/90;
+ if(m.dotsFade)g.globalAlpha=a;
+ for(i=0;i<D.length;i+=3){if(scanY!=null&&D[i+1]>scanY)continue;var v=Math.min(1,D[i+2]/2.5),c='hsl('+Math.round(220-200*v)+',100%,'+Math.round(55+15*v)+'%)';g.fillStyle=c;g.shadowColor=c;g.beginPath();g.arc(D[i],D[i+1],Math.max(2,W/260),0,7);g.fill()}
+ g.restore();
+ // the seam, drawn from the top down
+ var S=m.seam||[];if(S.length>3){var n=Math.round(S.length/2*(m.reveal!=null?m.reveal:m.anim&&!m.cut?a:1));g.save();g.strokeStyle='#fc0';g.lineWidth=lw*1.6;g.shadowColor='#fc0';g.shadowBlur=W/80;g.beginPath();g.moveTo(S[0],S[1]);for(i=1;i<n;i++)g.lineTo(S[2*i],S[2*i+1]);g.stroke();g.restore()}}
+calGo.addEventListener('click',function(){if(!calMesh||!ws||ws.readyState!=1){calText('Sin conexion con la tele, proba de nuevo');return}
+ ws.send(calMesh);calBox.style.display='none';st.pano=3;draw(st)});
+document.getElementById('calre').addEventListener('click',calRun);
+document.getElementById('calx').addEventListener('click',function(){calBox.style.display='none';if(calW){calW.terminate();calW=null}});
+connect();
+</script></body></html>

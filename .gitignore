@@ -1,12 +1,18 @@
-camaras.ini
-canales.txt
-*.log
-*.exe
-*.dll
-*.obj
-*.lib
+# secrets and build outputs, never commit
+tunnel/sn.txt
+tunnel/dh-p2p
+tunnel/dh-p2p-*
+tunnel/*.exe
+*.mp4
 *.jpg
-hd.txt
-orden.txt
-panoramica.txt
-panoramica3_*.bin
+*.log
+nvr/nvr
+app/camaras-ui
+app/*.exe
+video/vtest/vtest
+/camaras-ui.exe
+go.work.sum
+# my local notes and third-party reference code (not mine to publish)
+/ref/
+/PLAN.md
+/bench.sh

@@ -1,0 +1,12 @@
+go 1.27.3
+
+use (
+	./tunnel
+	./nvr
+	./nvrlib
+	./calib
+	./video
+	./app
+	./mobile
+	./web
+)
