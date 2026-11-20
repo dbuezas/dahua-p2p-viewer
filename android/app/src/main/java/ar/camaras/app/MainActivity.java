@@ -203,10 +203,15 @@ public class MainActivity extends Activity {
                     for (int i = 0; i < players.size() && i < streams.size(); i++) {
                         ExoPlayer p = players.get(i);
                         CamRenderer.Stream st = streams.get(i);
-                        // stay near live, like the TV app's cushion: the player gathers several
-                        // seconds when the video comes in bursts; play a bit faster to catch up
+                        // stay near live, like the TV app's cushion (1.2 s): a little behind, play
+                        // a bit faster (not noticeable); far behind after a stall (3 cushions),
+                        // jump ahead to one cushion instead of playing the backlog fast (live view)
                         long ahead = p.getBufferedPosition() - p.getCurrentPosition();
-                        float speed = ahead > 2500 ? 1.5f : ahead > 1500 ? 1.15f : 1f;
+                        if (ahead > 3600) {
+                            p.seekTo(p.getBufferedPosition() - 1200);
+                            android.util.Log.i("camaras", "canal " + st.ch + ": " + ahead + " ms atrasado, salto al presente");
+                        }
+                        float speed = ahead > 1800 && ahead <= 3600 ? 1.25f : 1f;
                         if (p.getPlaybackParameters().speed != speed) p.setPlaybackSpeed(speed);
                         if (n % 5 == 0)
                             android.util.Log.i("camaras", "canal " + st.ch + ": estado " + p.getPlaybackState() + " jugando " + p.isPlaying()
