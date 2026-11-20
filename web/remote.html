@@ -25,7 +25,7 @@ body.off #off{display:block}
 #zoom{display:flex;flex-direction:column;gap:14px}#zoom button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;width:64px;height:64px;font-size:28px;touch-action:none}
 </style></head><body class=off>
 <div id=off>Conectando con la tele...</div>
-<header><h1>Camaras</h1><span id=net></span><button data-all=1>Ver todas</button></header>
+<header><h1>Camaras</h1><span id=net></span></header>
 <div id=cal style='display:none;position:fixed;inset:0;background:#000;z-index:20;overflow:auto;padding:10px'>
  <div style='display:flex;align-items:center;gap:8px'><b style='flex:1'>Calibrar panoramica (dos camaras a 9 cm)</b><button id=calx>Cerrar</button></div>
  <p id=calt style='margin:8px 0;min-height:2.6em'></p><div style='height:6px;background:#333;border-radius:3px'><div id=calp style='height:6px;width:0;background:#fc0;border-radius:3px'></div></div>
@@ -116,7 +116,6 @@ document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)retur
  if(b.classList&&b.classList.contains('calbtn')){calOpen();return}
  if(b.id=='sharebtn'){st.share=!st.share;draw(st);cmd('compartir '+(st.share?1:0));return}
  if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==3&&!st.panoReady){calOpen();return}if(m==0&&!st.pano)return;st.pano=m;st.msg='';draw(st);cmd('pano '+m);return}
- if(b.dataset.all){setBig(-1);return}
  if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
 // ---- Panorama calibration on this phone (mode 3): calib.js runs in a worker and sends pictures of its work. ----
 var IN_APP=/[?&]app=1(&|$)/.test(location.search);
