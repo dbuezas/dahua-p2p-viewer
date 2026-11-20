@@ -1,6 +1,7 @@
 // mostrar prints everything another phone or computer needs to watch the cameras:
-// the NVR serial, user, password and the app settings, plus two QR codes (all of it,
-// and the serial alone, which DMSS can scan to add the recorder).
+// the NVR serial, user, password and the app settings, plus QR codes: all of it as
+// text, a camaras://config link that the Android app imports in one go (package
+// compartir), and the serial alone, which DMSS can scan to add the recorder.
 //
 //	cd mostrar && go run .            (macOS: the password comes from the Keychain)
 //	go run . -sin-clave               (everything but the password)
@@ -19,6 +20,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"compartir"
 
 	qrcode "github.com/skip2/go-qrcode"
 )
@@ -71,10 +74,22 @@ func main() {
 		}
 	}
 	fmt.Println()
-	fmt.Println("Para el otro telefono: en la app de camaras, Ajustes -> numero de serie y clave.")
+	fmt.Println("Para el otro telefono: escanea el \"QR para importar en la app\" con su camara (o en la app, Ajustes -> numero de serie y clave).")
 	fmt.Println("La calibracion de la panoramica no viaja: se hace de nuevo en ese telefono.")
 
 	qr("QR con todo (escanealo con la camara del otro telefono y copia los datos):", strings.Join(lines, "\n"))
+	if sn != "" {
+		c := compartir.FromFolder(dir, kv)
+		c.Serial, c.User = sn, user
+		if !*sinClave {
+			c.Pass = pass
+		}
+		if link, err := compartir.Encode(c); err == nil {
+			qr("QR para importar en la app (camara del telefono Android -> abrir con Camaras -> Importar):", link)
+		} else {
+			fmt.Println("QR para importar en la app:", err)
+		}
+	}
 	if sn != "" {
 		qr("QR con solo el numero de serie (DMSS: + -> Escanear):", sn)
 	}

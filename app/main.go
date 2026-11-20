@@ -8,7 +8,9 @@
 //   - drag a camera onto another: they swap places (saved in orden.txt);
 //   - big camera: wheel or +/- = smooth digital zoom, drag = move the picture;
 //     on a PTZ camera, drag = joystick;
-//   - each channel keeps one stream; a channel without video for 20 s restarts.
+//   - each channel keeps one stream; a channel without video for 20 s restarts;
+//   - C (or the phone remote's button): a QR code with the whole configuration,
+//     for the Android app, for 60 s (C or Esc hides it sooner).
 package main
 
 import (
@@ -111,6 +113,10 @@ type game struct {
 	remoteText string
 	remoteAt   time.Time
 	remoteQR   *ebiten.Image
+
+	// the configuration QR (share.go): only on request, hidden after shareFor
+	shareImg   *ebiten.Image
+	shareUntil time.Time
 }
 
 func (g *game) streamList() []*stream {
@@ -365,8 +371,13 @@ func (g *game) Update() error {
 			log.Printf("canal %d: HD %v", t.ch, on)
 		}
 	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyC) { // C: the configuration QR on / off
+		g.showShare(g.shareImg == nil)
+	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
-		if g.big != nil {
+		if g.shareImg != nil {
+			g.showShare(false)
+		} else if g.big != nil {
 			g.big = nil
 		} else if os.Getenv("NOQUIT") == "" {
 			return ebiten.Termination
@@ -577,6 +588,7 @@ func (g *game) Draw(screen *ebiten.Image) {
 	screen.Fill(color.Black)
 	if len(g.tiles) == 0 {
 		g.drawStatus(screen)
+		g.drawShare(screen)
 		return
 	}
 	g.layout()
@@ -597,6 +609,7 @@ func (g *game) Draw(screen *ebiten.Image) {
 		}
 	}
 	g.drawRemoteAddr(screen)
+	g.drawShare(screen)
 	g.maybeShot(screen)
 }
 
@@ -607,23 +620,8 @@ func (g *game) drawRemoteAddr(screen *ebiten.Image) {
 		g.remoteAt = time.Now()
 		if urls := g.remoteURLs(); len(urls) > 0 && urls[0] != g.remoteText {
 			g.remoteText = urls[0]
-			if q, err := qrcode.New(urls[0], qrcode.Medium); err == nil {
-				q.DisableBorder = true
-				// one pixel per module; drawn at a whole-number scale with no smoothing,
-				// so every module is a sharp square on the real screen pixels
-				bm := q.Bitmap()
-				n := len(bm)
-				img := image.NewRGBA(image.Rect(0, 0, n, n))
-				for yy := 0; yy < n; yy++ {
-					for xx := 0; xx < n; xx++ {
-						c := color.RGBA{0xff, 0xff, 0xff, 0xff}
-						if bm[yy][xx] {
-							c = color.RGBA{0, 0, 0, 0xff}
-						}
-						img.SetRGBA(xx, yy, c)
-					}
-				}
-				g.remoteQR = ebiten.NewImageFromImage(img)
+			if img := qrImage(urls[0], qrcode.Medium); img != nil {
+				g.remoteQR = img
 			}
 		}
 	}
@@ -633,15 +631,8 @@ func (g *game) drawRemoteAddr(screen *ebiten.Image) {
 		if k < 1 {
 			k = 1
 		}
-		qs := n * k
-		qz := 2 * k // white quiet zone (2 modules)
-		x, y := g.px(6), g.sh-g.px(6)-qs-2*qz
-		vector.DrawFilledRect(screen, float32(x), float32(y), float32(qs+2*qz), float32(qs+2*qz), color.White, false)
-		op := &ebiten.DrawImageOptions{}
-		op.GeoM.Scale(float64(k), float64(k))
-		op.GeoM.Translate(float64(x+qz), float64(y+qz))
-		op.Filter = ebiten.FilterNearest
-		screen.DrawImage(g.remoteQR, op)
+		qs := n*k + 4*k // with its quiet zone
+		drawQR(screen, g.remoteQR, k, g.px(6), g.sh-g.px(6)-qs)
 	}
 	if g.remoteText != "" {
 		fs := g.px(19)
@@ -651,6 +642,43 @@ func (g *game) drawRemoteAddr(screen *ebiten.Image) {
 		vector.DrawFilledRect(screen, float32(x), float32(y), float32(w+2*pad), float32(fs+2*pad), color.RGBA{0x20, 0x20, 0x20, 0xc0}, false)
 		drawText(screen, g.remoteText, x+pad, y+pad-fs/10, fs, false, color.RGBA{0xe8, 0xe8, 0xe8, 0xff})
 	}
+}
+
+// qrImage makes a QR code with one pixel per module (no border); drawQR shows it at
+// a whole-number scale with no smoothing, so every module is a sharp square on the
+// real screen pixels.
+func qrImage(text string, level qrcode.RecoveryLevel) *ebiten.Image {
+	q, err := qrcode.New(text, level)
+	if err != nil {
+		return nil
+	}
+	q.DisableBorder = true
+	bm := q.Bitmap()
+	n := len(bm)
+	img := image.NewRGBA(image.Rect(0, 0, n, n))
+	for yy := 0; yy < n; yy++ {
+		for xx := 0; xx < n; xx++ {
+			c := color.RGBA{0xff, 0xff, 0xff, 0xff}
+			if bm[yy][xx] {
+				c = color.RGBA{0, 0, 0, 0xff}
+			}
+			img.SetRGBA(xx, yy, c)
+		}
+	}
+	return ebiten.NewImageFromImage(img)
+}
+
+// drawQR draws a qrImage with k screen pixels per module and a white quiet zone of
+// 2 modules, its top left corner at (x, y).
+func drawQR(screen, qr *ebiten.Image, k, x, y int) {
+	qs := qr.Bounds().Dx() * k
+	qz := 2 * k
+	vector.DrawFilledRect(screen, float32(x), float32(y), float32(qs+2*qz), float32(qs+2*qz), color.White, false)
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Scale(float64(k), float64(k))
+	op.GeoM.Translate(float64(x+qz), float64(y+qz))
+	op.Filter = ebiten.FilterNearest
+	screen.DrawImage(qr, op)
 }
 
 // drawStatus shows the connection state in big letters (no cameras yet).
@@ -867,7 +895,7 @@ func main() {
 	// data (Go's default is 100%), so all-HD gets what it needs and low quality stays
 	// small, without a fixed number
 	debug.SetGCPercent(50)
-	g := &game{cfg: cfg, user: user, pass: pass}
+	g := &game{cfg: cfg, user: user, pass: pass, serial: serial}
 	g.ptz = &ptzCtl{g: g}
 	go func() {
 		if g.pass == "" {

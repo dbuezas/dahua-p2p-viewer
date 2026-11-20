@@ -3,7 +3,9 @@ package ar.camaras.app;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -15,14 +17,17 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.view.Gravity;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
@@ -39,6 +44,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 
@@ -91,8 +97,23 @@ public class MainActivity extends Activity {
             try { prefs.edit().putString("pass", Secret.seal(given)).apply(); } catch (Exception e) { status = "No pude guardar la clave: " + e; }
             getIntent().removeExtra("clave");
         }
+        String link = importLink(getIntent());
+        if (link != null) {
+            setIntent(new Intent());
+            askImport(link, true);
+        } else start();
+    }
+
+    private void start() {
         if (prefs.getString("serial", "").isEmpty() || prefs.getString("pass", "").isEmpty()) askSettings("Datos del grabador");
         else connect();
+    }
+
+    // the app is already open (singleTask) and the camera opened a configuration QR
+    @Override protected void onNewIntent(Intent i) {
+        super.onNewIntent(i);
+        String link = importLink(i);
+        if (link != null) askImport(link, false);
     }
 
     private void hideBars() {
@@ -102,7 +123,10 @@ public class MainActivity extends Activity {
     }
 
     // ---- settings (the camaras.ini of the TV app) ----
-    private void askSettings(String title) {
+    private void askSettings(String title) { askSettings(title, false); }
+
+    /** canShare: also offer "Compartir" (the configuration QR), from the long press only. */
+    private void askSettings(String title, boolean canShare) {
         LinearLayout l = new LinearLayout(this);
         l.setOrientation(LinearLayout.VERTICAL);
         l.setPadding(40, 20, 40, 0);
@@ -112,21 +136,23 @@ public class MainActivity extends Activity {
         EditText ptz = field(l, "Cámaras con PTZ (ej. 2.2)", prefs.getString("ptz", "2.2"), false);
         EditText vel = field(l, "Velocidad del PTZ (%)", String.valueOf(prefs.getInt("ptz_velocidad", 10)), false);
         EditText div = field(l, "Canales con dos cámaras (ej. 2)", prefs.getString("dividir", "2"), false);
-        new AlertDialog.Builder(this).setTitle(title).setView(l).setCancelable(false)
-                .setPositiveButton("Guardar", (d, w) -> {
-                    SharedPreferences.Editor e = prefs.edit()
-                            .putString("serial", sn.getText().toString().trim())
-                            .putString("user", user.getText().toString().trim())
-                            .putString("ptz", ptz.getText().toString().trim())
-                            .putString("dividir", div.getText().toString().trim());
-                    try { e.putInt("ptz_velocidad", Integer.parseInt(vel.getText().toString().trim())); } catch (Exception ignored) { }
-                    String p = pass.getText().toString();
-                    if (!p.isEmpty()) {
-                        try { e.putString("pass", Secret.seal(p)); } catch (Exception ex) { status = "No pude guardar la clave: " + ex; }
-                    }
-                    e.apply();
-                    reconnect();
-                }).show();
+        AlertDialog.Builder dlg = new AlertDialog.Builder(this).setTitle(title).setView(l).setCancelable(false);
+        if (canShare && !prefs.getString("serial", "").isEmpty())
+            dlg.setNeutralButton("Compartir configuración", (d, w) -> showShare());
+        dlg.setPositiveButton("Guardar", (d, w) -> {
+            SharedPreferences.Editor e = prefs.edit()
+                    .putString("serial", sn.getText().toString().trim())
+                    .putString("user", user.getText().toString().trim())
+                    .putString("ptz", ptz.getText().toString().trim())
+                    .putString("dividir", div.getText().toString().trim());
+            try { e.putInt("ptz_velocidad", Integer.parseInt(vel.getText().toString().trim())); } catch (Exception ignored) { }
+            String p = pass.getText().toString();
+            if (!p.isEmpty()) {
+                try { e.putString("pass", Secret.seal(p)); } catch (Exception ex) { status = "No pude guardar la clave: " + ex; }
+            }
+            e.apply();
+            reconnect();
+        }).show();
     }
 
     private EditText field(LinearLayout l, String hint, String val, boolean secret) {
@@ -151,6 +177,8 @@ public class MainActivity extends Activity {
         setStatus("Conectando con el grabador...");
         new Thread(() -> {
             long wait = 2000;
+            String clouds = prefs.getString("servidores", "");
+            if (!clouds.isEmpty()) Camaras.setClouds(clouds);
             for (int attempt = 1; ; attempt++) {
                 try {
                     Session s = Camaras.connect(prefs.getString("serial", ""), prefs.getString("user", "admin"),
@@ -389,7 +417,7 @@ public class MainActivity extends Activity {
                 }
                 @Override public void onLongPress(MotionEvent e) {
                     int i = tileAt(e.getX(), e.getY());
-                    if (i < 0) { askSettings("Ajustes"); return; }
+                    if (i < 0) { askSettings("Ajustes", true); return; }
                     menu(tiles.get(i));
                 }
                 @Override public boolean onScroll(MotionEvent e1, MotionEvent e2, float dx, float dy) {
@@ -524,6 +552,7 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if (shareView != null) { closeShare(); return; }
         if (calView != null) { closeCalib(); return; }
         if (renderer.big >= 0) { renderer.big = -1; renderer.zoom = 1; relayout(); return; }
         super.onBackPressed();
@@ -555,5 +584,173 @@ public class MainActivity extends Activity {
                 calibrate(ch);
             }
         }).show();
+    }
+
+    // ---- the configuration QR (camaras://config?v=1&d=..., the Go core's compartir) ----
+    // It holds the NVR password: it is only shown when asked for, never logged.
+
+    // the settings this app knows; the other camaras.ini keys are kept as they came
+    private static final String[] KNOWN = {"ptz", "dividir", "ptz_velocidad", "ptz_invertir_pan", "servidores"};
+
+    private static String importLink(Intent i) {
+        if (i == null || !Intent.ACTION_VIEW.equals(i.getAction()) || i.getData() == null) return null;
+        return "camaras".equalsIgnoreCase(i.getData().getScheme()) ? i.getData().toString() : null;
+    }
+
+    /** Shows what the link holds and imports it on "Importar"; starting: the app was opened by the link. */
+    private void askImport(String link, boolean starting) {
+        String js, summary;
+        try {
+            js = Camaras.configFromURI(link);
+            summary = Camaras.configSummary(link);
+        } catch (Exception e) {
+            new AlertDialog.Builder(this).setTitle("No pude leer la configuración").setMessage(String.valueOf(e.getMessage()))
+                    .setCancelable(false).setPositiveButton("OK", (d, w) -> { if (starting) start(); }).show();
+            return;
+        }
+        new AlertDialog.Builder(this).setTitle("¿Importar esta configuración?")
+                .setMessage(summary + "\nReemplaza la de este teléfono. La calibración de la panorámica no viene: se hace aquí.")
+                .setCancelable(false)
+                .setPositiveButton("Importar", (d, w) -> {
+                    String err = importConfig(js);
+                    if (err == null) { reconnect(); return; }
+                    new AlertDialog.Builder(this).setTitle("No pude importar").setMessage(err).setCancelable(false)
+                            .setPositiveButton("OK", (d2, w2) -> { if (starting) start(); }).show();
+                })
+                .setNegativeButton("Cancelar", (d, w) -> { if (starting) start(); })
+                .show();
+    }
+
+    /** Stores the configuration like the settings screen does; null when it went well. */
+    private String importConfig(String js) {
+        try {
+            JSONObject o = new JSONObject(js);
+            SharedPreferences.Editor e = prefs.edit();
+            e.putString("serial", o.getString("sn").trim());
+            String user = o.optString("u", "").trim();
+            e.putString("user", user.isEmpty() ? "admin" : user);
+            String p = o.optString("p", "");
+            if (!p.isEmpty()) e.putString("pass", Secret.seal(p)); // empty: keep the stored one
+            JSONObject ini = o.optJSONObject("ini");
+            if (ini == null) ini = new JSONObject();
+            // a setting that did not come gets this app's default
+            if (ini.has("ptz")) e.putString("ptz", ini.optString("ptz").trim()); else e.remove("ptz");
+            if (ini.has("dividir")) e.putString("dividir", ini.optString("dividir").trim()); else e.remove("dividir");
+            e.remove("ptz_velocidad");
+            try { if (ini.has("ptz_velocidad")) e.putInt("ptz_velocidad", Integer.parseInt(ini.optString("ptz_velocidad").trim())); } catch (Exception ignored) { }
+            if (ini.has("ptz_invertir_pan")) e.putBoolean("ptz_invertir_pan", "1".equals(ini.optString("ptz_invertir_pan").trim()));
+            else e.remove("ptz_invertir_pan");
+            e.putString("servidores", ini.optString("servidores", "").trim());
+            JSONObject extra = new JSONObject();
+            for (Iterator<String> it = ini.keys(); it.hasNext(); ) {
+                String k = it.next();
+                if (!java.util.Arrays.asList(KNOWN).contains(k)) extra.put(k, ini.optString(k));
+            }
+            e.putString("ini_extra", extra.toString());
+            e.putString("hd", o.optString("hd", ""));
+            e.putString("orden", o.optString("orden", ""));
+            // the TV app keeps the panorama per channel; this app has one switch: on if any is on
+            JSONObject pano = o.optJSONObject("pano");
+            if (pano != null && pano.length() > 0) {
+                boolean on = false;
+                for (Iterator<String> it = pano.keys(); it.hasNext(); ) if (pano.optInt(it.next()) == 3) on = true;
+                e.putBoolean("pano", on);
+            }
+            e.apply();
+            return null;
+        } catch (Exception ex) {
+            return String.valueOf(ex.getMessage());
+        }
+    }
+
+    /** This phone's configuration, as the Go core's compartir.Config JSON. */
+    private JSONObject myConfig() throws Exception {
+        JSONObject o = new JSONObject();
+        o.put("sn", prefs.getString("serial", ""));
+        o.put("u", prefs.getString("user", "admin"));
+        o.put("p", Secret.open(prefs.getString("pass", "")));
+        JSONObject ini;
+        try { ini = new JSONObject(prefs.getString("ini_extra", "{}")); } catch (Exception e) { ini = new JSONObject(); }
+        ini.put("ptz", prefs.getString("ptz", "2.2"));
+        ini.put("dividir", prefs.getString("dividir", "2"));
+        ini.put("ptz_velocidad", String.valueOf(prefs.getInt("ptz_velocidad", 10)));
+        ini.put("ptz_invertir_pan", prefs.getBoolean("ptz_invertir_pan", true) ? "1" : "0");
+        String clouds = prefs.getString("servidores", "");
+        if (!clouds.isEmpty()) ini.put("servidores", clouds);
+        o.put("ini", ini);
+        if (!prefs.getString("hd", "").isEmpty()) o.put("hd", prefs.getString("hd", ""));
+        if (!prefs.getString("orden", "").isEmpty()) o.put("orden", prefs.getString("orden", ""));
+        JSONObject pano = new JSONObject();
+        for (int ch : splitSet()) pano.put(String.valueOf(ch), panoOn() ? 3 : 0);
+        if (pano.length() > 0) o.put("pano", pano);
+        return o;
+    }
+
+    private View shareView;
+
+    /** The configuration QR, full screen, until "Cerrar" (or back, or leaving the app). */
+    private void showShare() {
+        Bitmap qr;
+        try {
+            byte[] m = Camaras.qrModules(Camaras.configURI(myConfig().toString()));
+            int n = (int) Math.round(Math.sqrt(m.length)), q = n + 4; // with a quiet zone of 2 modules
+            int[] px = new int[q * q];
+            java.util.Arrays.fill(px, Color.WHITE);
+            for (int y = 0; y < n; y++) for (int x = 0; x < n; x++) if (m[y * n + x] != 0) px[(y + 2) * q + x + 2] = Color.BLACK;
+            qr = Bitmap.createBitmap(px, q, q, Bitmap.Config.ARGB_8888);
+        } catch (Exception e) {
+            new AlertDialog.Builder(this).setTitle("No pude hacer el QR").setMessage(String.valueOf(e.getMessage()))
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        closeShare();
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setBackgroundColor(Color.WHITE);
+        l.setPadding(40, 60, 40, 40);
+        l.setClickable(true); // the cameras below get no touches
+        TextView t = new TextView(this);
+        t.setText("Configuración de las cámaras");
+        t.setTextColor(Color.BLACK);
+        t.setTextSize(22);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setGravity(Gravity.CENTER);
+        l.addView(t);
+        TextView t2 = new TextView(this);
+        t2.setText("Escanealo con la cámara del otro teléfono (con esta app instalada).\nIncluye la clave del grabador: no lo muestres a nadie más.");
+        t2.setTextColor(Color.DKGRAY);
+        t2.setTextSize(15);
+        t2.setGravity(Gravity.CENTER);
+        l.addView(t2);
+        View code = new View(this) {
+            final Paint p = new Paint();
+            { p.setFilterBitmap(false); p.setAntiAlias(false); }
+            @Override protected void onDraw(Canvas c) {
+                int q = qr.getWidth(), k = Math.max(1, Math.min(getWidth(), getHeight()) / q), s = q * k; // whole pixels per module: sharp
+                int x = (getWidth() - s) / 2, y = (getHeight() - s) / 2;
+                c.drawBitmap(qr, null, new android.graphics.Rect(x, y, x + s, y + s), p);
+            }
+        };
+        l.addView(code, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        Button close = new Button(this);
+        close.setText("Cerrar");
+        close.setOnClickListener(v -> closeShare());
+        l.addView(close);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE); // no screenshots, blank in the recent apps list
+        ((FrameLayout) gl.getParent()).addView(l);
+        shareView = l;
+    }
+
+    private void closeShare() {
+        if (shareView == null) return;
+        ((FrameLayout) gl.getParent()).removeView(shareView);
+        shareView = null;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        hideBars();
+    }
+
+    @Override protected void onStop() {
+        closeShare(); // the password does not stay on screen when the app is left
+        super.onStop();
     }
 }
