@@ -1,0 +1,81 @@
+--- a/src/gallium/drivers/nouveau/nouveau_fence.c
++++ b/src/gallium/drivers/nouveau/nouveau_fence.c
+@@ -40,10 +40,20 @@
+    if (!*fence)
+       return false;
+ 
+-   int ret = nouveau_bo_new(nv->screen->device, NOUVEAU_BO_GART, 0x1000, 0x1000, NULL, &(*fence)->bo);
+-   if (ret) {
+-      FREE(*fence);
+-      return false;
++   /* A fence bo of a deleted fence if there is one: a new bo is mapped into the
++    * GPU VM (and unmapped when freed), which on NV50 GPUs is a TLB flush that
++    * busy-waits for the graphics engine, for every flush. */
++   struct nouveau_fence_list *fl = &nv->screen->fence;
++   simple_mtx_lock(&fl->bo_lock);
++   if (fl->n_free_bo)
++      (*fence)->bo = fl->free_bo[--fl->n_free_bo];
++   simple_mtx_unlock(&fl->bo_lock);
++   if (!(*fence)->bo) {
++      int ret = nouveau_bo_new(nv->screen->device, NOUVEAU_BO_GART, 0x1000, 0x1000, NULL, &(*fence)->bo);
++      if (ret) {
++         FREE(*fence);
++         return false;
++      }
+    }
+ 
+    (*fence)->screen = nv->screen;
+@@ -125,11 +135,24 @@
+       nouveau_fence_trigger_work(fence);
+    }
+ 
++   simple_mtx_lock(&fence_list->bo_lock);
++   if (fence->bo && fence_list->n_free_bo < ARRAY_SIZE(fence_list->free_bo)) {
++      fence_list->free_bo[fence_list->n_free_bo++] = fence->bo; /* keeps the reference */
++      fence->bo = NULL;
++   }
++   simple_mtx_unlock(&fence_list->bo_lock);
+    nouveau_bo_ref(NULL, &fence->bo);
+    FREE(fence);
+ }
+ 
+ void
++nouveau_fence_list_free_bos(struct nouveau_fence_list *fence_list)
++{
++   while (fence_list->n_free_bo)
++      nouveau_bo_ref(NULL, &fence_list->free_bo[--fence_list->n_free_bo]);
++}
++
++void
+ nouveau_fence_cleanup(struct nouveau_context *nv)
+ {
+    if (nv->fence) {
+--- a/src/gallium/drivers/nouveau/nouveau_fence.h
++++ b/src/gallium/drivers/nouveau/nouveau_fence.h
+@@ -40,17 +40,26 @@
+    simple_mtx_t lock;
+    void (*emit)(struct pipe_context *, uint32_t *sequence, struct nouveau_bo *wait);
+    uint32_t (*update)(struct pipe_screen *);
++   /* fence bos of deleted fences, reused by new fences (see nouveau_fence_new) */
++   simple_mtx_t bo_lock;
++   struct nouveau_bo *free_bo[16];
++   unsigned n_free_bo;
+ };
+ 
+ static inline void
+ nouveau_fence_list_init(struct nouveau_fence_list *fence_list)
+ {
+    simple_mtx_init(&fence_list->lock, mtx_plain);
++   simple_mtx_init(&fence_list->bo_lock, mtx_plain);
+ }
+ 
++void nouveau_fence_list_free_bos(struct nouveau_fence_list *fence_list);
++
+ static inline void
+ nouveau_fence_list_destroy(struct nouveau_fence_list *fence_list)
+ {
++   nouveau_fence_list_free_bos(fence_list);
++   simple_mtx_destroy(&fence_list->bo_lock);
+    simple_mtx_destroy(&fence_list->lock);
+ }
+ 

@@ -119,3 +119,10 @@ desktop builds. The APK is debug-signed.
 The first version of the tunnel was a port of
 [khoanguyen-3fc/dh-p2p](https://github.com/khoanguyen-3fc/dh-p2p), which worked out the Dahua P2P
 handshake. The rest of the protocol (direct path, PTCP details) comes from the Dahua DLLs.
+
+## Linux on old NVIDIA GPUs (nouveau, GeForce 8/9/200/300)
+
+Mesa's nouveau driver made a new GPU buffer for every fence (every flush); on NV50-family GPUs
+each one costs a TLB flush that busy-waits for the GPU, about 30% of the app's CPU on a GT 230M.
+`linux/mesa/` has a small patch (recycle the fence buffers) and `build.sh`, which builds the
+distro's Mesa with it into `/opt/mesa-nv50` for this app only.
