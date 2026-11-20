@@ -85,6 +85,14 @@ cd ../android && ./gradlew assembleDebug
 The app asks for the serial and password in its settings. For a debug build,
 `android/poner_clave.sh` copies the password from the Mac's Keychain to the phone over adb.
 
+## Releases
+
+Ready-made builds for all platforms are on the
+[Releases](https://github.com/dbuezas/dahua-p2p-viewer/releases) page. They are built by
+`.github/workflows/release.yml` when I push a tag like `v1.2.3` (a manual run of the workflow
+only keeps them as workflow artifacts). ffmpeg is not included: install it separately for the
+desktop builds. The APK is debug-signed.
+
 ## Credits
 
 The first version of the tunnel was a port of

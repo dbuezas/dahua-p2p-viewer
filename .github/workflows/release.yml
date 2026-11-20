@@ -1,0 +1,141 @@
+# Builds the app for every platform. A pushed tag like v1.2.3 makes a GitHub Release with the
+# binaries; a manual run (workflow_dispatch) only keeps them as workflow artifacts.
+name: Build and release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: "**/go.sum"
+      - name: Build
+        working-directory: app
+        env: { CGO_ENABLED: "0", GOOS: windows, GOARCH: amd64 }
+        run: go build -trimpath -ldflags "-H=windowsgui" -o ../dist/camaras-windows.exe .
+      - uses: actions/upload-artifact@v4
+        with: { name: camaras-windows.exe, path: dist/camaras-windows.exe, if-no-files-found: error }
+
+  win7:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.20.14"
+          cache-dependency-path: "win7/**/go.sum"
+      - name: Build
+        run: |
+          # win7/build.sh calls go1.20.14; here it is the Go that setup-go installed.
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -s "$(command -v go)" "$RUNNER_TEMP/bin/go1.20.14"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          TMPDIR="$RUNNER_TEMP" win7/build.sh
+          mkdir -p dist && mv camaras-ui.exe dist/camaras-win7.exe
+      - uses: actions/upload-artifact@v4
+        with: { name: camaras-win7.exe, path: dist/camaras-win7.exe, if-no-files-found: error }
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: "**/go.sum"
+      - name: Install X11/GL headers (Ebiten)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc pkg-config libgl1-mesa-dev libx11-dev \
+            libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libxxf86vm-dev libasound2-dev
+      - name: Build
+        env: { CGO_ENABLED: "1" }
+        run: go build -trimpath -o dist/camaras-linux-amd64 ./app
+      - uses: actions/upload-artifact@v4
+        with: { name: camaras-linux-amd64, path: dist/camaras-linux-amd64, if-no-files-found: error }
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: "**/go.sum"
+      - name: Build Camaras.app (universal arm64 + amd64)
+        run: |
+          ARCHS="arm64 amd64" mac/make_app.sh "$RUNNER_TEMP/out"
+          codesign --force --deep -s - "$RUNNER_TEMP/out/Camaras.app"
+          mkdir -p dist
+          ditto -c -k --keepParent "$RUNNER_TEMP/out/Camaras.app" dist/Camaras-macos.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: Camaras-macos.zip, path: dist/Camaras-macos.zip, if-no-files-found: error }
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: "**/go.sum"
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - name: gomobile bind
+        working-directory: mobile
+        run: |
+          # Same golang.org/x/mobile version as mobile/go.mod.
+          v=$(go list -m -f '{{.Version}}' golang.org/x/mobile)
+          go install golang.org/x/mobile/cmd/gomobile@$v golang.org/x/mobile/cmd/gobind@$v
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          gomobile bind -target=android/arm64,android/amd64 -androidapi 24 -javapkg ar.camaras -o ../android/camaras.aar .
+      - name: Gradle assembleDebug
+        working-directory: android
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          ./gradlew --no-daemon assembleDebug
+          mkdir -p ../dist && cp app/build/outputs/apk/debug/app-debug.apk ../dist/camaras-android.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: camaras-android.apk, path: dist/camaras-android.apk, if-no-files-found: error }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, win7, linux, macos, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<'EOF'
+          | File | For |
+          |---|---|
+          | `camaras-windows.exe` | Windows 10/11 (64-bit) |
+          | `camaras-win7.exe` | Windows 7 (64-bit) |
+          | `camaras-linux-amd64` | Linux x86-64 (X11/OpenGL; run `chmod +x` first) |
+          | `Camaras-macos.zip` | macOS 11+ (Apple Silicon and Intel); not notarized: the first time, right-click the app and choose Open |
+          | `camaras-android.apk` | Android 7+ (arm64, x86-64) |
+
+          **ffmpeg is not included.** The desktop builds need ffmpeg installed separately: on the PATH
+          (on Windows, `ffmpeg.exe` next to the exe also works; on macOS, `brew install ffmpeg`).
+          The Android app does not need it.
+
+          The APK is a debug build, signed with a debug key: Android asks to allow installs from
+          unknown sources, and it will not update over an APK signed with another key.
+          EOF
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file notes.md
