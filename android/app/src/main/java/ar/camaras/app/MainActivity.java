@@ -525,8 +525,8 @@ public class MainActivity extends Activity {
                 return false;
             }
             @Override public void onPageFinished(android.webkit.WebView v, String u) {
-                // open the calibration right away (the page's "Calibrar" button)
-                ui.postDelayed(() -> v.evaluateJavascript("document.getElementById('calbtn').click()", null), 1500);
+                // open the calibration right away (what the page's "Calibrar" button does)
+                ui.postDelayed(() -> v.evaluateJavascript("calOpen()", null), 1500);
             }
         });
         ((FrameLayout) gl.getParent()).addView(wv);

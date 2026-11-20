@@ -13,14 +13,13 @@ button:disabled{opacity:.35}
 .cam.wide{grid-column:1/-1}.cam.wide img{aspect-ratio:16/5;object-fit:contain}
 #ghost{position:fixed;width:140px;pointer-events:none;opacity:.8;border-radius:6px;display:none;z-index:9}
 p.tip{color:#888;font-size:13px;margin:0 10px}
-.row{display:flex;justify-content:space-between;align-items:center;padding:6px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:6px;gap:6px}.row .btns{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
-#pano button.on{background:#fc0;color:#000;font-weight:bold}
 #ptz{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;display:none;align-items:center;justify-content:center;gap:24px;padding:10px}
 #pad{width:170px;height:170px;border-radius:50%;background:#222;border:2px solid #555;position:relative;touch-action:none}
 #knob{width:60px;height:60px;border-radius:50%;background:#fc0;position:absolute;left:55px;top:55px;pointer-events:none}
 #share{padding:0 10px 20px}#share button.on{background:#fc0;color:#000;font-weight:bold}
-body.off #grid,body.off #ptz,body.off #pano,body.off #share,body.off header button{opacity:.3;pointer-events:none;filter:grayscale(1)}
+body.off #grid,body.off #ptz,body.off #share,body.off header button{opacity:.3;pointer-events:none;filter:grayscale(1)}
 #off{display:none;position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);z-index:30;background:#000c;color:#fc0;padding:18px 26px;border-radius:12px;font-size:18px;font-weight:bold;pointer-events:none}
 body.off #off{display:block}
 #zoom{display:flex;flex-direction:column;gap:14px}#zoom button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;width:64px;height:64px;font-size:28px;touch-action:none}
@@ -39,7 +38,7 @@ body.off #off{display:block}
 <p class=tip id=msg style='color:#fc0'></p>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=grid></div><img id=ghost>
-<div id=pano style='display:none;padding:0 10px 14px'>Camaras 3 y 4 juntas: <button data-pano=0>No</button> <button data-pano=3>Si</button> <button id=calbtn>Calibrar</button><p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4, linea blanca = costura.</p></div>
+<p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4, linea blanca = costura.</p>
 <div id=share><button id=sharebtn>Mostrar en la tele el QR de configuracion</button>
 <p class=tip style='margin:4px 0 0'>Para copiar todo (serie, usuario, clave y ajustes) a la app de otro telefono: escanealo con su camara. Incluye la clave; se oculta solo en 60 s.</p></div>
 <script>
@@ -64,12 +63,18 @@ function cmd(c){queue=queue.filter(function(q){return q.split(' ')[0]+q.split(' 
 setInterval(function(){if(ws&&ws.readyState==1&&Date.now()-lastMsg>6000)ws.close()},1000);
 function draw(s){st=s;var g=document.getElementById('grid');
  while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
-  d.innerHTML='<img data-i='+i+'><div class=row><span>Camara '+(i+1)+'</span><button class=hd data-hd='+i+'>HD</button></div>';g.appendChild(d)}
+  d.innerHTML='<img data-i='+i+'><div class=row></div>';g.appendChild(d)}
  while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
- s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);d.querySelector('.hd').classList.toggle('on',c.hd);
+ s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);
   d.classList.toggle('wide',/\.3$/.test(c.k))});
- var pb=document.getElementById('pano');pb.style.display=s.split?'':'none';
- [].forEach.call(pb.querySelectorAll('button'),function(b){b.classList.toggle('on',+b.dataset.pano==(+s.pano||0))});
+ // each card: its number, HD, and for the two-lens camera: Panoramica (halves) or Separar + Calibrar (joined)
+ s.cams.forEach(function(c,i){var d=g.children[i],kind=/\.3$/.test(c.k)?'pano':/\.[12]$/.test(c.k)?'half':'cam';
+  if(d.dataset.kind!=kind||d.dataset.n!=i){d.dataset.kind=kind;d.dataset.n=i;
+   var b='<span>'+(kind=='pano'?(i+1)+' + '+(i+2):i+1)+'</span><span class=btns>';
+   if(kind=='half')b+='<button data-pano=3>Panoramica</button>';
+   if(kind=='pano')b+='<button data-pano=0>Separar</button><button class=calbtn>Calibrar</button>';
+   d.querySelector('.row').innerHTML=b+'<button class=hd data-hd='+i+'>HD</button></span>'}
+  d.querySelector('.hd').classList.toggle('on',c.hd)});
  document.getElementById('msg').textContent=s.msg||'';
  var sb=document.getElementById('sharebtn');sb.classList.toggle('on',!!s.share);sb.textContent=s.share?'Ocultar el QR de la tele':'Mostrar en la tele el QR de configuracion';
  document.getElementById('gridtip').style.display=s.pano&&!s.msg?'':'none';
@@ -108,7 +113,7 @@ function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='no
   var x=st.cams[d.i];st.cams[d.i]=st.cams[j];st.cams[j]=x;draw(st);cmd('order '+st.cams.map(function(c){return c.k}).join(','))}}
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
 document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)return;
- if(b.id=='calbtn'){calOpen();return}
+ if(b.classList&&b.classList.contains('calbtn')){calOpen();return}
  if(b.id=='sharebtn'){st.share=!st.share;draw(st);cmd('compartir '+(st.share?1:0));return}
  if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==3&&!st.panoReady){calOpen();return}if(m==0&&!st.pano)return;st.pano=m;st.msg='';draw(st);cmd('pano '+m);return}
  if(b.dataset.all){setBig(-1);return}
