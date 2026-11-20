@@ -71,6 +71,9 @@ func (t *tile) units() int {
 }
 
 type game struct {
+	relayOnce sync.Once
+	relayAddr string // the RTSP auth relay (rtspauth.go), started once
+
 	closeOnce sync.Once // closeTunnel runs once
 
 	draws, drawGapMax atomic.Int64 // screen redraws and the longest pause between two (ns), for statsLog
@@ -857,6 +860,24 @@ func anyInput(cur image.Point, last *image.Point) bool {
 		inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) || inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonLeft) ||
 		inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight) || inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonRight) ||
 		inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonMiddle) || inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonMiddle)
+}
+
+// rtspRelay is the address ffmpeg connects to: the relay in front of the tunnel's
+// RTSP port that logs in for it.
+func (g *game) rtspRelay() string {
+	g.relayOnce.Do(func() {
+		addr, err := startRTSPRelay("127.0.0.1:1554", func() (string, string) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			return g.user, g.pass
+		})
+		if err != nil {
+			log.Printf("rtsp: no pude abrir el relevo: %v", err)
+			addr = "127.0.0.1:1554"
+		}
+		g.relayAddr = addr
+	})
+	return g.relayAddr
 }
 
 func main() {

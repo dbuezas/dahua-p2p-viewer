@@ -5,7 +5,6 @@ import (
 	"image"
 	"image/jpeg"
 	"log"
-	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -53,10 +52,10 @@ type stream struct {
 	tfr       time.Time
 }
 
-// rtspURL builds the stream address; it is never logged (it holds the password).
+// rtspURL builds the stream address: the local RTSP auth relay (rtspauth.go), so
+// the password is never on ffmpeg's command line.
 func (s *stream) rtspURL(sub int) string {
-	return fmt.Sprintf("rtsp://%s:%s@127.0.0.1:1554/cam/realmonitor?channel=%d&subtype=%d",
-		s.g.user, url.QueryEscape(s.g.pass), s.ch+1, sub)
+	return fmt.Sprintf("rtsp://%s/cam/realmonitor?channel=%d&subtype=%d", s.g.rtspRelay(), s.ch+1, sub)
 }
 
 func (s *stream) run() {
