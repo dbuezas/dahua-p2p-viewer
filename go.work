@@ -1,12 +1,13 @@
 go 1.27.3
 
 use (
-	./tunnel
+	./app
+	./calib
+	./mobile
+	./mostrar
 	./nvr
 	./nvrlib
-	./calib
+	./tunnel
 	./video
-	./app
-	./mobile
 	./web
 )
