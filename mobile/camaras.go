@@ -153,6 +153,9 @@ func (s *Session) PTZRelease() { s.joy.Release() }
 // Close ends the session (the NVR is told, like the old app does).
 func (s *Session) Close() {
 	s.StopCalib()
+	if s.c != nil {
+		s.c.Logout() // free the NVR login at once (through the tunnel, so first)
+	}
 	s.tn.Close()
 }
 

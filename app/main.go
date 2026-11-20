@@ -20,6 +20,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -28,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -67,6 +69,8 @@ func (t *tile) units() int {
 }
 
 type game struct {
+	closeOnce sync.Once // closeTunnel runs once
+
 	draws, drawGapMax atomic.Int64 // screen redraws and the longest pause between two (ns), for statsLog
 	lastDraw          time.Time    // only used inside Draw
 	drawnSize         image.Point  // screen size at the last real Draw
@@ -739,7 +743,9 @@ func (g *game) connectOnce(serial string) error {
 		tn.Close()
 		return err
 	}
+	g.mu.Lock()
 	g.tn = tn
+	g.mu.Unlock()
 	g.serial = serial
 	if err := tn.Forward("127.0.0.1", 1554, 554); err != nil {
 		tn.Close()
@@ -891,15 +897,44 @@ func main() {
 	if os.Getenv("WINDOWED") == "" {
 		ebiten.SetFullscreen(true)
 	}
+	// killed (a new version, the TV PC shutting down, Ctrl+C): say goodbye to the
+	// NVR first, like a normal close. The exit code stays "killed", so correr.sh
+	// on the TV PC opens the app again.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	go func() {
+		s := <-sig
+		log.Printf("senal %v: cierro la sesion con el grabador", s)
+		g.closeTunnel()
+		code := 1
+		if n, ok := s.(syscall.Signal); ok {
+			code = 128 + int(n)
+		}
+		os.Exit(code)
+	}()
 	if err := ebiten.RunGameWithOptions(g, &ebiten.RunGameOptions{GraphicsLibrary: graphicsLib}); err != nil && err != ebiten.Termination {
+		g.closeTunnel() // e.g. the screen went away: still say goodbye to the NVR
 		log.Fatal(err)
 	}
-	// close the P2P session cleanly (the NVR otherwise keeps it a while), then go
-	if g.tn != nil {
-		g.tn.Close()
-		time.Sleep(300 * time.Millisecond)
-	}
+	g.closeTunnel()
 	os.Exit(0) // do not wait for streams
+}
+
+// closeTunnel ends the P2P session cleanly, once: the NVR otherwise keeps the
+// dead session a while, and the next start has to wait or goes through the relay.
+func (g *game) closeTunnel() {
+	g.closeOnce.Do(func() {
+		g.mu.Lock()
+		tn, c := g.tn, g.client
+		g.mu.Unlock()
+		if c != nil {
+			c.Logout() // the login session first: it goes through the tunnel
+		}
+		if tn != nil {
+			tn.Close()
+			time.Sleep(300 * time.Millisecond)
+		}
+	})
 }
 
 func clamp(v, lo, hi float64) float64 {

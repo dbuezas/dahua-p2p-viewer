@@ -31,7 +31,10 @@ func New(baseHost, user, pass string) *Client {
 	return &Client{base: "http://" + baseHost, http: &http.Client{Timeout: 15 * time.Second}, user: user, pass: pass}
 }
 
-func md5hex(s string) string { h := md5.Sum([]byte(s)); return strings.ToUpper(hex.EncodeToString(h[:])) }
+func md5hex(s string) string {
+	h := md5.Sum([]byte(s))
+	return strings.ToUpper(hex.EncodeToString(h[:]))
+}
 
 // Dahua "Default" login hash: MD5(user:random:MD5(user:realm:password))
 func loginHash(user, pass, realm, random string) string {
@@ -142,6 +145,20 @@ func (c *Client) Login() error {
 		return fmt.Errorf("login rechazado: %v", m["error"])
 	}
 	return nil
+}
+
+// Logout ends the login session (global.logout), so the NVR frees it at once
+// instead of waiting for it to time out. One try, at most 1 s: it runs on exit.
+func (c *Client) Logout() {
+	if c.session == nil {
+		return
+	}
+	body, _ := json.Marshal(map[string]interface{}{"method": "global.logout", "params": nil, "id": c.id + 1, "session": c.session})
+	hc := &http.Client{Timeout: time.Second, Transport: c.http.Transport}
+	if resp, err := hc.Post(c.base+"/RPC2", "application/json", bytes.NewReader(body)); err == nil {
+		resp.Body.Close()
+	}
+	c.session = nil
 }
 
 // DeviceType returns the NVR model string, best-effort.
