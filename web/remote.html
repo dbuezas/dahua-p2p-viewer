@@ -255,7 +255,7 @@ if(IN_APP){calGo.textContent='Usar esta calibracion';var shareDiv=document.getEl
 // with AI (ia.js, on this phone's graphics card), part by part, nearest to where the person looks first, and sends
 // each part to the TV; the other pages get the parts from the TV. One finger moves the photo, two fingers zoom;
 // every page and the TV show the same view.
-var IA_TILE=384;
+var IA_TILE=384,IA_VER='span1'; // IA_VER: a new model gets a new name, so phones do not keep the old cached one
 var fotoOrig=document.getElementById('fotoorig'),foto=null,fotoW=null,fotoBox=document.getElementById('foto'),fotoCv=document.getElementById('fotocv'),fotoMsgEl=document.getElementById('fotomsg');
 var fotoClosed=0,fotoMine=0; // the photo this page closed (ignore it while the TV still says it is open); the one it asked for
 function fotoMsg(t,tv){fotoMsgEl.textContent=t;if(tv!=null)cmd('foto msg '+tv)}
@@ -301,7 +301,7 @@ function fotoState(s){var F=s.foto;
  F.parts.forEach(function(k,n){if(!f.have[k]&&!f.asked[k]){f.asked[k]=1;fotoGetPart(f,n,k)}});
  if(!f.working){if(f.working===undefined&&(f.id==fotoMine))fotoWork(f); // asked here: start at once
   else if(!F.work&&Date.now()-f.joined>3000&&F.parts.length<f.total)fotoWork(f)} // nobody working: take over
- if(!f.working)fotoMsg(F.parts.length<f.total?'Mejorando con IA en otro telefono: '+Math.round(100*F.parts.length/f.total)+'%':'Un dedo mueve, dos dedos agrandan.')}
+ if(!f.working&&!f.workEnded)fotoMsg(F.parts.length<f.total?'Mejorando con IA en otro telefono: '+Math.round(100*F.parts.length/f.total)+'%':'Un dedo mueve, dos dedos agrandan.')}
 async function fotoJoin(F){var f=foto={id:F.id,F:F,cx:F.cx,cy:F.cy,z:F.z,orig:false,have:{},asked:{},joined:Date.now(),ready:false,dead:false};
  fotoBox.style.display='block';fotoShowOrig(false);fotoMsg('Cargando la foto...');var cx=fotoCv.getContext('2d');
  try{var r=await fetch('/foto/orig?id='+F.id+'&t='+Date.now());if(!r.ok)throw Error('la tele ya no la tiene');
@@ -316,15 +316,16 @@ async function fotoGetPart(f,n,k){try{var r=await fetch('/foto/parte?id='+f.id+'
   var L=r.headers.get('X-Lugar').split(',').map(Number),bm=await createImageBitmap(await r.blob());if(f.dead||f.have[k])return;
   fotoCv.getContext('2d').drawImage(bm,L[0],L[1],L[2],L[3]);f.have[k]=1}catch(e){delete f.asked[k]}}
 // the AI precision: half precision (twice as fast on phones) when it gives the same picture here
-async function fotoPrec(wb,bm){try{var p=localStorage.getItem('iaPrec');if(p)return p}catch(e){}
+async function fotoPrec(wb,bm){try{var p=localStorage.getItem('iaPrec-'+IA_VER);if(p)return p}catch(e){}
  var c=document.createElement('canvas');c.width=48;c.height=32;c.getContext('2d').drawImage(bm,bm.width/2-24,bm.height/2-16,48,32,0,0,48,32);
  var a=await IA.upscale(c,wb,null,{tile:48,prec:'highp'}),b=await IA.upscale(c,wb,null,{tile:48,prec:'mediump'});
  var da=a.getContext('2d').getImageData(0,0,192,128).data,db=b.getContext('2d').getImageData(0,0,192,128).data,mx=0;
- for(var i=0;i<da.length;i++)mx=Math.max(mx,Math.abs(da[i]-db[i]));p=mx<=6?'mediump':'highp';try{localStorage.setItem('iaPrec',p)}catch(e){}return p}
+ for(var i=0;i<da.length;i++)mx=Math.max(mx,Math.abs(da[i]-db[i]));p=mx<=6?'mediump':'highp';try{localStorage.setItem('iaPrec-'+IA_VER,p)}catch(e){}return p}
 async function fotoWork(f){f.working=true;cmd('foto work');f.beat=setInterval(function(){cmd('foto work')},2000);
  var cx=fotoCv.getContext('2d'),W=f.w/4,H=f.h/4,s=f.F.s,t0=Date.now(),sending=Promise.resolve();
  try{fotoMsg('Preparando la IA...','Mejorando la foto con IA...');
-  if(!fotoW)fotoW=fetch('/ia.bin').then(function(r){if(!r.ok)throw Error('sin modelo');return r.arrayBuffer()});var wb=await fotoW;
+  if(!fotoW)fotoW=Promise.all([fetch('/ia.json').then(function(r){if(!r.ok)throw Error('sin modelo');return r.json()}),
+   fetch('/ia.bin?v='+IA_VER).then(function(r){if(!r.ok)throw Error('sin modelo');return r.arrayBuffer()})]).then(function(a){return {graph:a[0],weights:a[1]}});var wb=await fotoW;
   var prec=await fotoPrec(wb,f.bm);if(f.dead)return;
   await IA.upscale(f.bm,wb,function(fr,sec){var p=Math.round(fr*100),left=fr>0?Math.round(sec*(1-fr)/fr):0;
     fotoMsg('Mejorando con IA: '+p+'%'+(fr<1?' (faltan '+left+' s)':''),fr<1?'Mejorando la foto con IA: '+p+'%':'')},

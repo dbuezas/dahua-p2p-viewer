@@ -23,11 +23,15 @@ var Page []byte
 //go:embed calib.js
 var CalibJS []byte
 
-// IAJS runs Real-ESRGAN (realesr-general-x4v3, BSD-3, github.com/xinntao/Real-ESRGAN) on the phone's
-// graphics card; IAModel is its weights as float16, in layer order (see ia.js).
+// IAJS runs an upscaling model on the phone's graphics card ("Mejorar foto"): IAGraph is the model as a list of
+// convolutions, IAModel its weights as float16 (see ia.js). Today SPAN "4x Nomos8k span otf medium" by Helaman
+// (CC-BY-4.0, openmodeldb.info/models/4x-Nomos8k-span-otf-medium).
 //
 //go:embed ia.js
 var IAJS []byte
+
+//go:embed ia.json
+var IAGraph []byte
 
 //go:embed ia.bin
 var IAModel []byte

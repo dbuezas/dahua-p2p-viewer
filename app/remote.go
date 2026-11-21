@@ -62,10 +62,15 @@ func (g *game) startRemote() {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Write(web.IAJS)
 	})
-	mux.HandleFunc("/ia.bin", func(w http.ResponseWriter, r *http.Request) { // the AI model: it never changes
+	mux.HandleFunc("/ia.bin", func(w http.ResponseWriter, r *http.Request) { // the AI model (the page asks with ?v=)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Cache-Control", "max-age=31536000, immutable")
 		w.Write(web.IAModel)
+	})
+	mux.HandleFunc("/ia.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write(web.IAGraph)
 	})
 	mux.HandleFunc("/calibsnap", g.serveCalibSnap)
 	mux.HandleFunc("/calibprev", func(w http.ResponseWriter, r *http.Request) {
