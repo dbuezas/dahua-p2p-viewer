@@ -55,6 +55,8 @@ func (g *game) startRemote() {
 	mux.HandleFunc("/calib.js", g.serveCalibJS)
 	mux.HandleFunc("/foto", g.serveFoto)
 	mux.HandleFunc("/fotoparte", g.serveFotoParte)
+	mux.HandleFunc("/foto/orig", g.serveFotoOrig)
+	mux.HandleFunc("/foto/parte", g.serveFotoHecha)
 	mux.HandleFunc("/ia.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript")
 		w.Header().Set("Cache-Control", "no-store")
@@ -174,12 +176,10 @@ func (g *game) stateJSON() string {
 		PanoReady bool   `json:"panoReady"`
 		Msg       string `json:"msg"`
 		Share     bool   `json:"share"` // the configuration QR is on the TV
-		Foto      int    `json:"foto"`  // the id of the photo on the TV (foto.go), 0 = none
+		Foto      any    `json:"foto"`  // the photo on the TV (foto.go), null = none
 		Cams      []camJ `json:"cams"`
 	}{Big: -1, Msg: g.panoMsg, Share: g.shareImg != nil, Cams: []camJ{}}
-	if g.foto != nil {
-		st.Foto = g.foto.id
-	}
+	st.Foto = g.fotoStateJSON()
 	for i, t := range g.tiles {
 		if t == g.big {
 			st.Big = i

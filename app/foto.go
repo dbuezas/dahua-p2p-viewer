@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -21,6 +22,9 @@ import (
 // The TV shows the same photo full screen from the first moment (the plain picture, made big), and each part
 // replaces its place as it arrives. The phone moves and zooms the photo with the finger ("foto ver cx cy z")
 // and closes it ("foto 0"). The TV keeps at most fotoMax pixels on the long side (graphics card limit).
+// The photo belongs to the TV, not to one page: its state (id, view, finished parts) goes to every page, so a
+// page loaded again or another phone shows the same photo (GET /foto/orig, /foto/parte); a page that sees
+// nobody working ("foto work", every 2 s from the page doing the AI) does the parts still missing.
 // Nobody using it for fotoIdle closes it, so the TV never stays stuck on an old photo.
 
 const (
@@ -39,8 +43,17 @@ type foto struct {
 	cx, cy, z  float64 // view: the point in the middle of the screen (0..1) and the zoom (1 = the whole photo)
 	msg        string
 	parts      []fotoParte // waiting to be put in (on the drawing thread)
+	done       []fotoHecha // every finished part, for pages that come later
+	srcPNG     []byte
 	lastUse    time.Time
+	lastWork   time.Time // a page said it is doing the AI
 	needsStart bool
+}
+
+type fotoHecha struct {
+	ax, ay, aw, ah int // in AI pixels (4x the picture): the part's place for the pages
+	x, y           int // in the TV's photo pixels
+	jpg            []byte
 }
 
 type fotoParte struct {
@@ -48,7 +61,6 @@ type fotoParte struct {
 	img  *image.RGBA
 }
 
-var fotoSeq int
 
 // fotoOpen takes the picture of square i and shows it. The caller does not hold g.mu.
 func (g *game) fotoOpen(i int) *foto {
@@ -62,10 +74,12 @@ func (g *game) fotoOpen(i int) *foto {
 	if m := 4 * max(w, h); m > fotoMax {
 		sc = float64(fotoMax) / float64(m)
 	}
+	var buf bytes.Buffer // PNG: no loss (the AI would make JPEG blocks bigger)
+	(&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&buf, pic)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	fotoSeq++
-	f := &foto{id: fotoSeq, src: pic, scale: sc, cx: 0.5, cy: 0.5, z: 1, lastUse: time.Now(), needsStart: true,
+	// the id changes with every photo, also across restarts of the app (a page remembers which one it closed)
+	f := &foto{id: int(time.Now().UnixMilli() % 1e9), src: pic, srcPNG: buf.Bytes(), scale: sc, cx: 0.5, cy: 0.5, z: 1, lastUse: time.Now(), needsStart: true,
 		bw: int(float64(4*w) * sc), bh: int(float64(4*h) * sc), msg: "Mejorando la foto con IA..."}
 	g.foto = f
 	g.stateChanged()
@@ -86,6 +100,7 @@ func (g *game) fotoCommand(p []string) {
 	case "0":
 		g.fotoClose()
 	case "ver":
+		defer g.stateChanged() // the other pages follow the view
 		if len(p) >= 5 {
 			cx, e1 := strconv.ParseFloat(p[2], 64)
 			cy, e2 := strconv.ParseFloat(p[3], 64)
@@ -94,8 +109,12 @@ func (g *game) fotoCommand(p []string) {
 				f.cx, f.cy, f.z = clamp(cx, 0, 1), clamp(cy, 0, 1), clamp(z, 1, 16)
 			}
 		}
+	case "work":
+		f.lastWork = time.Now()
+		return
 	case "orig":
 		f.orig = len(p) > 2 && p[2] == "1"
+		g.stateChanged()
 	case "msg":
 		f.msg = ""
 		for _, s := range p[2:] {
@@ -104,6 +123,7 @@ func (g *game) fotoCommand(p []string) {
 			}
 			f.msg += s
 		}
+		g.stateChanged()
 	}
 	redraw()
 }
@@ -122,7 +142,7 @@ func (g *game) fotoClose() {
 	redraw()
 }
 
-// serveFoto: GET /foto?i=N takes the picture and answers it as PNG (no loss: the AI would make JPEG blocks bigger).
+// serveFoto: GET /foto?i=N takes the picture of square N and shows it; answers {"id":...}.
 func (g *game) serveFoto(w http.ResponseWriter, r *http.Request) {
 	i, _ := strconv.Atoi(r.URL.Query().Get("i"))
 	f := g.fotoOpen(i)
@@ -130,20 +150,74 @@ func (g *game) serveFoto(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sin imagen", http.StatusNotFound)
 		return
 	}
-	var buf bytes.Buffer
-	(&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&buf, f.src)
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Foto", strconv.Itoa(f.id))
-	w.Write(buf.Bytes())
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"id":` + strconv.Itoa(f.id) + `}`))
 }
 
-// serveFotoParte: POST /fotoparte?id=&x=&y= with a JPEG: a finished part, at (x, y) in the TV's photo pixels.
+// serveFotoOrig: GET /foto/orig?id= the picture as taken (PNG).
+func (g *game) serveFotoOrig(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.Atoi(r.URL.Query().Get("id"))
+	g.mu.Lock()
+	f := g.foto
+	g.mu.Unlock()
+	if f == nil || f.id != id {
+		http.Error(w, "foto cerrada", http.StatusGone)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(f.srcPNG)
+}
+
+// serveFotoHecha: GET /foto/parte?id=&n= finished part n (JPEG, the TV's size); X-Lugar: ax,ay,aw,ah.
+func (g *game) serveFotoHecha(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	id, _ := strconv.Atoi(q.Get("id"))
+	n, _ := strconv.Atoi(q.Get("n"))
+	g.mu.Lock()
+	f := g.foto
+	var h fotoHecha
+	ok := f != nil && f.id == id && n >= 0 && n < len(f.done)
+	if ok {
+		h = f.done[n]
+	}
+	g.mu.Unlock()
+	if !ok {
+		http.Error(w, "no hay", http.StatusGone)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Lugar", fmt.Sprintf("%d,%d,%d,%d", h.ax, h.ay, h.aw, h.ah))
+	w.Write(h.jpg)
+}
+
+// fotoStateJSON: the photo for the pages' state. The caller holds g.mu.
+func (g *game) fotoStateJSON() any {
+	f := g.foto
+	if f == nil {
+		return nil
+	}
+	parts := make([]string, len(f.done))
+	for i, h := range f.done {
+		parts[i] = fmt.Sprintf("%d,%d", h.ax, h.ay)
+	}
+	return map[string]any{"id": f.id, "w": f.src.Bounds().Dx(), "h": f.src.Bounds().Dy(), "s": f.scale,
+		"cx": f.cx, "cy": f.cy, "z": f.z, "orig": f.orig, "msg": f.msg, "parts": parts,
+		"work": time.Since(f.lastWork) < 5*time.Second}
+}
+
+// serveFotoParte: POST /fotoparte?id=&x=&y=&ax=&ay=&aw=&ah= with a JPEG: a finished part, at (x, y) in the TV's
+// photo pixels and (ax, ay, aw, ah) in AI pixels.
 func (g *game) serveFotoParte(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	id, _ := strconv.Atoi(q.Get("id"))
 	x, _ := strconv.Atoi(q.Get("x"))
 	y, _ := strconv.Atoi(q.Get("y"))
+	var a [4]int
+	for i, k := range []string{"ax", "ay", "aw", "ah"} {
+		a[i], _ = strconv.Atoi(q.Get(k))
+	}
 	b, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -163,9 +237,15 @@ func (g *game) serveFotoParte(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "foto cerrada", http.StatusGone)
 		return
 	}
-	f.lastUse = time.Now()
+	for _, h := range f.done {
+		if h.ax == a[0] && h.ay == a[1] { // two pages did the same part
+			return
+		}
+	}
+	f.lastUse, f.lastWork = time.Now(), time.Now()
 	f.parts = append(f.parts, fotoParte{x, y, rgba})
-	redraw()
+	f.done = append(f.done, fotoHecha{a[0], a[1], a[2], a[3], x, y, b})
+	g.stateChanged()
 }
 
 // drawFoto: the photo full screen, with the phone's view. The caller holds g.mu.

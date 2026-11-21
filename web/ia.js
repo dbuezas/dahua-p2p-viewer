@@ -154,7 +154,8 @@ var IA = (function () {
     if (!opt.onTile) { result = document.createElement('canvas'); result.width = 4 * W; result.height = 4 * H; rx = result.getContext('2d') }
     var nx = Math.ceil(W / TILE), ny = Math.ceil(H / TILE), done = 0, t0 = performance.now(), todo = [];
     for (var ty = 0; ty < ny; ty++) for (var tx = 0; tx < nx; tx++)
-      todo.push({tx: tx, ty: ty, cx: (tx * TILE + Math.min(TILE, W - tx * TILE) / 2) / W, cy: (ty * TILE + Math.min(TILE, H - ty * TILE) / 2) / H});
+      if (!(opt.skip && opt.skip(4 * tx * TILE, 4 * ty * TILE))) todo.push({tx: tx, ty: ty, cx: (tx * TILE + Math.min(TILE, W - tx * TILE) / 2) / W, cy: (ty * TILE + Math.min(TILE, H - ty * TILE) / 2) / H});
+    var total = todo.length;
     while (todo.length) {
       if (opt.abort && opt.abort()) break;
       // opt.next picks the next part (e.g. the one nearest to what the person looks at)
@@ -204,7 +205,7 @@ var IA = (function () {
         if (opt.onTile) opt.onTile(4 * tx * TILE, 4 * ty * TILE, part); else rx.putImageData(part, 4 * tx * TILE, 4 * ty * TILE);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
         done++;
-        if (progress) progress(done / (nx * ny), (performance.now() - t0) / 1000);
+        if (progress) progress(done / total, (performance.now() - t0) / 1000);
       }
     }
     var lose = gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext();
