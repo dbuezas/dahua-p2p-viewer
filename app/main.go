@@ -120,6 +120,8 @@ type game struct {
 	// the configuration QR (share.go): only on request, hidden after shareFor
 	shareImg   *ebiten.Image
 	shareUntil time.Time
+
+	foto *foto // "Mejorar foto" from the phone (foto.go)
 }
 
 func (g *game) streamList() []*stream {
@@ -319,6 +321,12 @@ func (g *game) Update() error {
 	mx, my := ebiten.CursorPosition()
 	if anyInput(image.Pt(mx, my), &g.lastCursor) {
 		redraw()
+	}
+	if g.foto != nil { // the phone's photo covers everything: only Esc (close) works here
+		if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
+			g.fotoClose()
+		}
+		return nil
 	}
 	far := func() bool { return abs(mx-g.pressX) > 20 || abs(my-g.pressY) > 20 }
 
@@ -612,6 +620,7 @@ func (g *game) Draw(screen *ebiten.Image) {
 		}
 	}
 	g.drawRemoteAddr(screen)
+	g.drawFoto(screen)
 	g.drawShare(screen)
 	g.maybeShot(screen)
 }

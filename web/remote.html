@@ -23,9 +23,16 @@ body.off #grid,body.off #ptz,body.off #share,body.off header button{opacity:.3;p
 #off{display:none;position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);z-index:30;background:#000c;color:#fc0;padding:18px 26px;border-radius:12px;font-size:18px;font-weight:bold;pointer-events:none}
 body.off #off{display:block}
 #zoom{display:flex;flex-direction:column;gap:14px}#zoom button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;width:64px;height:64px;font-size:28px;touch-action:none}
+#foto{display:none;position:fixed;inset:0;background:#000;z-index:40;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none}
+#foto canvas{position:absolute;left:0;top:0;transform-origin:0 0}
+#fotobar{position:absolute;left:0;right:0;top:0;display:flex;gap:8px;padding:10px;align-items:center;background:linear-gradient(#000d,#0000);z-index:1}
+#fotomsg{flex:1;color:#fc0;font-size:15px;text-shadow:0 0 4px #000}
+#fotox{background:#fc0;color:#000;font-weight:bold}
+#fototv{display:none;background:#fc0;color:#000;font-weight:bold}
 </style></head><body class=off>
 <div id=off>Conectando con la tele...</div>
-<header><h1>Camaras</h1><span id=net></span></header>
+<div id=foto><div id=fotobar><span id=fotomsg></span><button id=fotox>Cerrar</button></div><canvas id=fotocv></canvas></div>
+<header><h1>Camaras</h1><button id=fototv>Cerrar la foto de la tele</button><span id=net></span></header>
 <div id=cal style='display:none;position:fixed;inset:0;background:#000;z-index:20;overflow:auto;padding:10px'>
  <div style='display:flex;align-items:center;gap:8px'><b style='flex:1'>Calibrar panoramica (dos camaras a 9 cm)</b><button id=calx>Cerrar</button></div>
  <p id=calt style='margin:8px 0;min-height:2.6em'></p><div style='height:6px;background:#333;border-radius:3px'><div id=calp style='height:6px;width:0;background:#fc0;border-radius:3px'></div></div>
@@ -41,6 +48,7 @@ body.off #off{display:block}
 <p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4, linea blanca = costura.</p>
 <div id=share><button id=sharebtn>Mostrar en la tele el QR de configuracion</button>
 <p class=tip style='margin:4px 0 0'>Para copiar todo (serie, usuario, clave y ajustes) a la app de otro telefono: escanealo con su camara. Incluye la clave; se oculta solo en 60 s.</p></div>
+<script src='/ia.js'></script>
 <script>
 var st={big:-1,cams:[]};
 // ONE connection that stays open (WebSocket) for everything; if it drops, connect again at once.
@@ -73,12 +81,12 @@ function draw(s){st=s;var g=document.getElementById('grid');
    var b='<span>'+(kind=='pano'?(i+1)+' + '+(i+2):i+1)+'</span><span class=btns>';
    if(kind=='half'&&/\.1$/.test(c.k))b+='<button data-pano=3>Unir</button>';
    if(kind=='pano')b+='<button data-pano=0>Separar</button><button class=calbtn>Calibrar</button>';
-   d.querySelector('.row').innerHTML=b+'<button class=hd data-hd='+i+'>HD</button></span>'}
+   d.querySelector('.row').innerHTML=b+'<button class=ia data-ia='+i+'>IA</button><button class=hd data-hd='+i+'>HD</button></span>'}
   d.querySelector('.hd').classList.toggle('on',c.hd)});
  document.getElementById('msg').textContent=s.msg||'';
  var sb=document.getElementById('sharebtn');sb.classList.toggle('on',!!s.share);sb.textContent=s.share?'Ocultar el QR de la tele':'Mostrar en la tele el QR de configuracion';
  document.getElementById('gridtip').style.display=s.pano&&!s.msg?'':'none';
- var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none'}
+ var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none';fotoState(s)}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
 var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
 function padMove(e){var r=pad.getBoundingClientRect(),dx=e.clientX-r.left-r.width/2,dy=e.clientY-r.top-r.height/2,m=Math.hypot(dx,dy),max=r.width/2-30;
@@ -114,6 +122,7 @@ function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='no
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
 document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)return;
  if(b.classList&&b.classList.contains('calbtn')){calOpen();return}
+ if(b.dataset.ia!=null){fotoOpen(+b.dataset.ia);return}
  if(b.id=='sharebtn'){st.share=!st.share;draw(st);cmd('compartir '+(st.share?1:0));return}
  if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==3&&!st.panoReady){calOpen();return}if(m==0&&!st.pano)return;st.pano=m;st.msg='';draw(st);cmd('pano '+m);return}
  if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
@@ -238,5 +247,63 @@ document.getElementById('calx').addEventListener('click',function(){calBox.style
 // Inside the Android app (?app=1) this page is only the calibration: the result stays on the phone, there is no
 // TV to show a QR on, and "Cerrar" closes the whole page.
 if(IN_APP){calGo.textContent='Usar esta calibracion';var shareDiv=document.getElementById('share');if(shareDiv)shareDiv.style.display='none'}
+// ---- Mejorar foto: the TV gives the current picture (and shows it full screen), this phone makes it 4x bigger
+// with AI (ia.js, on the phone's graphics card) part by part, nearest to where the person looks first; each part
+// goes to the TV too. One finger moves the photo, two fingers zoom; the TV shows the same view.
+var foto=null,fotoW=null,fotoBox=document.getElementById('foto'),fotoCv=document.getElementById('fotocv'),fotoMsgEl=document.getElementById('fotomsg');
+function fotoMsg(t,tv){fotoMsgEl.textContent=t;if(tv!=null)cmd('foto msg '+tv)}
+function fotoK(){var f=foto;return Math.min(innerWidth/f.w,innerHeight/f.h)*f.z}
+function fotoApply(send){var f=foto;if(!f)return;var k=fotoK();
+ fotoCv.style.transform='translate('+(innerWidth/2-f.cx*f.w*k)+'px,'+(innerHeight/2-f.cy*f.h*k)+'px) scale('+k+')';
+ if(send!==false){var now=Date.now();if(now-(f.sent||0)>60){f.sent=now;cmd('foto ver '+f.cx.toFixed(4)+' '+f.cy.toFixed(4)+' '+f.z.toFixed(3))}
+  else{clearTimeout(f.later);f.later=setTimeout(function(){fotoApply()},70)}}}
+// zoom by r keeping the photo point under the screen point (mx, my) in place
+function fotoZoom(r,mx,my){var f=foto,k=fotoK();if(!(k>0)){f.z=Math.min(16,Math.max(1,f.z*r));return}var u=f.cx+(mx-innerWidth/2)/(f.w*k),v=f.cy+(my-innerHeight/2)/(f.h*k);
+ f.z=Math.min(16,Math.max(1,f.z*r));k=fotoK();f.cx=Math.min(1,Math.max(0,u-(mx-innerWidth/2)/(f.w*k)));f.cy=Math.min(1,Math.max(0,v-(my-innerHeight/2)/(f.h*k)))}
+var fotoPt={},fotoTap=0;
+fotoCv.addEventListener('pointerdown',function(e){fotoCv.setPointerCapture(e.pointerId);fotoPt[e.pointerId]={x:e.clientX,y:e.clientY};
+ var n=Object.keys(fotoPt).length,now=Date.now();
+ if(n==1&&now-fotoTap<300&&foto){fotoZoom(foto.z>1.5?1/foto.z:3,e.clientX,e.clientY);fotoApply();fotoTap=0}else fotoTap=now});
+fotoCv.addEventListener('pointermove',function(e){var p=fotoPt[e.pointerId];if(!p||!foto)return;var ids=Object.keys(fotoPt),f=foto;
+ if(ids.length==1){var k=fotoK();f.cx=Math.min(1,Math.max(0,f.cx-(e.clientX-p.x)/(f.w*k)));f.cy=Math.min(1,Math.max(0,f.cy-(e.clientY-p.y)/(f.h*k)))}
+ else{var o=fotoPt[ids[0]==e.pointerId?ids[1]:ids[0]],d0=Math.hypot(p.x-o.x,p.y-o.y),d1=Math.hypot(e.clientX-o.x,e.clientY-o.y);
+  if(d0>10){fotoZoom(d1/d0,(e.clientX+o.x)/2,(e.clientY+o.y)/2);var k2=fotoK();f.cx=Math.min(1,Math.max(0,f.cx-(e.clientX-p.x)/2/(f.w*k2)));f.cy=Math.min(1,Math.max(0,f.cy-(e.clientY-p.y)/2/(f.h*k2)))}}
+ p.x=e.clientX;p.y=e.clientY;fotoApply()});
+function fotoUp(e){delete fotoPt[e.pointerId]}
+fotoCv.addEventListener('pointerup',fotoUp);fotoCv.addEventListener('pointercancel',fotoUp);
+fotoBox.addEventListener('wheel',function(e){if(!foto)return;e.preventDefault();fotoZoom(Math.exp(-e.deltaY/300),e.clientX,e.clientY);fotoApply()},{passive:false});
+addEventListener('resize',function(){fotoApply(false)});
+function fotoClose(tellTV){if(foto)foto.dead=true;foto=null;fotoBox.style.display='none';fotoPt={};if(tellTV)cmd('foto 0');draw(st)}
+document.getElementById('fotox').addEventListener('click',function(){fotoClose(true)});
+document.getElementById('fototv').addEventListener('click',function(){cmd('foto 0')});
+function fotoState(s){var b=document.getElementById('fototv');b.style.display=s.foto&&(!foto||foto.id!=s.foto)?'':'none';
+ if(foto&&foto.id){if(s.foto==foto.id)foto.seen=true;else if(foto.seen)fotoClose(false)}} // closed on the TV (Esc, or unused for a long time)
+// the AI's precision: half precision (twice as fast on phones) when it gives the same picture here
+async function fotoPrec(wb,bm){try{var p=localStorage.getItem('iaPrec');if(p)return p}catch(e){}
+ var c=document.createElement('canvas');c.width=48;c.height=32;c.getContext('2d').drawImage(bm,bm.width/2-24,bm.height/2-16,48,32,0,0,48,32);
+ var a=await IA.upscale(c,wb,null,{tile:48,prec:'highp'}),b=await IA.upscale(c,wb,null,{tile:48,prec:'mediump'});
+ var da=a.getContext('2d').getImageData(0,0,192,128).data,db=b.getContext('2d').getImageData(0,0,192,128).data,mx=0;
+ for(var i=0;i<da.length;i++)mx=Math.max(mx,Math.abs(da[i]-db[i]));p=mx<=6?'mediump':'highp';try{localStorage.setItem('iaPrec',p)}catch(e){}return p}
+async function fotoOpen(i){if(foto)fotoClose(true);var f=foto={i:i,cx:.5,cy:.5,z:1,dead:false};fotoBox.style.display='block';fotoMsg('Sacando la foto...');
+ var cx=fotoCv.getContext('2d');cx.clearRect(0,0,fotoCv.width,fotoCv.height);
+ try{var r=await fetch('/foto?i='+i+'&t='+Date.now());if(!r.ok)throw Error('la camara no tiene imagen');
+  f.id=+r.headers.get('X-Foto');var bm=await createImageBitmap(await r.blob());if(f.dead)return;
+  var W=bm.width,H=bm.height;f.w=4*W;f.h=4*H;fotoCv.width=f.w;fotoCv.height=f.h;cx.imageSmoothingQuality='high';cx.drawImage(bm,0,0,f.w,f.h);fotoApply();
+  fotoMsg('Preparando la IA...','Mejorando la foto con IA...');
+  if(!fotoW)fotoW=fetch('/ia.bin').then(function(r){if(!r.ok)throw Error('sin modelo');return r.arrayBuffer()});var wb=await fotoW;
+  var prec=await fotoPrec(wb,bm);if(f.dead)return;
+  var s=Math.min(1,4096/Math.max(f.w,f.h)),t0=Date.now(),sending=Promise.resolve();
+  await IA.upscale(bm,wb,function(fr,sec){var p=Math.round(fr*100),left=fr>0?Math.round(sec*(1-fr)/fr):0;
+    fotoMsg('Mejorando con IA: '+p+'%'+(fr<1?' (faltan '+left+' s)':''),fr<1?'Mejorando la foto con IA: '+p+'%':'')},
+   {tile:384,prec:prec,abort:function(){return f.dead},
+    next:function(todo){var best=0,bd=1e9;todo.forEach(function(t,j){var d=Math.hypot((t.cx-f.cx)*W,(t.cy-f.cy)*H);if(d<bd){bd=d;best=j}});return best},
+    onTile:function(x,y,img){if(f.dead)return;cx.putImageData(img,x,y);
+     // the same part to the TV (made smaller when the TV keeps a smaller photo)
+     var x0=Math.floor(x*s),y0=Math.floor(y*s),w=Math.floor((x+img.width)*s)-x0,h=Math.floor((y+img.height)*s)-y0,c=document.createElement('canvas');c.width=w;c.height=h;
+     var g=c.getContext('2d');if(s==1)g.putImageData(img,0,0);else{var t=document.createElement('canvas');t.width=img.width;t.height=img.height;t.getContext('2d').putImageData(img,0,0);g.imageSmoothingQuality='high';g.drawImage(t,0,0,w,h)}
+     sending=sending.then(function(){return new Promise(function(ok){c.toBlob(ok,'image/jpeg',0.9)})}).then(function(bl){if(f.dead)return;
+      return fetch('/fotoparte?id='+f.id+'&x='+x0+'&y='+y0,{method:'POST',body:bl})}).catch(function(){})}});
+  await sending;if(f.dead)return;fotoMsg('Listo ('+Math.round((Date.now()-t0)/1000)+' s). Un dedo mueve, dos dedos agrandan.','');
+ }catch(e){if(!f.dead)fotoMsg('No pude: '+e.message,'No se pudo mejorar la foto')}}
 connect();
 </script></body></html>

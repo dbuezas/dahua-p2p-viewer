@@ -53,6 +53,18 @@ func (g *game) startRemote() {
 		http.NotFound(w, r)
 	})
 	mux.HandleFunc("/calib.js", g.serveCalibJS)
+	mux.HandleFunc("/foto", g.serveFoto)
+	mux.HandleFunc("/fotoparte", g.serveFotoParte)
+	mux.HandleFunc("/ia.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write(web.IAJS)
+	})
+	mux.HandleFunc("/ia.bin", func(w http.ResponseWriter, r *http.Request) { // the AI model: it never changes
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Cache-Control", "max-age=31536000, immutable")
+		w.Write(web.IAModel)
+	})
 	mux.HandleFunc("/calibsnap", g.serveCalibSnap)
 	mux.HandleFunc("/calibprev", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -162,8 +174,12 @@ func (g *game) stateJSON() string {
 		PanoReady bool   `json:"panoReady"`
 		Msg       string `json:"msg"`
 		Share     bool   `json:"share"` // the configuration QR is on the TV
+		Foto      int    `json:"foto"`  // the id of the photo on the TV (foto.go), 0 = none
 		Cams      []camJ `json:"cams"`
 	}{Big: -1, Msg: g.panoMsg, Share: g.shareImg != nil, Cams: []camJ{}}
+	if g.foto != nil {
+		st.Foto = g.foto.id
+	}
 	for i, t := range g.tiles {
 		if t == g.big {
 			st.Big = i
@@ -267,6 +283,11 @@ func (g *game) command(cmd string) {
 		g.mu.Lock()
 		g.showShare(len(p) > 1 && p[1] == "1")
 		g.mu.Unlock()
+	case "foto":
+		g.mu.Lock()
+		g.fotoCommand(p)
+		g.mu.Unlock()
+		return // "foto ver" comes many times a second: no state message for each
 	case "pano":
 		if len(p) > 1 {
 			g.setPano(p[1] != "0")
@@ -356,10 +377,23 @@ func (g *game) stateChanged() {
 // snapshot: the current picture of square i as a small JPEG (its half for a
 // split channel, the panorama for a panorama square).
 func (g *game) snapshot(i, maxW int) []byte {
+	src, r := g.picture(i)
+	if src == nil {
+		return nil
+	}
+	small := shrink(src, r, maxW)
+	var buf bytes.Buffer
+	jpeg.Encode(&buf, small, &jpeg.Options{Quality: 70})
+	return buf.Bytes()
+}
+
+// picture: the current picture of square i at full size, and the part of it the
+// square shows (its half for a split channel; the panorama for a panorama square).
+func (g *game) picture(i int) (*image.RGBA, image.Rectangle) {
 	g.mu.Lock()
 	if i < 0 || i >= len(g.tiles) {
 		g.mu.Unlock()
-		return nil
+		return nil, image.Rectangle{}
 	}
 	t := g.tiles[i]
 	g.mu.Unlock()
@@ -367,7 +401,7 @@ func (g *game) snapshot(i, maxW int) []byte {
 	fr, pf, m := t.s.frame, t.s.pframe, t.s.mesh
 	t.s.mu.Unlock()
 	if fr == nil {
-		return nil
+		return nil, image.Rectangle{}
 	}
 	src := fr.RGBA()
 	if t.half == 3 {
@@ -379,7 +413,7 @@ func (g *game) snapshot(i, maxW int) []byte {
 			t.s.snapLut.render(src.Pix, pf)
 		}
 		if pf == nil {
-			return nil
+			return nil, image.Rectangle{}
 		}
 		src = pf
 	}
@@ -390,10 +424,7 @@ func (g *game) snapshot(i, maxW int) []byte {
 	case 2:
 		r.Min.Y += r.Dy() / 2
 	}
-	small := shrink(src, r, maxW)
-	var buf bytes.Buffer
-	jpeg.Encode(&buf, small, &jpeg.Options{Quality: 70})
-	return buf.Bytes()
+	return src, r
 }
 
 // shrink copies the part r of src, made at most maxW wide (box average).
