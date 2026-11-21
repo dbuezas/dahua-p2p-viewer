@@ -122,6 +122,7 @@ type game struct {
 	shareUntil time.Time
 
 	foto    *foto // "Mejorar foto" from the phone (foto.go)
+	pruebas []prueba // test buttons for the phone (pruebas.go)
 	prevBig *tile // the big camera at the last Update (its zoom goes back to 1 when it changes)
 }
 
@@ -827,6 +828,7 @@ func (g *game) connectOnce(serial string) error {
 	g.chans = chans
 	g.mu.Unlock()
 	g.buildTiles(chans)
+	g.loadPruebas()
 	g.startRemote()
 	log.Printf("camaras: %d cuadros", len(g.tiles))
 	// start every channel's stream, a little apart so the tunnel is not flooded

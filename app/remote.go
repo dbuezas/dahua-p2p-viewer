@@ -177,9 +177,11 @@ func (g *game) stateJSON() string {
 		Msg       string `json:"msg"`
 		Share     bool   `json:"share"` // the configuration QR is on the TV
 		Foto      any    `json:"foto"`  // the photo on the TV (foto.go), null = none
+		Pruebas   any    `json:"pruebas"` // test buttons (pruebas.go), null = none
 		Cams      []camJ `json:"cams"`
 	}{Big: -1, Msg: g.panoMsg, Share: g.shareImg != nil, Cams: []camJ{}}
 	st.Foto = g.fotoStateJSON()
+	st.Pruebas = g.pruebasJSON()
 	for i, t := range g.tiles {
 		if t == g.big {
 			st.Big = i
@@ -288,6 +290,13 @@ func (g *game) command(cmd string) {
 		g.fotoCommand(p)
 		g.mu.Unlock()
 		return // "foto ver" comes many times a second: no state message for each
+	case "prueba": // "prueba row option" (pruebas.go)
+		if len(p) > 2 {
+			j, _ := strconv.Atoi(p[2])
+			g.mu.Lock()
+			g.runPrueba(i, j)
+			g.mu.Unlock()
+		}
 	case "pano":
 		if len(p) > 1 {
 			g.setPano(p[1] != "0")

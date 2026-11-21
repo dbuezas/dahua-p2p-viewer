@@ -29,6 +29,7 @@ body.off #off{display:block}
 #fotomsg{flex:1;color:#fc0;font-size:15px;text-shadow:0 0 4px #000}
 #fotox{background:#fc0;color:#000;font-weight:bold}
 #fotoorig{display:none}#foto.orig #fotoorig{display:block}#fotoorig{pointer-events:none}
+#pruebas{display:none;padding:0 10px 20px}#pruebas .pr{margin:8px 0}#pruebas .pr div{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}#pruebas button.on{background:#fc0;color:#000;font-weight:bold}
 #iarow{display:none;padding:0 10px 10px}#iabtn{width:100%;background:#fc0;color:#000;font-weight:bold}
 </style></head><body class=off>
 <div id=off>Conectando con la tele...</div>
@@ -47,6 +48,7 @@ body.off #off{display:block}
 <div id=grid></div><img id=ghost>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=iarow><button id=iabtn>Mejorar foto con IA</button></div>
+<div id=pruebas><b>Pruebas (para comparar en la tele)</b><div id=prlist></div></div>
 <div id=share><button id=sharebtn>Mostrar en la tele el QR de configuracion</button>
 <p class=tip style='margin:4px 0 0'>Para copiar todo (serie, usuario, clave y ajustes) a la app de otro telefono: escanealo con su camara. Incluye la clave; se oculta solo en 60 s.</p></div>
 <script src='/ia.js'></script>
@@ -86,7 +88,7 @@ function draw(s){st=s;var g=document.getElementById('grid');
   d.querySelector('.hd').classList.toggle('on',c.hd)});
  document.getElementById('msg').textContent=s.msg||'';
  var sb=document.getElementById('sharebtn');sb.classList.toggle('on',!!s.share);sb.textContent=s.share?'Ocultar el QR de la tele':'Mostrar en la tele el QR de configuracion';
- var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none';document.getElementById('iarow').style.display=c?'block':'none';fotoState(s)}
+ var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none';document.getElementById('iarow').style.display=c?'block':'none';pruebasDraw(s);fotoState(s)}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
 var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
 function padMove(e){var r=pad.getBoundingClientRect(),dx=e.clientX-r.left-r.width/2,dy=e.clientY-r.top-r.height/2,m=Math.hypot(dx,dy),max=r.width/2-30;
@@ -122,6 +124,7 @@ function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='no
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
 document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)return;
  if(b.classList&&b.classList.contains('calbtn')){calOpen();return}
+ if(b.dataset.pr!=null){var q=b.dataset.pr.split(' ');st.pruebas[q[0]].sel=+q[1];pruebasDraw(st);cmd('prueba '+b.dataset.pr);return}
  if(b.id=='iabtn'){if(st.big>=0)fotoOpen(st.big);return}
  if(b.id=='sharebtn'){st.share=!st.share;draw(st);cmd('compartir '+(st.share?1:0));return}
  if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==3&&!st.panoReady){calOpen();return}if(m==0&&!st.pano)return;st.pano=m;st.msg='';draw(st);cmd('pano '+m);return}
@@ -339,5 +342,9 @@ async function fotoWork(f){f.working=true;cmd('foto work');f.beat=setInterval(fu
 async function fotoOpen(i){try{var r=await fetch('/foto?i='+i+'&t='+Date.now());if(!r.ok)throw Error('la camara no tiene imagen');
   fotoMine=(await r.json()).id;fotoClosed=0;if(st.foto&&st.foto.id==fotoMine)fotoState(st)}
  catch(e){document.getElementById('msg').textContent='No pude sacar la foto: '+e.message}}
+// test buttons (pruebas.txt on the TV): one row per test, the picked option in yellow
+function pruebasDraw(s){var P=s.pruebas,box=document.getElementById('pruebas');box.style.display=P&&P.length&&!IN_APP?'block':'none';if(!P)return;
+ var html=P.map(function(p,i){return '<div class=pr>'+p.t+'<div>'+p.o.map(function(o,j){return '<button data-pr="'+i+' '+j+'"'+(p.sel==j?' class=on':'')+'>'+o+'</button>'}).join('')+'</div></div>'}).join('');
+ var l=document.getElementById('prlist');if(l.dataset.h!=html){l.dataset.h=html;l.innerHTML=html}}
 connect();
 </script></body></html>
