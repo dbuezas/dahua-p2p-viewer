@@ -17,6 +17,7 @@ func fake() Config {
 		HD:     "1,3",
 		Orden:  "0,2.1,2.2,1",
 		Pano:   map[string]int{"2": 3},
+		Extra:  []ExtraCam{{Serial: "EXTRA000SERIAL01", User: "admin", Pass: "extr@-p4ss", Name: "Tinglado"}},
 	}
 }
 
@@ -67,8 +68,15 @@ func TestDecodeErrors(t *testing.T) {
 
 func TestSummaryHidesPassword(t *testing.T) {
 	c := fake()
-	if s := c.Summary(); strings.Contains(s, c.Pass) || !strings.Contains(s, c.Serial) {
+	s := c.Summary()
+	if strings.Contains(s, c.Pass) || !strings.Contains(s, c.Serial) {
 		t.Fatalf("summary %q", s)
+	}
+	if strings.Contains(s, c.Extra[0].Pass) { // the standalone camera's password must not show either
+		t.Fatalf("summary leaks extra password: %q", s)
+	}
+	if !strings.Contains(s, c.Extra[0].Name) {
+		t.Fatalf("summary missing extra camera: %q", s)
 	}
 }
 

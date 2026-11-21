@@ -40,6 +40,16 @@ type Config struct {
 	HD     string            `json:"hd,omitempty"`    // hd.txt: channels in HD, "1,3"
 	Orden  string            `json:"orden,omitempty"` // orden.txt: "0,2.1,2.2,1"
 	Pano   map[string]int    `json:"pano,omitempty"`  // panoramica.txt: channel -> mode (3 on, 0 off)
+	Extra  []ExtraCam        `json:"extra,omitempty"` // camaras_extra.txt: standalone cameras (own serial + password)
+}
+
+// ExtraCam is one standalone camera (not on the NVR), reached by its own P2P
+// serial. Its password travels in the link, like the NVR's.
+type ExtraCam struct {
+	Serial string `json:"sn"`
+	User   string `json:"u,omitempty"`
+	Pass   string `json:"p,omitempty"`
+	Name   string `json:"n,omitempty"`
 }
 
 // Encode gives the link for c.
@@ -122,7 +132,34 @@ func FromFolder(dir string, ini map[string]string) Config {
 			}
 		}
 	}
+	c.Extra = readExtra(filepath.Join(dir, "camaras_extra.txt"))
 	return c
+}
+
+// readExtra reads camaras_extra.txt (one "SERIAL user pass name" per line; blank
+// lines and # comments skipped). The name is the rest of the line (may have spaces).
+func readExtra(path string) []ExtraCam {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []ExtraCam
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		f := strings.SplitN(line, " ", 4)
+		if len(f) < 3 {
+			continue
+		}
+		e := ExtraCam{Serial: strings.TrimSpace(f[0]), User: strings.TrimSpace(f[1]), Pass: strings.TrimSpace(f[2])}
+		if len(f) == 4 {
+			e.Name = strings.TrimSpace(f[3])
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // list reads a comma separated file into "a,b,c" (spaces and empty items dropped).
@@ -170,6 +207,10 @@ func (c Config) Summary() string {
 	sort.Strings(chs)
 	for _, ch := range chs {
 		fmt.Fprintf(&b, "panoramica canal %s: %d\n", ch, c.Pano[ch])
+	}
+	for _, e := range c.Extra {
+		fmt.Fprintf(&b, "camara suelta: %s (%s), clave %s\n", or(e.Name, e.Serial), e.Serial,
+			map[bool]string{true: "incluida", false: "no incluida"}[e.Pass != ""])
 	}
 	return b.String()
 }
