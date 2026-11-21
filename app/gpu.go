@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hajimehoshi/ebiten/v2"
 
@@ -372,15 +373,20 @@ func meshTextures(m *mesh3) (*ebiten.Image, *ebiten.Image) {
 }
 
 var sharpOnce sync.Once
-var sharpVal float32
+var sharpBits atomic.Uint32 // float32 bits
 
-// sharpness: CAMARAS_NITIDEZ (0 = off, up to 1), read once.
+// sharpness: CAMARAS_NITIDEZ at the start (0 = off, up to 1); setSharpness changes it while running.
 func sharpness() float32 {
 	sharpOnce.Do(func() {
 		if v, err := strconv.ParseFloat(os.Getenv("CAMARAS_NITIDEZ"), 64); err == nil {
-			sharpVal = float32(math.Max(0, math.Min(1, v)))
-			log.Printf("nitidez: %.2f", sharpVal)
+			setSharpness(v)
 		}
 	})
-	return sharpVal
+	return math.Float32frombits(sharpBits.Load())
+}
+
+func setSharpness(v float64) {
+	s := float32(math.Max(0, math.Min(1, v)))
+	sharpBits.Store(math.Float32bits(s))
+	log.Printf("nitidez: %.2f", s)
 }
