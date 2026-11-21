@@ -16,3 +16,4 @@ go.work.sum
 /ref/
 /PLAN.md
 /bench.sh
+dist/
