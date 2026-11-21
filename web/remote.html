@@ -15,6 +15,8 @@ button:disabled{opacity:.35}
 p.tip{color:#888;font-size:13px;margin:0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px;gap:6px}.row .btns{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
+.hd.load{position:relative}.hd.load::after{content:'';position:absolute;inset:-5px;border:3px solid transparent;border-top-color:#fc0;border-right-color:#fc0;border-radius:12px;animation:girar .8s linear infinite}
+@keyframes girar{to{transform:rotate(360deg)}}
 #ptz{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;display:none;align-items:center;justify-content:center;gap:24px;padding:10px}
 #pad{width:170px;height:170px;border-radius:50%;background:#222;border:2px solid #555;position:relative;touch-action:none}
 #knob{width:60px;height:60px;border-radius:50%;background:#fc0;position:absolute;left:55px;top:55px;pointer-events:none}
@@ -85,7 +87,7 @@ function draw(s){st=s;var g=document.getElementById('grid');
    if(kind=='half'&&/\.1$/.test(c.k))b+='<button data-pano=3>Unir</button>';
    if(kind=='pano')b+='<button data-pano=0>Separar</button><button class=calbtn>Calibrar</button>';
    d.querySelector('.row').innerHTML=b+'<button class=hd data-hd='+i+'>HD</button></span>'}
-  d.querySelector('.hd').classList.toggle('on',c.hd)});
+  d.querySelector('.hd').classList.toggle('on',c.hd);d.querySelector('.hd').classList.toggle('load',!!c.load)});
  document.getElementById('msg').textContent=s.msg||'';
  var sb=document.getElementById('sharebtn');sb.classList.toggle('on',!!s.share);sb.textContent=s.share?'Ocultar el QR de la tele':'Mostrar en la tele el QR de configuracion';
  var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none';document.getElementById('iarow').style.display=c?'block':'none';pruebasDraw(s);fotoState(s)}

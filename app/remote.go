@@ -170,9 +170,10 @@ func (g *game) stateJSON() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	type camJ struct {
-		K   string `json:"k"`
-		HD  bool   `json:"hd"`
-		PTZ bool   `json:"ptz"`
+		K    string `json:"k"`
+		HD   bool   `json:"hd"`
+		PTZ  bool   `json:"ptz"`
+		Load bool   `json:"load"` // HD on / off: the other video is still opening
 	}
 	st := struct {
 		Big       int    `json:"big"`
@@ -192,7 +193,7 @@ func (g *game) stateJSON() string {
 			st.Big = i
 		}
 		t.s.mu.Lock()
-		hd := t.s.hd
+		hd, load := t.s.hd, t.s.switching
 		if t.s.split {
 			st.Split = true
 			st.PanoReady = true // this app works the panorama out by itself
@@ -201,7 +202,7 @@ func (g *game) stateJSON() string {
 			}
 		}
 		t.s.mu.Unlock()
-		st.Cams = append(st.Cams, camJ{K: t.key, HD: hd, PTZ: g.canPTZ(t)})
+		st.Cams = append(st.Cams, camJ{K: t.key, HD: hd, PTZ: g.canPTZ(t), Load: load})
 	}
 	b, _ := json.Marshal(st)
 	return string(b)

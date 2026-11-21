@@ -434,6 +434,11 @@ func (g *game) Update() error {
 	// smooth zoom and pan: each frame part of the way toward the target
 	moving := false
 	for _, t := range g.tiles {
+		t.s.mu.Lock()
+		if t.s.switching { // the HD / SD spinner turns
+			moving = true
+		}
+		t.s.mu.Unlock()
 		if (t.panVX != 0 || t.panVY != 0) && time.Now().Before(t.panVEnd) {
 			dt := 1 / float64(ebiten.TPS())
 			t.panTX = clamp(t.panTX+t.panVX*dt, -1, 1)
@@ -575,17 +580,29 @@ func (g *game) drawTile(screen *ebiten.Image, t *tile) {
 	dst.DrawImage(img.SubImage(sr).(*ebiten.Image), op)
 	t.s.mu.Lock()
 	hd := t.s.hd // what was chosen: the tag shows at once, the HD video follows
+	switching := t.s.switching
 	weak := len(t.s.weak) > 0 && t.half == 3
 	t.s.mu.Unlock()
-	if hd { // HD tag (red, white bold letters), smaller on the small pictures
-		fs, x0, y0 := g.px(38), r.Min.X+g.px(30), r.Min.Y+g.px(24)
-		if t != g.big && g.big != nil { // the small pictures over the big one
-			fs, x0, y0 = g.px(14), r.Min.X+g.px(6), r.Min.Y+g.px(5)
-		}
-		padX, h := fs*4/10, fs*145/100
-		tw := textWidth("HD", fs, true)
+	// HD tag (red, white bold letters), smaller on the small pictures
+	fs, x0, y0 := g.px(38), r.Min.X+g.px(30), r.Min.Y+g.px(24)
+	if t != g.big && g.big != nil { // the small pictures over the big one
+		fs, x0, y0 = g.px(14), r.Min.X+g.px(6), r.Min.Y+g.px(5)
+	}
+	padX, h := fs*4/10, fs*145/100
+	tw := textWidth("HD", fs, true)
+	if hd {
 		vector.DrawFilledRect(screen, float32(x0), float32(y0), float32(tw+2*padX), float32(h), color.RGBA{0xd5, 0x10, 0x18, 0xff}, false)
 		drawText(screen, "HD", x0+padX, y0+(h-fs)/2-fs/12, fs, true, color.White)
+	}
+	if switching { // the other video is opening (HD on or off): a turning arc around the tag, or where it was
+		cx, cy := float32(x0)+float32(tw+2*padX)/2, float32(y0)+float32(h)/2
+		rad := float32(max(tw+2*padX, h))/2 + float32(fs)/6 // fits above the tag, under the screen's edge
+		a := float32(math.Mod(float64(time.Now().UnixMilli())/1000*2*math.Pi*1.2, 2*math.Pi))
+		var p vector.Path
+		p.Arc(cx, cy, rad, a, a+1.5*math.Pi, vector.Clockwise)
+		op := &vector.DrawPathOptions{AntiAlias: true}
+		op.ColorScale.ScaleWithColor(color.RGBA{0xff, 0xd0, 0x40, 0xff})
+		vector.StrokePath(screen, &p, &vector.StrokeOptions{Width: float32(fs) / 7, LineCap: vector.LineCapRound}, op)
 	}
 	if weak && t == g.big {
 		drawText(screen, "panoramica con poca confianza", r.Min.X+g.px(12), r.Max.Y-g.px(34), g.px(18), false, color.RGBA{0xff, 0xd0, 0x40, 0xff})

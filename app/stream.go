@@ -28,6 +28,7 @@ type stream struct {
 	mu        sync.Mutex
 	hd        bool          // main stream instead of the sub stream
 	playingHD bool          // the stream now playing is the main one
+	switching bool          // HD on / off: the new video is still opening (the screen and the phone show a spinner)
 	queue     []qframe      // decoded frames waiting for their turn on screen
 	arrivals  []time.Time   // when the last frames came (to know the camera's pace)
 	gapMax    time.Duration // longest time between two frames since the last stats line
@@ -142,13 +143,14 @@ func (s *stream) run() {
 			s.tfr, s.nfr = time.Now(), 0
 			s.queue, s.arrivals, s.deltas = side, nil, nil
 			s.mu.Unlock()
-			side = nil
 			span := 0.0
 			if k := len(side); k > 1 && side[0].pts >= 0 {
 				span = side[k-1].pts - side[0].pts
 			}
 			log.Printf("canal %d: cambio de video (el viejo siguio: su pausa mas larga mientras tanto %.1f s; el nuevo trae %d cuadros, %.1f s de video)",
 				s.ch, oldGap.Seconds(), len(side), span)
+			side = nil
+			s.setSwitching(false)
 		}
 	frames:
 		for {
@@ -156,6 +158,7 @@ func (s *stream) run() {
 			case <-s.swapReq:
 				if !opening && nd == nil {
 					opening, oldLast, oldGap = true, time.Now(), 0
+					s.setSwitching(true)
 					go func() {
 						for tries := 0; tries < 3; tries++ {
 							if x, xs, err := s.open(true); err == nil {
@@ -178,16 +181,19 @@ func (s *stream) run() {
 			case o := <-opened:
 				opening = false
 				if o.d == nil { // the new one does not open: the old way (stop and open again)
+					s.setSwitching(false)
 					break frames
 				}
 				if o.sub == sub { // same video as now (e.g. a panorama without the phone's mesh stays small)
 					o.d.Close()
+					s.setSwitching(false)
 					continue
 				}
 				nd, nsub, nframes, side, sideStart = o.d, o.sub, o.d.Frames, nil, time.Time{}
 			case f, ok := <-nframes:
 				if !ok { // the new one ended before taking over: forget it
 					nd, nframes = nil, nil
+					s.setSwitching(false)
 					continue
 				}
 				pf := s.panorama(f)
@@ -235,6 +241,7 @@ func (s *stream) run() {
 		if nd != nil {
 			nd.Close()
 		}
+		s.setSwitching(false)
 		s.mu.Lock()
 		s.dec = nil
 		s.mu.Unlock()
@@ -299,6 +306,16 @@ func (s *stream) setHD(on bool) {
 	s.mu.Unlock()
 	if changed {
 		s.switchTo()
+	}
+}
+
+func (s *stream) setSwitching(on bool) {
+	s.mu.Lock()
+	changed := s.switching != on
+	s.switching = on
+	s.mu.Unlock()
+	if changed {
+		s.g.stateChanged()
 	}
 }
 
