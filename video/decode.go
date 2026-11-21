@@ -1,31 +1,21 @@
-// Package video decodes an RTSP stream (or a file) to frames, for the desktop
-// build, using ffmpeg as a subprocess. Android will use MediaCodec instead
-// (same Frames channel), selected by build tags later.
+//go:build !libav
+
+// ffmpeg as a subprocess (the default decoder): one ffmpeg process per camera, frames
+// come through a pipe as pgmyuv pictures, their times from showinfo lines on stderr.
 package video
 
 import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"image"
 	"io"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
-
-// credRe matches the user:password part of a URL, so errors never show it.
-var credRe = regexp.MustCompile(`//[^/@\s]*@`)
-
-// srcSizeRe finds the picture size in ffmpeg's first "Video:" line ("..., 2304x2592, ...").
-var srcSizeRe = regexp.MustCompile(`Video:[^|]*?, (\d{2,5})x(\d{2,5})`)
-
-// redact hides URL credentials in a message.
-func redact(s string) string { return credRe.ReplaceAllString(s, "//***@") }
 
 // Decoder streams frames from an input (RTSP URL or file path).
 type Decoder struct {
@@ -39,23 +29,8 @@ type Decoder struct {
 	Info   string // ffmpeg's lines about the input video (codec) and hardware decoding
 }
 
-// probe returns the video width and height via ffprobe, reading its STDOUT
-// (reliable across platforms, unlike ffmpeg's block-buffered stderr). Over the
-// P2P tunnel only TCP works, so force RTSP-over-TCP (the UDP default hangs).
-// Open starts decoding. For RTSP use rtsp:// ... ; tcp forces TCP transport.
-// One ffmpeg process and ONE connection per stream (no separate ffprobe): every
-// frame comes as a PAM image, whose small text header carries its size.
-func Open(input string, rtspTCP bool) (*Decoder, error) {
-	return OpenProbe(input, rtspTCP, false)
-}
-
-// OpenProbe: long = read more of the stream before starting (some cameras only
-// show their size later).
-func OpenProbe(input string, rtspTCP, long bool) (*Decoder, error) {
-	return OpenScaled(input, rtspTCP, long, 0, 1)
-}
-
-// OpenScaled: like OpenProbe; maxW > 0 makes ffmpeg shrink wider pictures to that
+// OpenScaled: like OpenProbe (one ffmpeg process and ONE connection per stream; over
+// the P2P tunnel only TCP works, the UDP default hangs); maxW > 0 makes ffmpeg shrink wider pictures to that
 // width (less work and memory when the full size is not needed); threads = decoding
 // threads (below 1 counts as 1).
 func OpenScaled(input string, rtspTCP, long bool, maxW, threads int) (*Decoder, error) {
@@ -142,15 +117,6 @@ func OpenScaled(input string, rtspTCP, long bool, maxW, threads int) (*Decoder, 
 	return d, nil
 }
 
-// Frame is one decoded picture: YUV 4:2:0 laid out like ffmpeg's pgmyuv (W x H
-// luma rows, then H/2 rows that each hold a U line and a V line of W/2 bytes),
-// limited range, BT.601.
-type Frame struct {
-	W, H int
-	Pix  []byte
-	PTS  float64 // time in the video, seconds; -1 = unknown
-}
-
 // readPGMHeader reads one pgmyuv header ("P5\n<w> <h>\n255\n"); h is 3/2 of the
 // picture height.
 func readPGMHeader(r *bufio.Reader) (int, int, error) {
@@ -198,37 +164,6 @@ func (d *Decoder) read(r *bufio.Reader) {
 		}
 		w, h = nw, nh
 	}
-}
-
-// RGBA converts the frame on the processor (only for snapshots and the
-// calibration; the screen converts on the graphics card).
-func (f *Frame) RGBA() *image.RGBA {
-	img := image.NewRGBA(image.Rect(0, 0, f.W, f.H))
-	cw := f.W / 2
-	for y := 0; y < f.H; y++ {
-		crow := f.Pix[f.W*f.H+(y/2)*f.W:]
-		for x := 0; x < f.W; x++ {
-			Y := (float32(f.Pix[y*f.W+x]) - 16) * 1.164
-			U := float32(crow[x/2]) - 128
-			V := float32(crow[cw+x/2]) - 128
-			o := (y*f.W + x) * 4
-			img.Pix[o] = clamp8(Y + 1.596*V)
-			img.Pix[o+1] = clamp8(Y - 0.392*U - 0.813*V)
-			img.Pix[o+2] = clamp8(Y + 2.017*U)
-			img.Pix[o+3] = 255
-		}
-	}
-	return img
-}
-
-func clamp8(v float32) uint8 {
-	if v < 0 {
-		return 0
-	}
-	if v > 255 {
-		return 255
-	}
-	return uint8(v)
 }
 
 // Close stops ffmpeg.
