@@ -193,6 +193,7 @@ public class MainActivity extends Activity {
                     Session s = Camaras.connect(prefs.getString("serial", ""), prefs.getString("user", "admin"),
                             Secret.open(prefs.getString("pass", "")));
                     session = s;
+                    addExtras(s); // standalone cameras (own tunnel each), best-effort
                     String cams = s.cameras();
                     ui.post(() -> started(cams));
                     return;
@@ -208,6 +209,28 @@ public class MainActivity extends Activity {
                 }
             }
         }).start();
+    }
+
+    // addExtras opens the standalone cameras from the imported config; each becomes
+    // one more camera in the list (its own tunnel). A camera that does not open is
+    // skipped (logged), so the NVR cameras still come up.
+    private void addExtras(Session s) {
+        String js = prefs.getString("extra_cams", "");
+        if (js.isEmpty()) return;
+        try {
+            JSONArray a = new JSONArray(js);
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject c = a.getJSONObject(i);
+                String sealed = c.optString("p", "");
+                String pass = sealed.isEmpty() ? "" : Secret.open(sealed);
+                try {
+                    s.addExtra(c.optString("sn").trim(), c.optString("u", "admin").trim(), pass, c.optString("n", "").trim());
+                } catch (Exception ex) {
+                    android.util.Log.w("camaras", "camara suelta " + c.optString("n") + ": " + ex.getMessage());
+                }
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     private void setStatus(String s) { status = s; ui.post(() -> overlay.invalidate()); }
@@ -777,6 +800,24 @@ public class MainActivity extends Activity {
                 if (!java.util.Arrays.asList(KNOWN).contains(k)) extra.put(k, ini.optString(k));
             }
             e.putString("ini_extra", extra.toString());
+            // standalone cameras (not on the NVR): keep each one's serial, user, sealed password and name
+            JSONArray ex = o.optJSONArray("extra");
+            if (ex != null && ex.length() > 0) {
+                JSONArray store = new JSONArray();
+                for (int i = 0; i < ex.length(); i++) {
+                    JSONObject c = ex.getJSONObject(i);
+                    JSONObject d = new JSONObject();
+                    d.put("sn", c.optString("sn").trim());
+                    d.put("u", c.optString("u", "admin").trim());
+                    String cp = c.optString("p", "");
+                    d.put("p", cp.isEmpty() ? "" : Secret.seal(cp));
+                    d.put("n", c.optString("n", "").trim());
+                    store.put(d);
+                }
+                e.putString("extra_cams", store.toString());
+            } else {
+                e.remove("extra_cams"); // the shared config is the source of truth
+            }
             e.putString("hd", o.optString("hd", ""));
             e.putString("orden", o.optString("orden", ""));
             // the TV app keeps the panorama per channel; this app has one switch: on if any is on

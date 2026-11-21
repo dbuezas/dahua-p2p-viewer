@@ -22,6 +22,9 @@ import (
 const (
 	httpPort = 21580 // local ports of the tunnel on the phone
 	rtspPort = 21554
+
+	extraBasePort  = 21600 // standalone cameras: one local RTSP port each, from here
+	extraBaseIndex = 100   // and made-up camera numbers from here (never clash with the NVR's)
 )
 
 // Session is one connection to the NVR.
@@ -36,6 +39,16 @@ type Session struct {
 
 	calib   *http.Server
 	meshVer int
+
+	extras   map[int]*extraSrc   // standalone cameras (not on the NVR), by made-up number
+	extraTns []*p2ptunnel.Tunnel // their tunnels, to close with the session
+}
+
+// extraSrc is one standalone camera's own local RTSP port and login.
+type extraSrc struct {
+	port int
+	user string
+	pass string
 }
 
 // SetClouds sets the P2P servers, "server|key|user" comma separated (camaras.ini
@@ -124,12 +137,54 @@ func (s *Session) Cameras() string {
 	return string(b)
 }
 
+// AddExtra adds a standalone camera (not on the NVR), reached by its own P2P
+// serial. It opens the camera's tunnel and a local RTSP port, and makes the
+// camera show in Cameras() with a made-up number (100, 101 ...). Call it after
+// Connect and before Cameras(). An empty user means "admin".
+func (s *Session) AddExtra(serial, user, pass, name string) error {
+	tn, err := p2ptunnel.Open(serial)
+	if err != nil {
+		return fmt.Errorf("tunel: %v", err)
+	}
+	s.mu.Lock()
+	i := len(s.extraTns)
+	s.mu.Unlock()
+	port := extraBasePort + i
+	if err := tn.Forward("127.0.0.1", port, 554); err != nil {
+		tn.Close()
+		return err
+	}
+	if user == "" {
+		user = "admin"
+	}
+	idx := extraBaseIndex + i
+	if name == "" {
+		name = fmt.Sprintf("Camara %d", i+1)
+	}
+	s.mu.Lock()
+	if s.extras == nil {
+		s.extras = map[int]*extraSrc{}
+	}
+	s.extras[idx] = &extraSrc{port: port, user: user, pass: pass}
+	s.extraTns = append(s.extraTns, tn)
+	s.cams = append(s.cams, nvrlib.Channel{Index: idx, Name: name, Type: "IMOU", Enable: true})
+	s.mu.Unlock()
+	return nil
+}
+
 // RTSP is the local address of a camera's video (hd: main stream, else the
 // sub stream), through the tunnel.
 func (s *Session) RTSP(ch int, hd bool) string {
 	sub := 1
 	if hd {
 		sub = 0
+	}
+	s.mu.Lock()
+	e := s.extras[ch]
+	s.mu.Unlock()
+	if e != nil { // a standalone camera: its own port and login, always channel 1
+		return fmt.Sprintf("rtsp://%s:%s@127.0.0.1:%d/cam/realmonitor?channel=1&subtype=%d",
+			url.QueryEscape(e.user), url.QueryEscape(e.pass), e.port, sub)
 	}
 	return fmt.Sprintf("rtsp://%s:%s@127.0.0.1:%d/cam/realmonitor?channel=%d&subtype=%d",
 		url.QueryEscape(s.user), url.QueryEscape(s.pass), rtspPort, ch+1, sub)
@@ -155,6 +210,9 @@ func (s *Session) Close() {
 	s.StopCalib()
 	if s.c != nil {
 		s.c.Logout() // free the NVR login at once (through the tunnel, so first)
+	}
+	for _, tn := range s.extraTns {
+		tn.Close()
 	}
 	s.tn.Close()
 }
