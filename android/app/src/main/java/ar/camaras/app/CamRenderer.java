@@ -12,6 +12,8 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
@@ -34,6 +36,7 @@ final class CamRenderer implements GLSurfaceView.Renderer {
         volatile int vw = 16, vh = 9;
         volatile boolean playing;
         volatile boolean software; // its hardware decoder failed: use the software one
+        volatile boolean hd;       // what its player asked for (HD or the low quality)
         volatile int frames;       // frames drawn into the texture (for the log)
         volatile Mesh mesh;
         Mesh uploaded;
@@ -53,6 +56,9 @@ final class CamRenderer implements GLSurfaceView.Renderer {
 
     private final GLSurfaceView view;
     volatile List<Stream> streams = new ArrayList<>();
+    // streams of videos still opening (HD on or off): fed by their own players, drawn
+    // nowhere until swap() puts one in place of the old one
+    final List<Stream> spare = new CopyOnWriteArrayList<>();
     volatile List<Tile> tiles = new ArrayList<>();
     volatile int big = -1;
     volatile float zoom = 1, cx = 0.5f, cy = 0.5f; // digital zoom of the big tile
@@ -66,25 +72,65 @@ final class CamRenderer implements GLSurfaceView.Renderer {
     void makeStreams(final int[] chans, final Ready ready) {
         view.queueEvent(() -> {
             List<Stream> list = new ArrayList<>();
-            int[] t = new int[chans.length];
-            GLES20.glGenTextures(chans.length, t, 0);
-            for (int i = 0; i < chans.length; i++) {
-                Stream s = new Stream(chans[i]);
-                s.tex = t[i];
-                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, s.tex);
-                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
-                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
-                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
-                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-                s.st = new SurfaceTexture(s.tex);
-                s.st.setOnFrameAvailableListener(st -> { s.fresh = true; view.requestRender(); });
-                s.surface = new Surface(s.st);
-                android.opengl.Matrix.setIdentityM(s.mtx, 0);
-                list.add(s);
-            }
+            for (int ch : chans) list.add(newStream(ch));
             streams = list;
             view.post(() -> ready.onSurfaces(list));
         });
+    }
+
+    /** A texture + surface for the other video of a channel (HD on or off), made on the GL thread. */
+    void makeSpare(final int ch, final Consumer<Stream> ready) {
+        view.queueEvent(() -> {
+            Stream s = newStream(ch);
+            spare.add(s);
+            view.post(() -> ready.accept(s));
+        });
+    }
+
+    /** The spare stream takes the place of stream i (it keeps the old one's panorama mesh);
+     *  then done gets the old one, whose player must stop before free(old). */
+    void swap(final int i, final Stream n, final Consumer<Stream> done) {
+        view.queueEvent(() -> {
+            List<Stream> list = new ArrayList<>(streams);
+            Stream old = list.get(i);
+            n.mesh = old.mesh;
+            n.uploaded = old.uploaded;
+            n.meshTex = old.meshTex;
+            n.seamTex = old.seamTex;
+            old.uploaded = null; // its mesh textures now belong to n
+            list.set(i, n);
+            streams = list;
+            spare.remove(n);
+            view.requestRender();
+            view.post(() -> done.accept(old));
+        });
+    }
+
+    /** Frees a stream's texture and surface (its player has already stopped). */
+    void free(final Stream s) {
+        view.queueEvent(() -> {
+            spare.remove(s);
+            s.surface.release();
+            s.st.release();
+            GLES20.glDeleteTextures(1, new int[]{s.tex}, 0);
+        });
+    }
+
+    private Stream newStream(int ch) {
+        int[] t = new int[1];
+        GLES20.glGenTextures(1, t, 0);
+        Stream s = new Stream(ch);
+        s.tex = t[0];
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, s.tex);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        s.st = new SurfaceTexture(s.tex);
+        s.st.setOnFrameAvailableListener(st -> { s.fresh = true; view.requestRender(); });
+        s.surface = new Surface(s.st);
+        android.opengl.Matrix.setIdentityM(s.mtx, 0);
+        return s;
     }
 
     @Override public void onSurfaceCreated(GL10 gl, EGLConfig cfg) {
@@ -98,21 +144,24 @@ final class CamRenderer implements GLSurfaceView.Renderer {
     }
 
     @Override public void onDrawFrame(GL10 gl) {
-        for (Stream s : streams) {
-            if (s.fresh) {
-                s.fresh = false;
-                s.st.updateTexImage();
-                s.frames++;
-                s.st.getTransformMatrix(s.mtx);
-                s.playing = true;
-            }
-        }
+        for (Stream s : streams) latch(s);
+        for (Stream s : spare) latch(s);
         GLES20.glClearColor(0, 0, 0, 1);
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
         List<Tile> ts = tiles;
         int b = big;
         if (b >= 0 && b < ts.size()) draw(ts.get(b), true);
         for (int i = 0; i < ts.size(); i++) if (i != b) draw(ts.get(i), false);
+    }
+
+    /** Takes the stream's newest frame into its texture. */
+    private void latch(Stream s) {
+        if (!s.fresh) return;
+        s.fresh = false;
+        s.st.updateTexImage();
+        s.frames++;
+        s.st.getTransformMatrix(s.mtx);
+        s.playing = true;
     }
 
     /** Where the picture goes inside its tile: whole cameras fill it, halves and panoramas keep their shape. */

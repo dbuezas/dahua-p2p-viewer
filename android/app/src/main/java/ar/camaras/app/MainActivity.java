@@ -43,9 +43,11 @@ import org.json.JSONObject;
 import java.io.File;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import ar.camaras.camaras.Camaras;
@@ -65,6 +67,10 @@ public class MainActivity extends Activity {
     private Overlay overlay;
     private volatile Session session;
     private final List<ExoPlayer> players = new ArrayList<>();
+    // HD on or off: the other video of a channel opening next to the one on screen (ch -> its player, its stream)
+    private final Map<Integer, ExoPlayer> opening = new HashMap<>();
+    private final Map<Integer, CamRenderer.Stream> openingStream = new HashMap<>();
+    private final Set<ExoPlayer> released = new HashSet<>(); // a retry must not start these again
     private List<CamRenderer.Stream> streams = new ArrayList<>();
     private final List<CamRenderer.Tile> tiles = new ArrayList<>();
     private int[] chans = new int[0];
@@ -256,7 +262,10 @@ public class MainActivity extends Activity {
     }
 
     // ---- video: one player per channel, its decoder writes into the stream's texture ----
-    private ExoPlayer play(CamRenderer.Stream s) {
+    private ExoPlayer play(CamRenderer.Stream s) { return play(s, true); }
+
+    /** go = false: the caller starts it (after adding its own listeners). */
+    private ExoPlayer play(CamRenderer.Stream s, boolean go) {
         // a stream whose hardware decoder failed (the Pixel 8's HEVC decoder fails on
         // the 2304x2592 HD of the split camera) gets the phone's software decoders
         androidx.media3.exoplayer.mediacodec.MediaCodecSelector sel = (mime, secure, tunneling) -> {
@@ -288,20 +297,98 @@ public class MainActivity extends Activity {
                 ui.postDelayed(() -> start(p, s), 2000); // try again, like the TV app's watchdog
             }
         });
-        start(p, s);
+        if (go) start(p, s);
+        else p.setMediaSource(new RtspMediaSource.Factory().setForceUseRtpTcp(true)
+                .createMediaSource(MediaItem.fromUri(Uri.parse(session.rtsp(s.ch, s.hd = wantHD(s))))));
         return p;
     }
 
     private void start(ExoPlayer p, CamRenderer.Stream s) {
         Session ss = session;
-        if (ss == null) return;
-        boolean hd = hdSet().contains(s.ch);
-        // an HD panorama needs the phone's mesh, like the TV app
-        if (hd && isSplit(s.ch) && panoOn() && s.mesh == null) hd = false;
+        if (ss == null || released.contains(p)) return; // stopped meanwhile
+        boolean hd = wantHD(s);
+        s.hd = hd;
         p.setMediaSource(new RtspMediaSource.Factory().setForceUseRtpTcp(true)
                 .createMediaSource(MediaItem.fromUri(Uri.parse(ss.rtsp(s.ch, hd)))));
         p.prepare();
         p.play();
+    }
+
+    /** HD or not for this stream: an HD panorama needs the phone's mesh, like the TV app. */
+    private boolean wantHD(CamRenderer.Stream s) {
+        boolean hd = hdSet().contains(s.ch);
+        if (hd && isSplit(s.ch) && panoOn() && s.mesh == null) hd = false;
+        return hd;
+    }
+
+    /**
+     * HD on or off, like the TV app: the other video opens next to the one on screen,
+     * which keeps playing; when the new one has played a cushion (1.2 s), it takes the
+     * old one's place (no stop on screen). Meanwhile a snake runs around the HD tag.
+     */
+    private void switchVideo(int ch) {
+        int i = -1;
+        for (int k = 0; k < streams.size(); k++) if (streams.get(k).ch == ch) i = k;
+        if (i < 0) return;
+        dropOpening(ch); // asked again while opening: start over with what is wanted now
+        CamRenderer.Stream cur = streams.get(i);
+        if (wantHD(cur) == cur.hd) { overlay.invalidate(); return; } // same video as now
+        final int idx = i;
+        opening.put(ch, null); // the snake starts now
+        overlay.invalidate();
+        renderer.makeSpare(ch, ns -> {
+            if (!opening.containsKey(ch) || opening.get(ch) != null) { renderer.free(ns); return; } // given up meanwhile
+            ns.mesh = streams.get(idx).mesh;
+            ns.software = streams.get(idx).software && wantHD(ns) == streams.get(idx).hd;
+            openingStream.put(ch, ns);
+            ExoPlayer np = play(ns, false);
+            opening.put(ch, np);
+            np.addListener(new Player.Listener() {
+                @Override public void onRenderedFirstFrame() {
+                    np.removeListener(this);
+                    ui.postDelayed(() -> take(ch, idx, np, ns), 1200);
+                }
+            });
+            np.prepare();
+            np.play();
+            // never opens: forget it and open the old way (stop and open again)
+            ui.postDelayed(() -> {
+                if (opening.get(ch) == np) {
+                    android.util.Log.w("camaras", "canal " + ch + ": cambio de video: el nuevo no abrio");
+                    dropOpening(ch);
+                    restart(ch);
+                }
+            }, 25000);
+        });
+    }
+
+    /** The new video replaces the old one on screen. */
+    private void take(int ch, int idx, ExoPlayer np, CamRenderer.Stream ns) {
+        if (opening.get(ch) != np || idx >= streams.size() || streams.get(idx).ch != ch) return;
+        opening.remove(ch);
+        openingStream.remove(ch);
+        renderer.swap(idx, ns, old -> {
+            List<CamRenderer.Stream> list = new ArrayList<>(streams);
+            list.set(idx, ns);
+            streams = list;
+            ExoPlayer op = players.set(idx, np);
+            released.add(op);
+            op.release();
+            renderer.free(old);
+            android.util.Log.i("camaras", "canal " + ch + ": cambio de video (" + (ns.hd ? "HD" : "baja") + ")");
+            relayout();
+            overlay.invalidate();
+        });
+    }
+
+    /** Gives up the video opening for this channel, if any. */
+    private void dropOpening(int ch) {
+        if (!opening.containsKey(ch)) return;
+        ExoPlayer p = opening.remove(ch);
+        CamRenderer.Stream s = openingStream.remove(ch);
+        if (p != null) { released.add(p); p.release(); }
+        if (s != null) renderer.free(s);
+        overlay.invalidate();
     }
 
     private void restart(int ch) {
@@ -309,7 +396,8 @@ public class MainActivity extends Activity {
     }
 
     private void stopPlayers() {
-        for (ExoPlayer p : players) p.release();
+        for (Integer ch : new ArrayList<>(opening.keySet())) dropOpening(ch);
+        for (ExoPlayer p : players) { released.add(p); p.release(); }
         players.clear();
     }
 
@@ -489,19 +577,49 @@ public class MainActivity extends Activity {
                 return;
             }
             Set<Integer> hd = hdSet();
+            boolean snaking = false;
             for (int i = 0; i < tiles.size(); i++) {
                 CamRenderer.Tile t = tiles.get(i);
                 CamRenderer.Stream s = streams.get(t.stream);
                 RectF r = t.rect;
                 boolean small = renderer.big >= 0 && i != renderer.big;
                 if (!s.playing) { text.setTextSize(small ? 18 : 30); c.drawText(t.name + "  (conectando...)", r.left + 12, r.top + 40, text); }
-                if (hd.contains(s.ch) && !small) {
-                    tag.setTextSize(34);
-                    float tw = tag.measureText("HD");
+                if (small) continue;
+                tag.setTextSize(34);
+                float tw = tag.measureText("HD");
+                if (hd.contains(s.ch)) {
                     c.drawRect(r.left + 24, r.top + 20, r.left + 24 + tw + 20, r.top + 66, box);
                     c.drawText("HD", r.left + 34, r.top + 56, tag);
                 }
+                // the other video is opening (HD on or off): a snake runs around the tag (or where it was)
+                if (opening.containsKey(s.ch)) {
+                    float g = 34 / 6f;
+                    snake(c, new RectF(r.left + 24 - g, r.top + 20 - g, r.left + 24 + tw + 20 + g, r.top + 66 + g), 34 / 4f);
+                    snaking = true;
+                }
             }
+            if (snaking) postInvalidateOnAnimation();
+        }
+
+        private final Paint snakePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Path snakeRing = new android.graphics.Path(), snakePart = new android.graphics.Path();
+
+        /** 40% of a rounded rectangle's outline, going round clockwise (like the TV app's drawSnake). */
+        private void snake(Canvas c, RectF r, float rc) {
+            snakePaint.setStyle(Paint.Style.STROKE);
+            snakePaint.setStrokeWidth(34 / 7f);
+            snakePaint.setStrokeCap(Paint.Cap.ROUND);
+            snakePaint.setStrokeJoin(Paint.Join.ROUND);
+            snakePaint.setColor(0xffffd040);
+            snakeRing.reset();
+            snakeRing.addRoundRect(r, rc, rc, android.graphics.Path.Direction.CW);
+            android.graphics.PathMeasure pm = new android.graphics.PathMeasure(snakeRing, true);
+            float total = pm.getLength();
+            float start = (float) ((System.currentTimeMillis() / 1000.0 * 0.8) % 1.0) * total, end = start + 0.4f * total;
+            snakePart.reset();
+            pm.getSegment(start, Math.min(end, total), snakePart, true);
+            if (end > total) pm.getSegment(0, end - total, snakePart, true);
+            c.drawPath(snakePart, snakePaint);
         }
     }
 
@@ -584,7 +702,7 @@ public class MainActivity extends Activity {
                 StringBuilder sb = new StringBuilder();
                 for (int x : s) sb.append(sb.length() > 0 ? "," : "").append(x);
                 prefs.edit().putString("hd", sb.toString()).apply();
-                restart(ch);
+                switchVideo(ch);
                 overlay.invalidate();
             } else if (which == 1) {
                 prefs.edit().putBoolean("pano", !panoOn()).apply();
