@@ -21,6 +21,9 @@ import (
 // credRe matches the user:password part of a URL, so errors never show it.
 var credRe = regexp.MustCompile(`//[^/@\s]*@`)
 
+// srcSizeRe finds the picture size in ffmpeg's first "Video:" line ("..., 2304x2592, ...").
+var srcSizeRe = regexp.MustCompile(`Video:[^|]*?, (\d{2,5})x(\d{2,5})`)
+
 // redact hides URL credentials in a message.
 func redact(s string) string { return credRe.ReplaceAllString(s, "//***@") }
 
@@ -31,6 +34,8 @@ type Decoder struct {
 	reap   sync.Once    // Wait exactly once, whoever sees the end first
 	Frames chan *Frame
 	W, H   int
+	SrcW   int // the camera's picture size, before any shrinking (0 = unknown)
+	SrcH   int
 	Info   string // ffmpeg's lines about the input video (codec) and hardware decoding
 }
 
@@ -47,12 +52,13 @@ func Open(input string, rtspTCP bool) (*Decoder, error) {
 // OpenProbe: long = read more of the stream before starting (some cameras only
 // show their size later).
 func OpenProbe(input string, rtspTCP, long bool) (*Decoder, error) {
-	return OpenScaled(input, rtspTCP, long, 0)
+	return OpenScaled(input, rtspTCP, long, 0, 1)
 }
 
 // OpenScaled: like OpenProbe; maxW > 0 makes ffmpeg shrink wider pictures to that
-// width (less work and memory when the full size is not needed).
-func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
+// width (less work and memory when the full size is not needed); threads = decoding
+// threads (below 1 counts as 1).
+func OpenScaled(input string, rtspTCP, long bool, maxW, threads int) (*Decoder, error) {
 	size, dur := "1000000", "2000000"
 	if long {
 		size, dur = "5000000", "8000000"
@@ -65,16 +71,15 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 	}
 	// -vsync passthrough: only the camera's real frames (no repeated ones to keep a
 	// fixed rate: they waste CPU and would hide a stalled stream from the watchdog)
-	// one decoding thread per camera: with the default (one per CPU thread) frame
-	// threading cost 35-40% more CPU on the TV PC (i7 Q720) for the same video and
-	// holds frames back; one thread still decodes the biggest stream (2592x1520
-	// HEVC) 2.5x faster than real time there, and each camera has its own process
+	// few decoding threads, chosen by the caller (one for most cameras): ffmpeg's
+	// default (one per CPU thread) cost 35-40% more CPU on the TV PC (i7 Q720) for
+	// the same video and holds frames back; each camera has its own process
 	// (FFMPEG_THREADS overrides it, for measurements; 0 = ffmpeg's default)
-	threads := "1"
+	th := strconv.Itoa(max(threads, 1))
 	if v := os.Getenv("FFMPEG_THREADS"); v != "" {
-		threads = v
+		th = v
 	}
-	args = append(args, "-threads", threads)
+	args = append(args, "-threads", th)
 	// quality trades, for comparing by eye (off by default): FFMPEG_SKIP_LOOP=1 skips
 	// the deblocking filter (~5% of a core on the HD panorama, slightly blockier)
 	if os.Getenv("FFMPEG_SKIP_LOOP") == "1" {
@@ -128,6 +133,11 @@ func OpenScaled(input string, rtspTCP, long bool, maxW int) (*Decoder, error) {
 		return nil, fmt.Errorf("ffmpeg: %v %s", first.err, redact(tail.get()))
 	}
 	d := &Decoder{cmd: cmd, pts: pts, Frames: make(chan *Frame, 2), W: first.w, H: first.h, Info: tail.find("Video:", "Failed", "failed", "hwaccel")}
+	// the camera's own size: the first "Video:" line is the input stream's
+	if m := srcSizeRe.FindStringSubmatch(d.Info); m != nil {
+		d.SrcW, _ = strconv.Atoi(m[1])
+		d.SrcH, _ = strconv.Atoi(m[2])
+	}
 	go d.read(br)
 	return d, nil
 }

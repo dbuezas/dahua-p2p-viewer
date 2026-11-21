@@ -57,7 +57,8 @@ The old app is kept in [`deprecada/`](deprecada/).
   (macOS) or with DPAPI (Windows).
 - **Settings folder**: next to the exe if a `camaras.ini` is there, else the user's config folder
   (`~/Library/Application Support/camaras-go` on macOS). The files are the same as the old app's:
-  `camaras.ini`, `hd.txt`, `orden.txt`, `panoramica.txt`.
+  `camaras.ini`, `hd.txt`, `orden.txt`, `panoramica.txt`. The app also writes `tamanos.txt` (each camera's
+  picture size, to pick ffmpeg's decoding threads: one per started 4 megapixels).
 - **ffmpeg** must be on the PATH (on Windows, next to the exe works).
 
 `camaras.ini` keys (all optional): `sn`, `ptz` (PTZ camera channels), `ptz_velocidad`,

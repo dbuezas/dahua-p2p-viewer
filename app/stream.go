@@ -87,9 +87,18 @@ func (s *stream) open(slow bool) (*video.Decoder, int, error) {
 	if v, err := strconv.Atoi(os.Getenv("CAMARAS_MAXW")); err == nil && sub == 0 {
 		maxW = v
 	}
-	d, err := video.OpenScaled(s.rtspURL(sub), true, slow, maxW)
+	// decoding threads by the camera's picture size, learned at an earlier start
+	// (tamanos.txt): one per started 4 megapixels. One thread decodes the 6 MP HD
+	// panorama in real time at ~75% of a core on the TV PC; a second one leaves room
+	// to catch up after a stall (a burst of late video), for ~0.1 core more.
+	pix := s.g.cfg.srcPixels(s.ch, sub)
+	threads := min(1+(pix-1)/4_000_000, 4)
+	d, err := video.OpenScaled(s.rtspURL(sub), true, slow, maxW, threads)
 	if err == nil {
-		log.Printf("canal %d: video %dx%d (%s) %s", s.ch, d.W, d.H, map[int]string{0: "HD", 1: "baja"}[sub], d.Info)
+		log.Printf("canal %d: video %dx%d (%s, %d hilo(s)) %s", s.ch, d.W, d.H, map[int]string{0: "HD", 1: "baja"}[sub], threads, d.Info)
+		if p := d.SrcW * d.SrcH; p > 0 && p != pix {
+			s.g.cfg.setSrcPixels(s.ch, sub, p) // the next start picks the threads for this size
+		}
 	}
 	return d, sub, err
 }

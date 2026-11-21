@@ -2,15 +2,17 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // config reads the same settings files as the old PC app, so both share them:
-// camaras.ini (key=value), hd.txt, orden.txt and panoramica.txt. They live next to
-// the exe when a camaras.ini is there (the PC), else in the user's config folder.
+// camaras.ini (key=value), hd.txt, orden.txt and panoramica.txt (plus this app's own
+// tamanos.txt). They live next to the exe when a camaras.ini is there (the PC), else in the user's config folder.
 type config struct {
 	dir string
 	kv  map[string]string
@@ -131,4 +133,38 @@ func (c *config) writePanoModes(m map[int]int) {
 		b.WriteString(strconv.Itoa(ch) + " " + strconv.Itoa(mode) + "\n")
 	}
 	os.WriteFile(c.path("panoramica.txt"), []byte(b.String()), 0644)
+}
+
+// tamanos.txt: "channel sub pixels" per line, each camera's picture size as last seen
+// (sub 0 = HD, 1 = the small stream), so the next start can pick the decoding threads.
+var srcPixMu sync.Mutex
+
+func (c *config) srcPixels(ch, sub int) int {
+	srcPixMu.Lock()
+	defer srcPixMu.Unlock()
+	return c.readSrcPixels()[[2]int{ch, sub}]
+}
+
+func (c *config) setSrcPixels(ch, sub, pix int) {
+	srcPixMu.Lock()
+	defer srcPixMu.Unlock()
+	m := c.readSrcPixels()
+	m[[2]int{ch, sub}] = pix
+	var b strings.Builder
+	for k, v := range m {
+		fmt.Fprintf(&b, "%d %d %d\n", k[0], k[1], v)
+	}
+	os.WriteFile(c.path("tamanos.txt"), []byte(b.String()), 0644)
+}
+
+func (c *config) readSrcPixels() map[[2]int]int {
+	out := map[[2]int]int{}
+	b, _ := os.ReadFile(c.path("tamanos.txt"))
+	for _, line := range strings.Split(string(b), "\n") {
+		var ch, sub, pix int
+		if n, _ := fmt.Sscanf(line, "%d %d %d", &ch, &sub, &pix); n == 3 {
+			out[[2]int{ch, sub}] = pix
+		}
+	}
+	return out
 }
