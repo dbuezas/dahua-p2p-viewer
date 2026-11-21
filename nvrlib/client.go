@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type Client struct {
 	session interface{}
 	user    string
 	pass    string
+	relog   sync.Mutex // one new login at a time
 }
 
 // New makes a client for the NVR reached at baseHost (e.g. "127.0.0.1:1580",
@@ -85,10 +87,33 @@ func (c *Client) callPath(path, method string, params interface{}) (map[string]i
 }
 
 func (c *Client) call(method string, params interface{}) (map[string]interface{}, error) {
-	return c.callPath("/RPC2", method, params)
+	m, err := c.callPath("/RPC2", method, params)
+	if err != nil && c.relogin() {
+		m, err = c.callPath("/RPC2", method, params)
+	}
+	return m, err
+}
+
+// relogin: the NVR closes the connection (EOF) on every call of a session it no longer knows (it timed out, or
+// the NVR dropped it when the tunnel was opened again): log in again. true = logged in.
+func (c *Client) relogin() bool {
+	if c.session == nil || c.user == "" {
+		return false
+	}
+	c.relog.Lock()
+	defer c.relog.Unlock()
+	return c.Login() == nil
 }
 
 func (c *Client) callObj(obj float64, method string, params interface{}) (map[string]interface{}, error) {
+	m, err := c.callObj1(obj, method, params)
+	if err != nil && c.relogin() {
+		m, err = c.callObj1(obj, method, params)
+	}
+	return m, err
+}
+
+func (c *Client) callObj1(obj float64, method string, params interface{}) (map[string]interface{}, error) {
 	var lastErr error
 	for try := 0; try < 3; try++ {
 		if try > 0 {
