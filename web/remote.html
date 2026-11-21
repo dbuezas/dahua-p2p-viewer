@@ -47,7 +47,6 @@ body.off #off{display:block}
 <div id=grid></div><img id=ghost>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
 <div id=iarow><button id=iabtn>Mejorar foto con IA</button></div>
-<p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4, linea blanca = costura.</p>
 <div id=share><button id=sharebtn>Mostrar en la tele el QR de configuracion</button>
 <p class=tip style='margin:4px 0 0'>Para copiar todo (serie, usuario, clave y ajustes) a la app de otro telefono: escanealo con su camara. Incluye la clave; se oculta solo en 60 s.</p></div>
 <script src='/ia.js'></script>
@@ -87,7 +86,6 @@ function draw(s){st=s;var g=document.getElementById('grid');
   d.querySelector('.hd').classList.toggle('on',c.hd)});
  document.getElementById('msg').textContent=s.msg||'';
  var sb=document.getElementById('sharebtn');sb.classList.toggle('on',!!s.share);sb.textContent=s.share?'Ocultar el QR de la tele':'Mostrar en la tele el QR de configuracion';
- document.getElementById('gridtip').style.display=s.pano&&!s.msg?'':'none';
  var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none';document.getElementById('iarow').style.display=c?'block':'none';fotoState(s)}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
 var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
