@@ -92,6 +92,7 @@ type game struct {
 	mu       sync.Mutex
 	tiles    []*tile
 	streams  map[int]*stream
+	extras   map[int]*extraCam // standalone cameras (not on the NVR), by made-up channel number
 	big      *tile
 	status   string // shown when there is nothing else to show
 	chans    []nvrlib.Channel
@@ -193,6 +194,9 @@ func (g *game) buildTiles(chans []nvrlib.Channel) {
 				pano = m == 3
 			}
 			s = &stream{g: g, ch: c.Index, split: isSplit, hd: hd[c.Index], pano: pano, swapReq: make(chan struct{}, 1)}
+			if g.extras != nil {
+				s.src = g.extras[c.Index] // a standalone camera streams through its own relay
+			}
 			if isSplit {
 				s.mesh = loadMesh3(g.cfg.path("panoramica3_" + strconv.Itoa(c.Index) + ".bin"))
 				if s.mesh != nil {
@@ -894,6 +898,18 @@ func (g *game) connectOnce(serial string) error {
 	if err != nil {
 		tn.Close()
 		return fmt.Errorf("lista de camaras: %v", err)
+	}
+	// standalone cameras (camaras_extra.txt): one made-up channel each, after the NVR's
+	extras := g.loadExtras()
+	g.mu.Lock()
+	g.extras = map[int]*extraCam{}
+	for _, ec := range extras {
+		g.extras[ec.index] = ec
+		chans = append(chans, nvrlib.Channel{Index: ec.index, Name: ec.name, Type: "IMOU", Enable: true})
+	}
+	g.mu.Unlock()
+	if len(extras) > 0 {
+		log.Printf("camaras sueltas: %d", len(extras))
 	}
 	g.client = c
 	g.mu.Lock()

@@ -20,8 +20,9 @@ import (
 type stream struct {
 	paceLog time.Time // last "ritmo" diagnostic line
 	g       *game
-	ch      int  // 0-based NVR channel (RTSP channel = ch+1)
-	split   bool // two cameras stacked top + bottom
+	ch      int       // 0-based NVR channel (RTSP channel = ch+1)
+	src     *extraCam // set for a standalone camera (its own tunnel and relay); nil = on the NVR
+	split   bool      // two cameras stacked top + bottom
 
 	swapReq chan struct{} // HD changed: open the new video next to the old one (switchTo)
 
@@ -61,6 +62,14 @@ type stream struct {
 // rtspURL builds the stream address: the local RTSP auth relay (rtspauth.go), so
 // the password is never on ffmpeg's command line.
 func (s *stream) rtspURL(sub int) string {
+	// a standalone camera: its own relay, always channel 1
+	if s.src != nil {
+		relay := s.src.relayAddr(s.g)
+		if relay == "" {
+			return "" // the tunnel is not up yet: open() fails and run() tries again
+		}
+		return fmt.Sprintf("rtsp://%s/cam/realmonitor?channel=1&subtype=%d", relay, sub)
+	}
 	return fmt.Sprintf("rtsp://%s/cam/realmonitor?channel=%d&subtype=%d", s.g.rtspRelay(), s.ch+1, sub)
 }
 

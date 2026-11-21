@@ -17,3 +17,4 @@ go.work.sum
 /PLAN.md
 /bench.sh
 dist/
+camaras_extra.txt

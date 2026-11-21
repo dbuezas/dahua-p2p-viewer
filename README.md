@@ -59,6 +59,11 @@ The old app is kept in [`deprecada/`](deprecada/).
   `camaras.ini`, `hd.txt`, `orden.txt`, `panoramica.txt`. The app also writes `tamanos.txt` (each camera's
   picture size, to pick ffmpeg's decoding threads: one per started 4 megapixels).
 - **ffmpeg** must be on the PATH (on Windows, next to the exe works).
+- **Standalone cameras** (not on the NVR, reached by their own P2P serial, e.g. an Imou camera
+  with cloud): list them in `camaras_extra.txt` in the settings folder, one per line
+  `SERIAL user password Name with spaces` (blank lines and `#` comments skipped). Each gets its
+  own tunnel and RTSP relay and shows as one more tile; video only (HD and low), no PTZ, panorama
+  or clock from the device. The file holds a password, so it is not committed.
 
 `camaras.ini` keys (all optional): `sn`, `ptz` (PTZ camera channels), `ptz_velocidad`,
 `ptz_invertir_pan`, `dividir` (dual-lens camera channel), `colchon_ms` (playout cushion),
