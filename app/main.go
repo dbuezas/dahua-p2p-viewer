@@ -3,7 +3,8 @@
 //   - all cameras fill the screen without stretching (best layout), the split
 //     two-lens camera as one wide panorama;
 //   - click a camera: it goes big (the others small over its bottom edge); click
-//     the big one or Esc: back to all; Esc with all: close;
+//     the big one or Esc: back to all; Esc with all: out of fullscreen into a
+//     window, Esc again: close; F11: fullscreen on / off;
 //   - right click: HD on/off for that camera (saved in hd.txt);
 //   - drag a camera onto another: they swap places (saved in orden.txt);
 //   - big camera: wheel or +/- = smooth digital zoom, drag = move the picture;
@@ -400,8 +401,15 @@ func (g *game) Update() error {
 		} else if g.big != nil {
 			g.big = nil
 		} else if os.Getenv("NOQUIT") == "" {
-			return ebiten.Termination
+			if ebiten.IsFullscreen() {
+				setFullscreen(false)
+			} else {
+				return ebiten.Termination
+			}
 		}
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyF11) { // F11: fullscreen on / off
+		setFullscreen(!ebiten.IsFullscreen())
 	}
 	// digital zoom of the big camera: wheel, +/- (one step x1.25, 1x-4x)
 	if g.big != nil {
@@ -868,6 +876,19 @@ func (g *game) statsLog() {
 // alwaysDraw (FPSFULL=1, for measurements): draw every refresh even when nothing changed.
 var alwaysDraw bool
 
+var iconOnce sync.Once
+
+// setFullscreen switches between fullscreen and a window (Esc, F11). The window
+// icon is set the first time the app is in a window, never while fullscreen
+// (see main).
+func setFullscreen(on bool) {
+	ebiten.SetFullscreen(on)
+	if !on {
+		iconOnce.Do(setWindowIcon)
+	}
+	redraw()
+}
+
 // anyInput: a key, button, wheel, touch or mouse move since the last Update.
 func anyInput(cur image.Point, last *image.Point) bool {
 	moved := cur != *last
@@ -953,7 +974,7 @@ func main() {
 	// the icon only in a window: Ebiten cannot set it in fullscreen, keeps it
 	// pending and converts the pictures again on every frame (half the CPU on Linux)
 	if os.Getenv("WINDOWED") != "" {
-		setWindowIcon()
+		iconOnce.Do(setWindowIcon)
 	}
 	ebiten.SetWindowSize(1280, 720)
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
