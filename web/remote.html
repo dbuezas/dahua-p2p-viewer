@@ -259,10 +259,11 @@ var fotoOrig=document.getElementById('fotoorig'),foto=null,fotoW=null,fotoBox=do
 var fotoClosed=0,fotoMine=0; // the photo this page closed (ignore it while the TV still says it is open); the one it asked for
 function fotoMsg(t,tv){fotoMsgEl.textContent=t;if(tv!=null)cmd('foto msg '+tv)}
 function fotoK(){var f=foto;return Math.min(innerWidth/f.w,innerHeight/f.h)*f.z}
-// keep the photo on the screen: no black border once it is bigger than the screen (centered while smaller)
-function fotoClamp(){var f=foto,k=fotoK();if(!(k>0))return;
+// keep the view inside the photo as the TV shows it (its screen's shape, not this one's): no black border on the TV
+// once the photo is bigger than its screen, so every part of the photo can be seen there
+function fotoClamp(){var f=foto,F=f.F||{},tw=F.tw||innerWidth,th=F.th||innerHeight,k=Math.min(tw/f.w,th/f.h)*f.z;if(!(k>0))return;
  function c(v,size,view){var half=view/2/(size*k);return half>=0.5?0.5:Math.min(1-half,Math.max(half,v))}
- f.cx=c(f.cx,f.w,innerWidth);f.cy=c(f.cy,f.h,innerHeight)}
+ f.cx=c(f.cx,f.w,tw);f.cy=c(f.cy,f.h,th)}
 function fotoApply(send){var f=foto;if(!f||!f.w)return;fotoClamp();var k=fotoK(),tr='translate('+(innerWidth/2-f.cx*f.w*k)+'px,'+(innerHeight/2-f.cy*f.h*k)+'px) scale(';
  fotoCv.style.transform=tr+k+')';fotoOrig.style.transform=tr+(4*k)+')';
  if(send!==false){var now=Date.now();f.touched=now;if(now-(f.sent||0)>60){f.sent=now;cmd('foto ver '+f.cx.toFixed(4)+' '+f.cy.toFixed(4)+' '+f.z.toFixed(3))}
@@ -271,16 +272,16 @@ function fotoApply(send){var f=foto;if(!f||!f.w)return;fotoClamp();var k=fotoK()
 function fotoZoom(r,mx,my){var f=foto,k=fotoK();if(!(k>0)){f.z=Math.min(16,Math.max(1,f.z*r));return}var u=f.cx+(mx-innerWidth/2)/(f.w*k),v=f.cy+(my-innerHeight/2)/(f.h*k);
  f.z=Math.min(16,Math.max(1,f.z*r));k=fotoK();f.cx=Math.min(1,Math.max(0,u-(mx-innerWidth/2)/(f.w*k)));f.cy=Math.min(1,Math.max(0,v-(my-innerHeight/2)/(f.h*k)))}
 var fotoPt={},fotoTap=0;
-fotoCv.addEventListener('pointerdown',function(e){fotoCv.setPointerCapture(e.pointerId);fotoPt[e.pointerId]={x:e.clientX,y:e.clientY};
+fotoBox.addEventListener('pointerdown',function(e){if(e.target.closest('#fotobar'))return;try{fotoBox.setPointerCapture(e.pointerId)}catch(x){}fotoPt[e.pointerId]={x:e.clientX,y:e.clientY};
  var n=Object.keys(fotoPt).length,now=Date.now();
  if(n==1&&now-fotoTap<300&&foto){fotoZoom(foto.z>1.5?1/foto.z:3,e.clientX,e.clientY);fotoApply();fotoTap=0}else fotoTap=now});
-fotoCv.addEventListener('pointermove',function(e){var p=fotoPt[e.pointerId];if(!p||!foto||!foto.w)return;var ids=Object.keys(fotoPt),f=foto;
+fotoBox.addEventListener('pointermove',function(e){var p=fotoPt[e.pointerId];if(!p||!foto||!foto.w)return;var ids=Object.keys(fotoPt),f=foto;
  if(ids.length==1){var k=fotoK();f.cx=Math.min(1,Math.max(0,f.cx-(e.clientX-p.x)/(f.w*k)));f.cy=Math.min(1,Math.max(0,f.cy-(e.clientY-p.y)/(f.h*k)))}
  else{var o=fotoPt[ids[0]==e.pointerId?ids[1]:ids[0]],d0=Math.hypot(p.x-o.x,p.y-o.y),d1=Math.hypot(e.clientX-o.x,e.clientY-o.y);
   if(d0>10){fotoZoom(d1/d0,(e.clientX+o.x)/2,(e.clientY+o.y)/2);var k2=fotoK();f.cx=Math.min(1,Math.max(0,f.cx-(e.clientX-p.x)/2/(f.w*k2)));f.cy=Math.min(1,Math.max(0,f.cy-(e.clientY-p.y)/2/(f.h*k2)))}}
  p.x=e.clientX;p.y=e.clientY;fotoApply()});
 function fotoUp(e){delete fotoPt[e.pointerId]}
-fotoCv.addEventListener('pointerup',fotoUp);fotoCv.addEventListener('pointercancel',fotoUp);
+fotoBox.addEventListener('pointerup',fotoUp);fotoBox.addEventListener('pointercancel',fotoUp);
 fotoBox.addEventListener('wheel',function(e){if(!foto||!foto.w)return;e.preventDefault();fotoZoom(Math.exp(-e.deltaY/300),e.clientX,e.clientY);fotoApply()},{passive:false});
 addEventListener('resize',function(){fotoApply(false)});
 function fotoShowOrig(on){if(foto)foto.orig=on;fotoBox.classList.toggle('orig',on);document.getElementById('fotoab').textContent=on?'Ver IA':'Ver original'}

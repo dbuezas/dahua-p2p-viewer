@@ -121,7 +121,8 @@ type game struct {
 	shareImg   *ebiten.Image
 	shareUntil time.Time
 
-	foto *foto // "Mejorar foto" from the phone (foto.go)
+	foto    *foto // "Mejorar foto" from the phone (foto.go)
+	prevBig *tile // the big camera at the last Update (its zoom goes back to 1 when it changes)
 }
 
 func (g *game) streamList() []*stream {
@@ -318,6 +319,13 @@ func (g *game) Update() error {
 		return nil
 	}
 	g.layout()
+	// another camera big, or all of them again (TV, mouse or phone): the one that was big loses its digital zoom
+	if g.big != g.prevBig {
+		if t := g.prevBig; t != nil {
+			t.zoom, t.zoomT, t.panX, t.panY, t.panTX, t.panTY, t.panVX, t.panVY = 1, 1, 0, 0, 0, 0, 0, 0
+		}
+		g.prevBig = g.big
+	}
 	mx, my := ebiten.CursorPosition()
 	if anyInput(image.Pt(mx, my), &g.lastCursor) {
 		redraw()

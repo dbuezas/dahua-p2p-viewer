@@ -202,7 +202,8 @@ func (g *game) fotoStateJSON() any {
 	for i, h := range f.done {
 		parts[i] = fmt.Sprintf("%d,%d", h.ax, h.ay)
 	}
-	return map[string]any{"id": f.id, "w": f.src.Bounds().Dx(), "h": f.src.Bounds().Dy(), "s": f.scale,
+	// tw, th: the TV's screen; the pages keep the view inside the photo as the TV shows it
+	return map[string]any{"id": f.id, "w": f.src.Bounds().Dx(), "h": f.src.Bounds().Dy(), "s": f.scale, "tw": g.sw, "th": g.sh,
 		"cx": f.cx, "cy": f.cy, "z": f.z, "orig": f.orig, "msg": f.msg, "parts": parts,
 		"work": time.Since(f.lastWork) < 5*time.Second}
 }
