@@ -558,10 +558,18 @@ var Calib = (function () {
     // Measured on this camera: sub stream 0.62-0.98 x 0.05-0.11, main (HD) stream 0.80-0.995 x 0.06-0.09; the box
     // is their union with a margin, so one rule holds in both qualities.
     var OSD = st.o.osdBox || [0.60, 0.035, 1.0, 0.125], OSD_GAP = 4;
+    // lens B's own label ("Device1", bottom left of B) is never shown either: those points stay on A's side.
+    // Measured: sub stream 0-0.10 x 0.93-0.99, main (HD) stream 0.013-0.07 x 0.93-0.95; their union with a margin.
+    var OSDB = st.o.osdBoxB || [0, 0.90, 0.12, 1.0];
     var segLo = new Int32Array(h).fill(0), segHi = new Int32Array(h).fill(w - 1);
     for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
       var k = y * w + x; cylRay(c, x * S + S / 2, y * S + S / 2, r);
-      if (toA(g, r, 0, qa) && toB(g, r, 2 * hwA[y], qb)) { ok[k] = 1; la[k] = bil(st.inp.A, LW, LH, qa[0], qa[1]); lb[k] = bil(st.inp.B, LW, LH, qb[0], qb[1]); }
+      if (toA(g, r, 0, qa) && toB(g, r, 2 * hwA[y], qb)) {
+        ok[k] = 1; la[k] = bil(st.inp.A, LW, LH, qa[0], qa[1]); lb[k] = bil(st.inp.B, LW, LH, qb[0], qb[1]);
+        if (qb[0] >= OSDB[0] * LW && qb[0] <= OSDB[2] * LW && qb[1] >= OSDB[1] * LH && qb[1] <= OSDB[3] * LH) {
+          if (st.aLeft) segLo[y] = Math.max(segLo[y], x + OSD_GAP); else segHi[y] = Math.min(segHi[y], x - OSD_GAP);
+        }
+      }
       if (toA(g, r, 0, qa) && qa[0] >= OSD[0] * LW && qa[0] <= OSD[2] * LW && qa[1] >= OSD[1] * LH && qa[1] <= OSD[3] * LH) {
         if (st.aLeft) segLo[y] = Math.max(segLo[y], x + OSD_GAP); else segHi[y] = Math.min(segHi[y], x - OSD_GAP);
       }
@@ -572,27 +580,39 @@ var Calib = (function () {
       if (xr >= 0 && segLo[y] > xr) segLo[y] = xr;
       if (xl >= 0 && segHi[y] < xl) segHi[y] = xl;
     }
-    var ea = gradMag(la, w, h), eb = gradMag(lb, w, h), INF = 1e18, prev = new Float64Array(w).fill(INF), from = new Int32Array(w * h), rowOk = new Uint8Array(h);
+    // The path goes down one row at a time. Usually it moves at most one cell sideways per row (a gentle seam), but it
+    // may move up to MOVE cells at a cost (the shared part can narrow fast near the bottom, and the clock can push the
+    // seam to one end): so it can always follow the shared part instead of losing its way.
+    var MOVE = 12, ea = gradMag(la, w, h), eb = gradMag(lb, w, h), INF = 1e18, prev = new Float64Array(w).fill(INF), from = new Int32Array(w * h).fill(-1), rowOk = new Uint8Array(h);
     for (y = 0; y < h; y++) {
       var cur = new Float64Array(w).fill(INF);
+      // the best end so far (to go on from, when no cell of the last row is near enough)
+      var pbv = INF, pbx = -1; for (x = 0; x < w; x++) if (prev[x] < pbv) { pbv = prev[x]; pbx = x; }
       for (x = 1; x < w - 1; x++) {
         var k2 = y * w + x; if (!ok[k2] || !ok[k2 - 1] || !ok[k2 + 1] || x < segLo[y] || x > segHi[y]) continue;
         // edges that differ, and brightness that differs a little (both as drawn)
         var D = Math.abs(ea[k2] - eb[k2]) + 0.15 * Math.abs(la[k2] - lb[k2]) + 0.5;
         // the person may say where the seam should go: it stays near there
         if (st.o.seamTarget != null) D += 0.08 * Math.abs(x * S + S / 2 - st.o.seamTarget);
-        if (y === 0 || !rowOk[y - 1]) { cur[x] = D + (y > 0 && prev[x] < INF ? prev[x] : 0); from[k2] = x; continue; }
+        if (pbx < 0) { cur[x] = D; from[k2] = -1; continue; }   // the first row with room: the path starts here
         var bv = INF, bx = -1;
-        for (var d = -1; d <= 1; d++) { var xx = x + d; if (prev[xx] < bv) { bv = prev[xx]; bx = xx; } }
-        if (bx >= 0 && bv < INF) { cur[x] = bv + D; from[k2] = bx; }
+        for (var d = -MOVE; d <= MOVE; d++) {
+          var xx = x + d; if (xx < 0 || xx >= w || prev[xx] >= INF) continue;
+          var v = prev[xx] + (Math.abs(d) > 1 ? 4 * (Math.abs(d) - 1) : 0); if (v < bv) { bv = v; bx = xx; }
+        }
+        // nothing near: go on from the best end of the last row (a jump, only where the shared part jumps)
+        if (bx < 0) { bv = pbv + 50; bx = pbx; }
+        cur[x] = bv + D; from[k2] = bx;
       }
       for (x = 0; x < w; x++) if (cur[x] < INF) { rowOk[y] = 1; break; }
-      if (!rowOk[y]) for (x = 0; x < w; x++) { cur[x] = prev[x]; from[y * w + x] = x; }
+      // a row with no room: the path keeps its place (from = itself)
+      if (!rowOk[y]) for (x = 0; x < w; x++) { cur[x] = prev[x]; from[y * w + x] = prev[x] < INF ? x : -1; }
       prev = cur;
     }
     var bx2 = -1, bvv = INF; for (x = 0; x < w; x++) if (prev[x] < bvv) { bvv = prev[x]; bx2 = x; }
     var seamC = new Float32Array(c.CH), Ws = new Float32Array(c.CH), hx = new Float32Array(h);
-    if (bx2 >= 0) for (y = h - 1; y >= 0; y--) { hx[y] = bx2; bx2 = from[y * w + bx2]; } else hx.fill(-1);
+    // back up the path; above where it started there is no shared part (no seam there)
+    if (bx2 >= 0) for (y = h - 1; y >= 0; y--) { hx[y] = bx2; if (bx2 >= 0) bx2 = from[y * w + bx2]; } else hx.fill(-1);
     // test: a straight up-and-down seam in the middle of the shared part (middle value of every row's middle)
     if (SEAM_MID) {
       var mids = [];

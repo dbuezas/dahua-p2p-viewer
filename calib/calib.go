@@ -1186,6 +1186,10 @@ func rowW(st *State, y float64) float64 {
 // never cuts it. See seam().
 var OSDBox = [4]float64{0.60, 0.035, 1.0, 0.125}
 
+// OSDBoxB: where the camera draws its name ("Device1") on lens B, bottom left. Measured: sub stream 0-0.10 x
+// 0.93-0.99, main (HD) stream 0.013-0.07 x 0.93-0.95; their union with a margin. The seam never shows it.
+var OSDBoxB = [4]float64{0, 0.90, 0.12, 1.0}
+
 func seam(st *State, flat bool) {
 	c, g := &st.cyl, &st.rig
 	const S = 2
@@ -1358,7 +1362,7 @@ func seam(st *State, flat bool) {
 	// A in OSDBox (lens A fractions x0, y0, x1, y1) stays on A's side, osdGap cells away (details blend over +-3 px).
 	// Measured on this camera: sub stream 0.62-0.98 x 0.05-0.11, main (HD) stream 0.80-0.995 x 0.06-0.09; the box
 	// is their union with a margin, so one rule holds in both qualities. (Same as web/calib.js.)
-	osd := OSDBox
+	osd, osdB := OSDBox, OSDBoxB
 	const osdGap = 4
 	segLo, segHi := make([]int, h), make([]int, h)
 	for y := range segHi {
@@ -1372,6 +1376,14 @@ func seam(st *State, flat bool) {
 				ok[k] = true
 				la[k] = float32(bil(st.A, LW, LH, qa[0], qa[1]))
 				lb[k] = float32(bil(st.B, LW, LH, qb[0], qb[1]))
+				// lens B's own label is never shown either: those points stay on A's side
+				if qb[0] >= osdB[0]*LW && qb[0] <= osdB[2]*LW && qb[1] >= osdB[1]*LH && qb[1] <= osdB[3]*LH {
+					if st.aLeft {
+						segLo[y] = max(segLo[y], x+osdGap)
+					} else {
+						segHi[y] = min(segHi[y], x-osdGap)
+					}
+				}
 			}
 			if toA(g, &r, 0, &qa) && qa[0] >= osd[0]*LW && qa[0] <= osd[2]*LW && qa[1] >= osd[1]*LH && qa[1] <= osd[3]*LH {
 				if st.aLeft {
@@ -1400,6 +1412,10 @@ func seam(st *State, flat bool) {
 			segHi[y] = xl
 		}
 	}
+	// The path goes down one row at a time, usually at most one cell sideways per row, but up to move cells at a
+	// cost: the shared part can narrow fast near the bottom and the clock can push the seam to one end, and the path
+	// must follow it instead of losing its way. (Same as web/calib.js.)
+	const move = 12
 	ea, eb := gradMag(la, w, h), gradMag(lb, w, h)
 	INF := 1e18
 	prev := make([]float64, w)
@@ -1407,11 +1423,21 @@ func seam(st *State, flat bool) {
 		prev[i] = INF
 	}
 	from := make([]int32, w*h)
+	for i := range from {
+		from[i] = -1
+	}
 	rowOk := make([]bool, h)
 	for y := 0; y < h; y++ {
 		cur := make([]float64, w)
 		for i := range cur {
 			cur[i] = INF
+		}
+		// the best end so far (to go on from, when no cell of the last row is near enough)
+		pbv, pbx := INF, -1
+		for x := 0; x < w; x++ {
+			if prev[x] < pbv {
+				pbv, pbx = prev[x], x
+			}
 		}
 		for x := 1; x < w-1; x++ {
 			k2 := y*w + x
@@ -1419,26 +1445,29 @@ func seam(st *State, flat bool) {
 				continue
 			}
 			Dv := math.Abs(float64(ea[k2])-float64(eb[k2])) + 0.15*math.Abs(float64(la[k2])-float64(lb[k2])) + 0.5
-			if y == 0 || !rowOk[y-1] {
-				add := 0.0
-				if y > 0 && prev[x] < INF {
-					add = prev[x]
-				}
-				cur[x] = Dv + add
-				from[k2] = int32(x)
+			if pbx < 0 { // the first row with room: the path starts here
+				cur[x] = Dv
 				continue
 			}
 			bv, bx := INF, -1
-			for d := -1; d <= 1; d++ {
+			for d := -move; d <= move; d++ {
 				xx := x + d
-				if prev[xx] < bv {
-					bv, bx = prev[xx], xx
+				if xx < 0 || xx >= w || prev[xx] >= INF {
+					continue
+				}
+				v := prev[xx]
+				if d < -1 || d > 1 {
+					v += 4 * (math.Abs(float64(d)) - 1)
+				}
+				if v < bv {
+					bv, bx = v, xx
 				}
 			}
-			if bx >= 0 && bv < INF {
-				cur[x] = bv + Dv
-				from[k2] = int32(bx)
+			if bx < 0 { // nothing near: go on from the best end of the last row
+				bv, bx = pbv+50, pbx
 			}
+			cur[x] = bv + Dv
+			from[k2] = int32(bx)
 		}
 		for x := 0; x < w; x++ {
 			if cur[x] < INF {
@@ -1446,10 +1475,12 @@ func seam(st *State, flat bool) {
 				break
 			}
 		}
-		if !rowOk[y] {
+		if !rowOk[y] { // a row with no room: the path keeps its place
 			for x := 0; x < w; x++ {
 				cur[x] = prev[x]
-				from[y*w+x] = int32(x)
+				if prev[x] < INF {
+					from[y*w+x] = int32(x)
+				}
 			}
 		}
 		prev = cur
@@ -1461,10 +1492,12 @@ func seam(st *State, flat bool) {
 		}
 	}
 	seamC, Ws, hx := make([]float32, c.CH), make([]float32, c.CH), make([]float32, h)
-	if bx2 >= 0 {
+	if bx2 >= 0 { // back up the path; above where it started there is no shared part (no seam there)
 		for y := h - 1; y >= 0; y-- {
 			hx[y] = float32(bx2)
-			bx2 = int(from[y*w+bx2])
+			if bx2 >= 0 {
+				bx2 = int(from[y*w+bx2])
+			}
 		}
 	} else {
 		for i := range hx {
