@@ -174,6 +174,12 @@ func (g *game) stateJSON() string {
 		HD   bool   `json:"hd"`
 		PTZ  bool   `json:"ptz"`
 		Load bool   `json:"load"` // HD on / off: the other video is still opening
+		// where the TV draws this tile now (pixels on its SW x SH screen), so the
+		// remote control shows the same layout the TV shows
+		X int `json:"x"`
+		Y int `json:"y"`
+		W int `json:"w"`
+		H int `json:"h"`
 	}
 	st := struct {
 		Big       int    `json:"big"`
@@ -184,8 +190,10 @@ func (g *game) stateJSON() string {
 		Share     bool   `json:"share"`   // the configuration QR is on the TV
 		Foto      any    `json:"foto"`    // the photo on the TV (foto.go), null = none
 		Pruebas   any    `json:"pruebas"` // test buttons (pruebas.go), null = none
+		SW        int    `json:"sw"` // the TV screen size, for the remote's scaled mirror
+		SH        int    `json:"sh"`
 		Cams      []camJ `json:"cams"`
-	}{Big: -1, Msg: g.panoMsg, Share: g.shareImg != nil, Cams: []camJ{}}
+	}{Big: -1, Msg: g.panoMsg, Share: g.shareImg != nil, SW: g.sw, SH: g.sh, Cams: []camJ{}}
 	st.Foto = g.fotoStateJSON()
 	st.Pruebas = g.pruebasJSON()
 	for i, t := range g.tiles {
@@ -202,7 +210,8 @@ func (g *game) stateJSON() string {
 			}
 		}
 		t.s.mu.Unlock()
-		st.Cams = append(st.Cams, camJ{K: t.key, HD: hd, PTZ: g.canPTZ(t), Load: load})
+		st.Cams = append(st.Cams, camJ{K: t.key, HD: hd, PTZ: g.canPTZ(t), Load: load,
+			X: t.rect.Min.X, Y: t.rect.Min.Y, W: t.rect.Dx(), H: t.rect.Dy()})
 	}
 	b, _ := json.Marshal(st)
 	return string(b)
