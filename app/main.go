@@ -4,7 +4,7 @@
 //     two-lens camera as one wide panorama;
 //   - click a camera: it goes big (the others small over its bottom edge); click
 //     the big one or Esc: back to all; Esc with all: out of fullscreen into a
-//     window, Esc again: close; F11: fullscreen on / off;
+//     window, Esc again: close; F11 or the window's maximize button: fullscreen;
 //   - right click: HD on/off for that camera (saved in hd.txt);
 //   - drag a camera onto another: they swap places (saved in orden.txt);
 //   - big camera: wheel or +/- = smooth digital zoom, drag = move the picture;
@@ -327,6 +327,12 @@ func (g *game) Update() error {
 			t.zoom, t.zoomT, t.panX, t.panY, t.panTX, t.panTY, t.panVX, t.panVY = 1, 1, 0, 0, 0, 0, 0, 0
 		}
 		g.prevBig = g.big
+	}
+	// the window's maximize button (the system's own): back to fullscreen. Restored first, so a later Esc
+	// gives the normal window again and not a maximized one (which would come straight back here)
+	if !ebiten.IsFullscreen() && ebiten.IsWindowMaximized() {
+		ebiten.RestoreWindow()
+		setFullscreen(true)
 	}
 	mx, my := ebiten.CursorPosition()
 	if anyInput(image.Pt(mx, my), &g.lastCursor) {
