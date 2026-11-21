@@ -574,6 +574,9 @@ var Calib = (function () {
         if (st.aLeft) segLo[y] = Math.max(segLo[y], x + OSD_GAP); else segHi[y] = Math.min(segHi[y], x - OSD_GAP);
       }
     }
+    // a label's edge can fall between two rows of this half-size grid: each limit also holds one row above and below
+    var lo0 = Int32Array.from(segLo), hi0 = Int32Array.from(segHi);
+    for (y = 0; y < h; y++) for (j = Math.max(0, y - 1); j <= Math.min(h - 1, y + 1); j++) { segLo[y] = Math.max(segLo[y], lo0[j]); segHi[y] = Math.min(segHi[y], hi0[j]); }
     // a row with no room left: the seam goes to the last place it can (the far end of the shared part)
     for (y = 0; y < h; y++) {
       var xl = -1, xr = -1; for (x = 1; x < w - 1; x++) if (ok[y * w + x] && ok[y * w + x - 1] && ok[y * w + x + 1]) { if (xl < 0) xl = x; xr = x; }
@@ -973,7 +976,8 @@ var Calib = (function () {
     st.o.seamTarget = cylOf(st.cyl, r)[0];
     seam(st, null); if (st.o.warp !== false) seamWarp(st, null); framing(st);
   }
-  return { CAM: CAM, seamAt: seamAt, slideData: slideData, stripMatch: stripMatch, run: run, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
+  // _t: inner parts, for the tests (web/calib_seam_test.js)
+  return { _t: { cylinder: cylinder, cylRay: cylRay, toA: toA, toBrow: toBrow }, CAM: CAM, seamAt: seamAt, slideData: slideData, stripMatch: stripMatch, run: run, setClip: setClip, seam: seam, mesh: mesh, pack: pack, preview: preview, Rig: Rig, epi: epi, LW: LW, LH: LH };
 })();
 
 // ---- Web Worker side: the page sends the pictures; pictures of the work go back as it runs. ----

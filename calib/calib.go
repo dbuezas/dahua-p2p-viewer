@@ -1394,6 +1394,14 @@ func seam(st *State, flat bool) {
 			}
 		}
 	}
+	// a label's edge can fall between two rows of this half-size grid: each limit also holds one row above and below
+	lo0, hi0 := append([]int(nil), segLo...), append([]int(nil), segHi...)
+	for y := 0; y < h; y++ {
+		for j := max(0, y-1); j <= min(h-1, y+1); j++ {
+			segLo[y] = max(segLo[y], lo0[j])
+			segHi[y] = min(segHi[y], hi0[j])
+		}
+	}
 	// a row with no room left: the seam goes to the last place it can (the far end of the shared part)
 	for y := 0; y < h; y++ {
 		xl, xr := -1, -1
