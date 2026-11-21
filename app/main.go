@@ -122,9 +122,9 @@ type game struct {
 	shareImg   *ebiten.Image
 	shareUntil time.Time
 
-	foto    *foto // "Mejorar foto" from the phone (foto.go)
+	foto    *foto    // "Mejorar foto" from the phone (foto.go)
 	pruebas []prueba // test buttons for the phone (pruebas.go)
-	prevBig *tile // the big camera at the last Update (its zoom goes back to 1 when it changes)
+	prevBig *tile    // the big camera at the last Update (its zoom goes back to 1 when it changes)
 }
 
 func (g *game) streamList() []*stream {
@@ -192,7 +192,7 @@ func (g *game) buildTiles(chans []nvrlib.Channel) {
 			if m, ok := modes[c.Index]; ok {
 				pano = m == 3
 			}
-			s = &stream{g: g, ch: c.Index, split: isSplit, hd: hd[c.Index], pano: pano}
+			s = &stream{g: g, ch: c.Index, split: isSplit, hd: hd[c.Index], pano: pano, swapReq: make(chan struct{}, 1)}
 			if isSplit {
 				s.mesh = loadMesh3(g.cfg.path("panoramica3_" + strconv.Itoa(c.Index) + ".bin"))
 				if s.mesh != nil {

@@ -38,9 +38,9 @@ type foto struct {
 	big        *ebiten.Image
 	srcImg     *ebiten.Image // the plain picture ("Ver original")
 	orig       bool          // show srcImg instead of big
-	bw, bh     int     // big's size
-	scale      float64 // big pixels per AI pixel (AI pixels = 4x the picture)
-	cx, cy, z  float64 // view: the point in the middle of the screen (0..1) and the zoom (1 = the whole photo)
+	bw, bh     int           // big's size
+	scale      float64       // big pixels per AI pixel (AI pixels = 4x the picture)
+	cx, cy, z  float64       // view: the point in the middle of the screen (0..1) and the zoom (1 = the whole photo)
 	msg        string
 	parts      []fotoParte // waiting to be put in (on the drawing thread)
 	done       []fotoHecha // every finished part, for pages that come later
@@ -60,7 +60,6 @@ type fotoParte struct {
 	x, y int
 	img  *image.RGBA
 }
-
 
 // fotoOpen takes the picture of square i and shows it. The caller does not hold g.mu.
 func (g *game) fotoOpen(i int) *foto {

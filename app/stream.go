@@ -23,6 +23,8 @@ type stream struct {
 	ch      int  // 0-based NVR channel (RTSP channel = ch+1)
 	split   bool // two cameras stacked top + bottom
 
+	swapReq chan struct{} // HD changed: open the new video next to the old one (switchTo)
+
 	mu        sync.Mutex
 	hd        bool          // main stream instead of the sub stream
 	playingHD bool          // the stream now playing is the main one
@@ -61,38 +63,45 @@ func (s *stream) rtspURL(sub int) string {
 	return fmt.Sprintf("rtsp://%s/cam/realmonitor?channel=%d&subtype=%d", s.g.rtspRelay(), s.ch+1, sub)
 }
 
+// open starts the video with the current HD / panorama choice (sub 0 = HD, 1 = the small stream).
+func (s *stream) open(slow bool) (*video.Decoder, int, error) {
+	s.mu.Lock()
+	hd, pano, haveMesh := s.hd, s.pano, s.mesh != nil
+	s.mu.Unlock()
+	sub := 1
+	// HD (main stream). A panorama in HD needs the phone's mesh: the one worked
+	// out here from the picture needs the 640x720 sub stream.
+	if hd && !(s.split && pano && !haveMesh) {
+		sub = 0
+	}
+	maxW := 0
+	if sub == 0 && s.split && pano {
+		maxW = 1152 // the panorama is 1400 wide from two lenses: half the HD size is plenty
+	} else if sub == 0 {
+		s.g.mu.Lock()
+		maxW = s.g.sw // never decode wider than the screen
+		s.g.mu.Unlock()
+	}
+	// CAMARAS_MAXW overrides it, for measurements (-1 = never shrink)
+	if v, err := strconv.Atoi(os.Getenv("CAMARAS_MAXW")); err == nil && sub == 0 {
+		maxW = v
+	}
+	d, err := video.OpenScaled(s.rtspURL(sub), true, slow, maxW)
+	if err == nil {
+		log.Printf("canal %d: video %dx%d (%s) %s", s.ch, d.W, d.H, map[int]string{0: "HD", 1: "baja"}[sub], d.Info)
+	}
+	return d, sub, err
+}
+
 func (s *stream) run() {
 	go s.present()
 	saveTo := os.Getenv("SAVEFRAME")
 	// a long look before the video starts: ffmpeg stops looking as soon as it has
 	// found the video, so it only costs time on a camera that is late (the IMOU)
 	slow := true
+	cushion := time.Duration(s.g.cfg.getInt("colchon_ms", 1200)) * time.Millisecond
 	for {
-		s.mu.Lock()
-		hd, pano := s.hd, s.pano
-		s.mu.Unlock()
-		s.mu.Lock()
-		haveMesh := s.mesh != nil
-		s.mu.Unlock()
-		sub := 1
-		// HD (main stream). A panorama in HD needs the phone's mesh: the one worked
-		// out here from the picture needs the 640x720 sub stream.
-		if hd && !(s.split && pano && !haveMesh) {
-			sub = 0
-		}
-		maxW := 0
-		if sub == 0 && s.split && pano {
-			maxW = 1152 // the panorama is 1400 wide from two lenses: half the HD size is plenty
-		} else if sub == 0 {
-			s.g.mu.Lock()
-			maxW = s.g.sw // never decode wider than the screen
-			s.g.mu.Unlock()
-		}
-		// CAMARAS_MAXW overrides it, for measurements (-1 = never shrink)
-		if v, err := strconv.Atoi(os.Getenv("CAMARAS_MAXW")); err == nil && sub == 0 {
-			maxW = v
-		}
-		d, err := video.OpenScaled(s.rtspURL(sub), true, slow, maxW)
+		d, sub, err := s.open(slow)
 		if err != nil {
 			log.Printf("canal %d: %v", s.ch, err)
 			if !slow {
@@ -103,49 +112,155 @@ func (s *stream) run() {
 			}
 			continue
 		}
-		log.Printf("canal %d: video %dx%d (%s) %s", s.ch, d.W, d.H, map[int]string{0: "HD", 1: "baja"}[sub], d.Info)
 		s.mu.Lock()
 		s.dec, s.last, s.w, s.h = d, time.Now(), d.W, d.H
 		s.playingHD = sub == 0
 		s.tfr, s.nfr = time.Now(), 0
 		s.mu.Unlock()
 		saveN := 0
-		for f := range d.Frames {
+		// HD on / off (s.switchTo): the new video opens next to the old one, which keeps playing; the new one's
+		// frames wait apart until they fill a cushion, then it takes the old one's place (no stop on screen)
+		var nd *video.Decoder
+		var nsub int
+		var nframes chan *video.Frame
+		var side []qframe
+		var sideStart time.Time
+		var oldLast time.Time    // the old video's last frame while the new one opens
+		var oldGap time.Duration // its longest wait meanwhile (does opening the new one hold the old one back?)
+		opened := make(chan struct {
+			d   *video.Decoder
+			sub int
+		}, 1)
+		opening := false
+		take := func() { // the new video replaces the old one
+			d.Close()
+			d, sub = nd, nsub
+			nd, nframes = nil, nil
 			s.mu.Lock()
-			pano, m := s.pano, s.mesh
+			s.dec, s.last, s.w, s.h = d, time.Now(), d.W, d.H
+			s.playingHD = sub == 0
+			s.tfr, s.nfr = time.Now(), 0
+			s.queue, s.arrivals, s.deltas = side, nil, nil
 			s.mu.Unlock()
-			// a split camera as a panorama: with the phone's mesh the graphics card
-			// makes it (gpu.go); without one it is worked out here from the frame
-			var pf *image.RGBA
-			if s.split && pano && m == nil && f.W == 640 && f.H == 720 {
-				img := f.RGBA()
-				if s.lut == nil {
-					s.calibrate(img)
+			side = nil
+			span := 0.0
+			if k := len(side); k > 1 && side[0].pts >= 0 {
+				span = side[k-1].pts - side[0].pts
+			}
+			log.Printf("canal %d: cambio de video (el viejo siguio: su pausa mas larga mientras tanto %.1f s; el nuevo trae %d cuadros, %.1f s de video)",
+				s.ch, oldGap.Seconds(), len(side), span)
+		}
+	frames:
+		for {
+			select {
+			case <-s.swapReq:
+				if !opening && nd == nil {
+					opening, oldLast, oldGap = true, time.Now(), 0
+					go func() {
+						for tries := 0; tries < 3; tries++ {
+							if x, xs, err := s.open(true); err == nil {
+								opened <- struct {
+									d   *video.Decoder
+									sub int
+								}{x, xs}
+								return
+							} else {
+								log.Printf("canal %d: cambio de video: %v", s.ch, err)
+							}
+							time.Sleep(time.Second)
+						}
+						opened <- struct {
+							d   *video.Decoder
+							sub int
+						}{nil, 0}
+					}()
 				}
-				if s.lut != nil {
-					pf = image.NewRGBA(image.Rect(0, 0, s.lut.W, s.lut.H))
-					s.lut.RenderRGBA(img.Pix, pf)
+			case o := <-opened:
+				opening = false
+				if o.d == nil { // the new one does not open: the old way (stop and open again)
+					break frames
+				}
+				if o.sub == sub { // same video as now (e.g. a panorama without the phone's mesh stays small)
+					o.d.Close()
+					continue
+				}
+				nd, nsub, nframes, side, sideStart = o.d, o.sub, o.d.Frames, nil, time.Time{}
+			case f, ok := <-nframes:
+				if !ok { // the new one ended before taking over: forget it
+					nd, nframes = nil, nil
+					continue
+				}
+				pf := s.panorama(f)
+				if sideStart.IsZero() {
+					sideStart = time.Now()
+				}
+				side = append(side, qframe{f, pf, f.PTS})
+				if pf != nil {
+					side[len(side)-1].f = nil
+				}
+				if time.Since(sideStart) >= cushion {
+					take()
+				}
+			case f, ok := <-d.Frames:
+				if !ok {
+					if nd != nil { // the old one ended (or was stopped) while the new one fills: take it now
+						take()
+						continue
+					}
+					break frames
+				}
+				if opening || nd != nil {
+					if gap := time.Since(oldLast); gap > oldGap {
+						oldGap = gap
+					}
+					oldLast = time.Now()
+				}
+				pf := s.panorama(f)
+				s.push(f, pf)
+				if saveTo != "" {
+					if saveN++; saveN%15 == 0 {
+						var out image.Image = pf
+						if pf == nil {
+							out = f.RGBA()
+						}
+						if fh, e := os.Create(fmt.Sprintf("%s_ch%d.jpg", saveTo, s.ch)); e == nil {
+							jpeg.Encode(fh, out, &jpeg.Options{Quality: 80})
+							fh.Close()
+						}
+					}
 				}
 			}
-			s.push(f, pf)
-			if saveTo != "" {
-				if saveN++; saveN%15 == 0 {
-					var out image.Image = pf
-					if pf == nil {
-						out = f.RGBA()
-					}
-					if fh, e := os.Create(fmt.Sprintf("%s_ch%d.jpg", saveTo, s.ch)); e == nil {
-						jpeg.Encode(fh, out, &jpeg.Options{Quality: 80})
-						fh.Close()
-					}
-				}
-			}
+		}
+		d.Close()
+		if nd != nil {
+			nd.Close()
 		}
 		s.mu.Lock()
 		s.dec = nil
 		s.mu.Unlock()
 		time.Sleep(time.Second) // stream ended (or was restarted): open it again
 	}
+}
+
+// panorama: a split camera as a panorama without the phone's mesh is worked out here from the frame (with the
+// mesh the graphics card makes it, gpu.go); nil otherwise.
+func (s *stream) panorama(f *video.Frame) *image.RGBA {
+	s.mu.Lock()
+	pano, m := s.pano, s.mesh
+	s.mu.Unlock()
+	if !(s.split && pano && m == nil && f.W == 640 && f.H == 720) {
+		return nil
+	}
+	img := f.RGBA()
+	if s.lut == nil {
+		s.calibrate(img)
+	}
+	if s.lut == nil {
+		return nil
+	}
+	pf := image.NewRGBA(image.Rect(0, 0, s.lut.W, s.lut.H))
+	s.lut.RenderRGBA(img.Pix, pf)
+	return pf
 }
 
 // calibrate works the panorama out from one frame (never refuses; doubtful
@@ -183,7 +298,16 @@ func (s *stream) setHD(on bool) {
 	s.hd = on
 	s.mu.Unlock()
 	if changed {
-		s.restart()
+		s.switchTo()
+	}
+}
+
+// switchTo opens the video again with the current choice next to the old one, which keeps playing until the new
+// one is ready (run). The old way (restart) stops it first: a few seconds without video.
+func (s *stream) switchTo() {
+	select {
+	case s.swapReq <- struct{}{}:
+	default:
 	}
 }
 
@@ -346,6 +470,9 @@ func (s *stream) present() {
 			}
 			if gap := now.Sub(s.shown); gap > s.gapMax {
 				s.gapMax = gap
+			}
+			if gap := now.Sub(s.shown); gap > 2*time.Second {
+				log.Printf("canal %d: pantalla quieta %.1f s", s.ch, gap.Seconds())
 			}
 			if now.Sub(s.shown) > 300*time.Millisecond {
 				s.gaps++

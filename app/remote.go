@@ -180,8 +180,8 @@ func (g *game) stateJSON() string {
 		Pano      int    `json:"pano"`
 		PanoReady bool   `json:"panoReady"`
 		Msg       string `json:"msg"`
-		Share     bool   `json:"share"` // the configuration QR is on the TV
-		Foto      any    `json:"foto"`  // the photo on the TV (foto.go), null = none
+		Share     bool   `json:"share"`   // the configuration QR is on the TV
+		Foto      any    `json:"foto"`    // the photo on the TV (foto.go), null = none
 		Pruebas   any    `json:"pruebas"` // test buttons (pruebas.go), null = none
 		Cams      []camJ `json:"cams"`
 	}{Big: -1, Msg: g.panoMsg, Share: g.shareImg != nil, Cams: []camJ{}}
