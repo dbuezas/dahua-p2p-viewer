@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -102,7 +103,9 @@ func (c *Client) relogin() bool {
 	}
 	c.relog.Lock()
 	defer c.relog.Unlock()
-	return c.Login() == nil
+	err := c.Login()
+	log.Printf("nvr: entro de nuevo al grabador: %v", map[bool]string{true: "bien", false: fmt.Sprint(err)}[err == nil])
+	return err == nil
 }
 
 func (c *Client) callObj(obj float64, method string, params interface{}) (map[string]interface{}, error) {
@@ -124,6 +127,9 @@ func (c *Client) callObj1(obj float64, method string, params interface{}) (map[s
 		resp, err := c.http.Post(c.base+"/RPC2", "application/json", bytes.NewReader(body))
 		if err != nil {
 			lastErr = err
+			if c.session != nil && strings.HasSuffix(err.Error(), "EOF") {
+				break // the NVR no longer knows this session: trying again cannot help (callObj logs in again)
+			}
 			continue
 		}
 		raw, err := io.ReadAll(resp.Body)
@@ -144,6 +150,8 @@ func (c *Client) callObj1(obj float64, method string, params interface{}) (map[s
 
 // Login does the two-phase Dahua challenge/response login.
 func (c *Client) Login() error {
+	// a new login carries no session: the NVR closes the connection (EOF) on one it no longer knows
+	c.session = nil
 	m, err := c.callPath("/RPC2_Login", "global.login", map[string]interface{}{
 		"userName": c.user, "password": "", "clientType": "Web3.0",
 		"loginType": "Direct", "authorityType": "Default",
