@@ -15,8 +15,12 @@ button:disabled{opacity:.35}
 p.tip{color:#888;font-size:13px;margin:0 10px}
 .row{display:flex;justify-content:space-between;align-items:center;padding:6px;gap:6px}.row .btns{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
-.hd.load{position:relative}.hd.load::after{content:'';position:absolute;inset:-5px;border:3px solid transparent;border-top-color:#fc0;border-right-color:#fc0;border-radius:12px;animation:girar .8s linear infinite}
-@keyframes girar{to{transform:rotate(360deg)}}
+/* HD loading: a piece of the button's outline turns around it (a turning conic gradient, kept to a 3 px ring) */
+@property --vuelta{syntax:'<angle>';initial-value:0deg;inherits:false}
+.hd.load{position:relative}
+.hd.load::after{content:'';position:absolute;inset:-5px;padding:3px;border-radius:12px;background:conic-gradient(from var(--vuelta),#fc0 0 40%,transparent 40%);
+ -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:vuelta 1.2s linear infinite;pointer-events:none}
+@keyframes vuelta{to{--vuelta:360deg}}
 #ptz{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;display:none;align-items:center;justify-content:center;gap:24px;padding:10px}
 #pad{width:170px;height:170px;border-radius:50%;background:#222;border:2px solid #555;position:relative;touch-action:none}
 #knob{width:60px;height:60px;border-radius:50%;background:#fc0;position:absolute;left:55px;top:55px;pointer-events:none}

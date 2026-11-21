@@ -594,19 +594,60 @@ func (g *game) drawTile(screen *ebiten.Image, t *tile) {
 		vector.DrawFilledRect(screen, float32(x0), float32(y0), float32(tw+2*padX), float32(h), color.RGBA{0xd5, 0x10, 0x18, 0xff}, false)
 		drawText(screen, "HD", x0+padX, y0+(h-fs)/2-fs/12, fs, true, color.White)
 	}
-	if switching { // the other video is opening (HD on or off): a turning arc around the tag, or where it was
-		cx, cy := float32(x0)+float32(tw+2*padX)/2, float32(y0)+float32(h)/2
-		rad := float32(max(tw+2*padX, h))/2 + float32(fs)/6 // fits above the tag, under the screen's edge
-		a := float32(math.Mod(float64(time.Now().UnixMilli())/1000*2*math.Pi*1.2, 2*math.Pi))
-		var p vector.Path
-		p.Arc(cx, cy, rad, a, a+1.5*math.Pi, vector.Clockwise)
-		op := &vector.DrawPathOptions{AntiAlias: true}
-		op.ColorScale.ScaleWithColor(color.RGBA{0xff, 0xd0, 0x40, 0xff})
-		vector.StrokePath(screen, &p, &vector.StrokeOptions{Width: float32(fs) / 7, LineCap: vector.LineCapRound}, op)
+	if switching { // the other video is opening (HD on or off): a "snake" runs around the tag (or where it was)
+		gap := float32(fs) / 6
+		drawSnake(screen, float32(x0)-gap, float32(y0)-gap, float32(tw+2*padX)+2*gap, float32(h)+2*gap, float32(fs)/4, float32(fs)/7,
+			float32(math.Mod(float64(time.Now().UnixMilli())/1000*0.8, 1)), color.RGBA{0xff, 0xd0, 0x40, 0xff})
 	}
 	if weak && t == g.big {
 		drawText(screen, "panoramica con poca confianza", r.Min.X+g.px(12), r.Max.Y-g.px(34), g.px(18), false, color.RGBA{0xff, 0xd0, 0x40, 0xff})
 	}
+}
+
+// drawSnake: a piece of a rounded rectangle's outline (40% of it) that starts at "head" (0..1 of the way round),
+// for the HD loading sign.
+func drawSnake(dst *ebiten.Image, x, y, w, h, rc, width, head float32, clr color.Color) {
+	// the outline as points: straight sides and quarter circles, clockwise from the top left
+	var pts [][2]float32
+	corner := func(cx, cy, a0 float64) {
+		for i := 0; i <= 8; i++ {
+			a := a0 + float64(i)/8*math.Pi/2
+			pts = append(pts, [2]float32{float32(cx) + rc*float32(math.Cos(a)), float32(cy) + rc*float32(math.Sin(a))})
+		}
+	}
+	corner(float64(x+w-rc), float64(y+rc), -math.Pi/2)
+	corner(float64(x+w-rc), float64(y+h-rc), 0)
+	corner(float64(x+rc), float64(y+h-rc), math.Pi/2)
+	corner(float64(x+rc), float64(y+rc), math.Pi)
+	pts = append(pts, pts[0])
+	cum := make([]float32, len(pts))
+	for i := 1; i < len(pts); i++ {
+		cum[i] = cum[i-1] + float32(math.Hypot(float64(pts[i][0]-pts[i-1][0]), float64(pts[i][1]-pts[i-1][1])))
+	}
+	total := cum[len(cum)-1]
+	at := func(d float32) [2]float32 { // the point d along the outline
+		for d >= total {
+			d -= total
+		}
+		for i := 1; i < len(pts); i++ {
+			if cum[i] >= d {
+				f := (d - cum[i-1]) / (cum[i] - cum[i-1])
+				return [2]float32{pts[i-1][0] + f*(pts[i][0]-pts[i-1][0]), pts[i-1][1] + f*(pts[i][1]-pts[i-1][1])}
+			}
+		}
+		return pts[0]
+	}
+	var p vector.Path
+	start, length := head*total, 0.4*total
+	q := at(start)
+	p.MoveTo(q[0], q[1])
+	for s := float32(2); s <= length; s += 2 {
+		q = at(start + s)
+		p.LineTo(q[0], q[1])
+	}
+	op := &vector.DrawPathOptions{AntiAlias: true}
+	op.ColorScale.ScaleWithColor(clr)
+	vector.StrokePath(dst, &p, &vector.StrokeOptions{Width: width, LineCap: vector.LineCapRound, LineJoin: vector.LineJoinRound}, op)
 }
 
 // dirty: something on screen changed since the last Draw. The screen is kept between
