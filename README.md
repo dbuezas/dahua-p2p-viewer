@@ -20,10 +20,11 @@ The old app is kept in [`deprecada/`](deprecada/).
   `web/`), then it is drawn on the graphics card each frame.
 - **App** (`app/`, Ebiten): grid of cameras, click to enlarge, smooth digital zoom, HD per
   camera, PTZ by dragging, remote control page for a phone.
-- **Mejorar foto** (phone remote, button **IA** on a camera): the TV gives the current picture and
+- **Mejorar foto** (phone remote: button under the joystick of the enlarged camera): the TV gives the current picture and
   shows it full screen; the phone makes it 4x bigger with AI on its own graphics card (WebGL2,
   `web/ia.js`) and sends each finished part to the TV. One finger moves, two fingers zoom, the TV
-  shows the same view; **Cerrar** (or Esc on the TV) closes it. The model is Real-ESRGAN
+  shows the same view and never past the photo's edges; **Ver original** / **Ver IA** switches both;
+  **Cerrar** (or Esc on the TV) closes it. The model is Real-ESRGAN
   `realesr-general-x4v3` by Xintao Wang et al. (BSD-3-Clause,
   [github.com/xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)), its weights stored
   as float16 in `web/ia.bin`.

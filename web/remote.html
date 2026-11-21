@@ -28,10 +28,12 @@ body.off #off{display:block}
 #fotobar{position:absolute;left:0;right:0;top:0;display:flex;gap:8px;padding:10px;align-items:center;background:linear-gradient(#000d,#0000);z-index:1}
 #fotomsg{flex:1;color:#fc0;font-size:15px;text-shadow:0 0 4px #000}
 #fotox{background:#fc0;color:#000;font-weight:bold}
+#fotoorig{display:none}#foto.orig #fotoorig{display:block}#fotoorig{pointer-events:none}
+#iarow{display:none;padding:0 10px 10px}#iabtn{width:100%;background:#fc0;color:#000;font-weight:bold}
 #fototv{display:none;background:#fc0;color:#000;font-weight:bold}
 </style></head><body class=off>
 <div id=off>Conectando con la tele...</div>
-<div id=foto><div id=fotobar><span id=fotomsg></span><button id=fotox>Cerrar</button></div><canvas id=fotocv></canvas></div>
+<div id=foto><div id=fotobar><span id=fotomsg></span><button id=fotoab>Ver original</button><button id=fotox>Cerrar</button></div><canvas id=fotocv></canvas><canvas id=fotoorig></canvas></div>
 <header><h1>Camaras</h1><button id=fototv>Cerrar la foto de la tele</button><span id=net></span></header>
 <div id=cal style='display:none;position:fixed;inset:0;background:#000;z-index:20;overflow:auto;padding:10px'>
  <div style='display:flex;align-items:center;gap:8px'><b style='flex:1'>Calibrar panoramica (dos camaras a 9 cm)</b><button id=calx>Cerrar</button></div>
@@ -45,6 +47,7 @@ body.off #off{display:block}
 <p class=tip id=msg style='color:#fc0'></p>
 <div id=grid></div><img id=ghost>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
+<div id=iarow><button id=iabtn>Mejorar foto con IA</button></div>
 <p class=tip id=gridtip style='display:none;margin:4px 0 0'>En la panoramica: grilla celeste = lente de la camara 3, naranja = camara 4, linea blanca = costura.</p>
 <div id=share><button id=sharebtn>Mostrar en la tele el QR de configuracion</button>
 <p class=tip style='margin:4px 0 0'>Para copiar todo (serie, usuario, clave y ajustes) a la app de otro telefono: escanealo con su camara. Incluye la clave; se oculta solo en 60 s.</p></div>
@@ -81,12 +84,12 @@ function draw(s){st=s;var g=document.getElementById('grid');
    var b='<span>'+(kind=='pano'?(i+1)+' + '+(i+2):i+1)+'</span><span class=btns>';
    if(kind=='half'&&/\.1$/.test(c.k))b+='<button data-pano=3>Unir</button>';
    if(kind=='pano')b+='<button data-pano=0>Separar</button><button class=calbtn>Calibrar</button>';
-   d.querySelector('.row').innerHTML=b+'<button class=ia data-ia='+i+'>IA</button><button class=hd data-hd='+i+'>HD</button></span>'}
+   d.querySelector('.row').innerHTML=b+'<button class=hd data-hd='+i+'>HD</button></span>'}
   d.querySelector('.hd').classList.toggle('on',c.hd)});
  document.getElementById('msg').textContent=s.msg||'';
  var sb=document.getElementById('sharebtn');sb.classList.toggle('on',!!s.share);sb.textContent=s.share?'Ocultar el QR de la tele':'Mostrar en la tele el QR de configuracion';
  document.getElementById('gridtip').style.display=s.pano&&!s.msg?'':'none';
- var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none';fotoState(s)}
+ var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none';document.getElementById('iarow').style.display=c?'block':'none';fotoState(s)}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
 var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
 function padMove(e){var r=pad.getBoundingClientRect(),dx=e.clientX-r.left-r.width/2,dy=e.clientY-r.top-r.height/2,m=Math.hypot(dx,dy),max=r.width/2-30;
@@ -122,7 +125,7 @@ function endDrag(e){if(!drag)return;var d=drag;drag=null;ghost.style.display='no
 document.addEventListener('pointerup',endDrag);document.addEventListener('pointercancel',endDrag);
 document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)return;
  if(b.classList&&b.classList.contains('calbtn')){calOpen();return}
- if(b.dataset.ia!=null){fotoOpen(+b.dataset.ia);return}
+ if(b.id=='iabtn'){if(st.big>=0)fotoOpen(st.big);return}
  if(b.id=='sharebtn'){st.share=!st.share;draw(st);cmd('compartir '+(st.share?1:0));return}
  if(b.dataset.pano!=null){var m=+b.dataset.pano;if(m==3&&!st.panoReady){calOpen();return}if(m==0&&!st.pano)return;st.pano=m;st.msg='';draw(st);cmd('pano '+m);return}
  if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
@@ -250,11 +253,15 @@ if(IN_APP){calGo.textContent='Usar esta calibracion';var shareDiv=document.getEl
 // ---- Mejorar foto: the TV gives the current picture (and shows it full screen), this phone makes it 4x bigger
 // with AI (ia.js, on the phone's graphics card) part by part, nearest to where the person looks first; each part
 // goes to the TV too. One finger moves the photo, two fingers zoom; the TV shows the same view.
-var foto=null,fotoW=null,fotoBox=document.getElementById('foto'),fotoCv=document.getElementById('fotocv'),fotoMsgEl=document.getElementById('fotomsg');
+var fotoOrig=document.getElementById('fotoorig'),foto=null,fotoW=null,fotoBox=document.getElementById('foto'),fotoCv=document.getElementById('fotocv'),fotoMsgEl=document.getElementById('fotomsg');
 function fotoMsg(t,tv){fotoMsgEl.textContent=t;if(tv!=null)cmd('foto msg '+tv)}
 function fotoK(){var f=foto;return Math.min(innerWidth/f.w,innerHeight/f.h)*f.z}
-function fotoApply(send){var f=foto;if(!f)return;var k=fotoK();
- fotoCv.style.transform='translate('+(innerWidth/2-f.cx*f.w*k)+'px,'+(innerHeight/2-f.cy*f.h*k)+'px) scale('+k+')';
+// keep the photo on the screen: no black border once it is bigger than the screen (centered while smaller)
+function fotoClamp(){var f=foto,k=fotoK();if(!(k>0))return;
+ function c(v,size,view){var half=view/2/(size*k);return half>=0.5?0.5:Math.min(1-half,Math.max(half,v))}
+ f.cx=c(f.cx,f.w,innerWidth);f.cy=c(f.cy,f.h,innerHeight)}
+function fotoApply(send){var f=foto;if(!f)return;fotoClamp();var k=fotoK(),tr='translate('+(innerWidth/2-f.cx*f.w*k)+'px,'+(innerHeight/2-f.cy*f.h*k)+'px) scale(';
+ fotoCv.style.transform=tr+k+')';fotoOrig.style.transform=tr+(4*k)+')';
  if(send!==false){var now=Date.now();if(now-(f.sent||0)>60){f.sent=now;cmd('foto ver '+f.cx.toFixed(4)+' '+f.cy.toFixed(4)+' '+f.z.toFixed(3))}
   else{clearTimeout(f.later);f.later=setTimeout(function(){fotoApply()},70)}}}
 // zoom by r keeping the photo point under the screen point (mx, my) in place
@@ -273,7 +280,9 @@ function fotoUp(e){delete fotoPt[e.pointerId]}
 fotoCv.addEventListener('pointerup',fotoUp);fotoCv.addEventListener('pointercancel',fotoUp);
 fotoBox.addEventListener('wheel',function(e){if(!foto)return;e.preventDefault();fotoZoom(Math.exp(-e.deltaY/300),e.clientX,e.clientY);fotoApply()},{passive:false});
 addEventListener('resize',function(){fotoApply(false)});
-function fotoClose(tellTV){if(foto)foto.dead=true;foto=null;fotoBox.style.display='none';fotoPt={};if(tellTV)cmd('foto 0');draw(st)}
+function fotoShowOrig(on){if(foto)foto.orig=on;fotoBox.classList.toggle('orig',on);document.getElementById('fotoab').textContent=on?'Ver IA':'Ver original'}
+document.getElementById('fotoab').addEventListener('click',function(){if(!foto)return;fotoShowOrig(!foto.orig);cmd('foto orig '+(foto.orig?1:0))});
+function fotoClose(tellTV){if(foto)foto.dead=true;foto=null;fotoBox.style.display='none';fotoShowOrig(false);fotoPt={};if(tellTV)cmd('foto 0');draw(st)}
 document.getElementById('fotox').addEventListener('click',function(){fotoClose(true)});
 document.getElementById('fototv').addEventListener('click',function(){cmd('foto 0')});
 function fotoState(s){var b=document.getElementById('fototv');b.style.display=s.foto&&(!foto||foto.id!=s.foto)?'':'none';
@@ -288,7 +297,7 @@ async function fotoOpen(i){if(foto)fotoClose(true);var f=foto={i:i,cx:.5,cy:.5,z
  var cx=fotoCv.getContext('2d');cx.clearRect(0,0,fotoCv.width,fotoCv.height);
  try{var r=await fetch('/foto?i='+i+'&t='+Date.now());if(!r.ok)throw Error('la camara no tiene imagen');
   f.id=+r.headers.get('X-Foto');var bm=await createImageBitmap(await r.blob());if(f.dead)return;
-  var W=bm.width,H=bm.height;f.w=4*W;f.h=4*H;fotoCv.width=f.w;fotoCv.height=f.h;cx.imageSmoothingQuality='high';cx.drawImage(bm,0,0,f.w,f.h);fotoApply();
+  var W=bm.width,H=bm.height;f.w=4*W;f.h=4*H;fotoCv.width=f.w;fotoCv.height=f.h;cx.imageSmoothingQuality='high';cx.drawImage(bm,0,0,f.w,f.h);fotoOrig.width=W;fotoOrig.height=H;fotoOrig.getContext('2d').drawImage(bm,0,0);fotoShowOrig(false);fotoApply();
   fotoMsg('Preparando la IA...','Mejorando la foto con IA...');
   if(!fotoW)fotoW=fetch('/ia.bin').then(function(r){if(!r.ok)throw Error('sin modelo');return r.arrayBuffer()});var wb=await fotoW;
   var prec=await fotoPrec(wb,bm);if(f.dead)return;

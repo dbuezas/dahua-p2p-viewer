@@ -32,6 +32,8 @@ type foto struct {
 	id         int
 	src        *image.RGBA // the picture as taken (for the phone)
 	big        *ebiten.Image
+	srcImg     *ebiten.Image // the plain picture ("Ver original")
+	orig       bool          // show srcImg instead of big
 	bw, bh     int     // big's size
 	scale      float64 // big pixels per AI pixel (AI pixels = 4x the picture)
 	cx, cy, z  float64 // view: the point in the middle of the screen (0..1) and the zoom (1 = the whole photo)
@@ -71,7 +73,8 @@ func (g *game) fotoOpen(i int) *foto {
 	return f
 }
 
-// fotoCommand: "foto 0" closes; "foto ver cx cy z" moves the view; "foto prog text..." sets the message.
+// fotoCommand: "foto 0" closes; "foto ver cx cy z" moves the view; "foto msg text..." sets the message;
+// "foto orig 1|0" shows the plain picture or the AI one.
 // The caller holds g.mu.
 func (g *game) fotoCommand(p []string) {
 	f := g.foto
@@ -91,6 +94,8 @@ func (g *game) fotoCommand(p []string) {
 				f.cx, f.cy, f.z = clamp(cx, 0, 1), clamp(cy, 0, 1), clamp(z, 1, 16)
 			}
 		}
+	case "orig":
+		f.orig = len(p) > 2 && p[2] == "1"
 	case "msg":
 		f.msg = ""
 		for _, s := range p[2:] {
@@ -110,6 +115,7 @@ func (g *game) fotoClose() {
 	}
 	if g.foto.big != nil {
 		g.foto.big.Deallocate()
+		g.foto.srcImg.Deallocate()
 	}
 	g.foto = nil
 	g.stateChanged()
@@ -177,7 +183,8 @@ func (g *game) drawFoto(screen *ebiten.Image) {
 		f.big = ebiten.NewImage(f.bw, f.bh)
 		op := &ebiten.DrawImageOptions{Filter: ebiten.FilterLinear}
 		op.GeoM.Scale(float64(f.bw)/float64(f.src.Bounds().Dx()), float64(f.bh)/float64(f.src.Bounds().Dy()))
-		f.big.DrawImage(ebiten.NewImageFromImage(f.src), op)
+		f.srcImg = ebiten.NewImageFromImage(f.src)
+		f.big.DrawImage(f.srcImg, op)
 	}
 	for _, p := range f.parts {
 		rr := p.img.Bounds().Add(image.Pt(p.x, p.y)).Intersect(f.big.Bounds())
@@ -195,10 +202,27 @@ func (g *game) drawFoto(screen *ebiten.Image) {
 	if k >= 1.5 { // past 1.5 screen pixels per photo pixel, sharp squares look better than blur
 		op.Filter = ebiten.FilterNearest
 	}
-	op.GeoM.Translate(-f.cx*float64(f.bw), -f.cy*float64(f.bh))
-	op.GeoM.Scale(k, k)
+	// no black border once the photo is bigger than the screen (the phone's screen has another shape)
+	keep := func(v, size, view float64) float64 {
+		half := view / 2 / (size * k)
+		if half >= 0.5 {
+			return 0.5
+		}
+		return clamp(v, half, 1-half)
+	}
+	cx, cy := keep(f.cx, float64(f.bw), float64(g.sw)), keep(f.cy, float64(f.bh), float64(g.sh))
+	img := f.big
+	if f.orig {
+		img = f.srcImg
+	}
+	s := float64(f.bw) / float64(img.Bounds().Dx()) // big pixels per pixel of img
+	op.GeoM.Translate(-cx*float64(img.Bounds().Dx()), -cy*float64(img.Bounds().Dy()))
+	op.GeoM.Scale(k*s, k*s)
 	op.GeoM.Translate(float64(g.sw)/2, float64(g.sh)/2)
-	screen.DrawImage(f.big, op)
+	if f.orig {
+		op.Filter = ebiten.FilterLinear
+	}
+	screen.DrawImage(img, op)
 	if f.msg != "" {
 		fs := g.px(26)
 		pad := g.px(10)
