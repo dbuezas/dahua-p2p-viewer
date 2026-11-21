@@ -26,25 +26,6 @@ jobs:
       - uses: actions/upload-artifact@v6
         with: { name: camaras-windows.exe, path: dist/camaras-windows.exe, if-no-files-found: error }
 
-  win7:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.20.14"
-          cache-dependency-path: "win7/**/go.sum"
-      - name: Build
-        run: |
-          # win7/build.sh calls go1.20.14; here it is the Go that setup-go installed.
-          mkdir -p "$RUNNER_TEMP/bin"
-          ln -s "$(command -v go)" "$RUNNER_TEMP/bin/go1.20.14"
-          export PATH="$RUNNER_TEMP/bin:$PATH"
-          TMPDIR="$RUNNER_TEMP" win7/build.sh
-          mkdir -p dist && mv camaras-ui.exe dist/camaras-win7.exe
-      - uses: actions/upload-artifact@v6
-        with: { name: camaras-win7.exe, path: dist/camaras-win7.exe, if-no-files-found: error }
-
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -111,7 +92,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, win7, linux, macos, android]
+    needs: [windows, linux, macos, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -127,7 +108,6 @@ jobs:
           | File | For |
           |---|---|
           | `camaras-windows.exe` | Windows 10/11 (64-bit) |
-          | `camaras-win7.exe` | Windows 7 (64-bit) |
           | `camaras-linux-amd64` | Linux x86-64 (X11/OpenGL; run `chmod +x` first) |
           | `Camaras-macos.zip` | macOS 11+ (Apple Silicon and Intel); not notarized: the first time, right-click the app and choose Open |
           | `camaras-android.apk` | Android 7+ (arm64, x86-64) |

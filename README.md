@@ -1,7 +1,7 @@
 # dahua-p2p-viewer
 
 Shows all cameras of a Dahua NVR full screen, through Dahua's P2P cloud, with **no Dahua DLLs**.
-It runs on Windows (7 and later), macOS and Android.
+It runs on Windows (10 and later), Linux, macOS and Android.
 
 I wrote it to replace my old Windows app, which needed the NetSDK DLLs from SmartPSS Lite.
 The old app is kept in [`deprecada/`](deprecada/).
@@ -47,7 +47,6 @@ The old app is kept in [`deprecada/`](deprecada/).
 | `mobile/` | Go core for Android (`gomobile bind`) |
 | `android/` | Android app (Java) |
 | `mac/` | builds `Camaras.app` |
-| `win7/` | Windows 7 build (Go 1.20, Ebiten 2.7) |
 | `deprecada/` | the old DLL app |
 
 ## Setup
@@ -96,13 +95,6 @@ mac/make_app.sh          # builds ~/Applications/Camaras.app (needs Homebrew ffm
 
 ```sh
 cd app && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui" -o camaras-ui.exe .
-```
-
-**Windows 7** (Go 1.20 is the last Go that runs there)
-
-```sh
-go install golang.org/dl/go1.20.14@latest && go1.20.14 download
-win7/build.sh            # gives camaras-ui.exe
 ```
 
 **Android** (needs the Android SDK, NDK and `gomobile`)
