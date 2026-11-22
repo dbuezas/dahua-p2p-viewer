@@ -10,9 +10,7 @@ button:disabled{opacity:.35}
 #grid{position:relative;margin:10px auto;width:calc(100% - 20px);background:#000}
 .cam{position:absolute;background:#000;overflow:hidden;border:2px solid transparent;box-sizing:border-box}
 .cam.big{border-color:#fc0;z-index:2}
-.cam img{width:100%;height:100%;object-fit:contain;display:block;background:#000;touch-action:none;-webkit-user-drag:none;user-select:none}
-/* a whole camera fills its square like the TV does (drawTile stretches it, no black bars); a half or the panorama keeps its shape (contain) */
-.cam.fill img{object-fit:fill}
+.cam img{width:100%;height:100%;object-fit:cover;display:block;background:#000;touch-action:none;-webkit-user-drag:none;user-select:none}
 .cam.target{border-color:#4af;z-index:3}.cam.drag{opacity:.5}
 .cam.mini .row{display:none}
 #ghost{position:fixed;width:140px;pointer-events:none;opacity:.8;border-radius:6px;display:none;z-index:9}
@@ -86,18 +84,25 @@ function draw(s){st=s;var g=document.getElementById('grid');
  while(g.children.length<s.cams.length){var i=g.children.length,d=document.createElement('div');d.className='cam';
   d.innerHTML='<img data-i='+i+'><div class=row></div>';g.appendChild(d)}
  while(g.children.length>s.cams.length)g.removeChild(g.lastChild);
- // the TV centers the cameras in its screen and leaves black margins (e.g. top/bottom);
- // the remote bounds the cameras tightly, so no wasted black around the group
+ // in big mode only the big camera is shown; the small ones would draw behind it
+ var showBig=s.big>=0;
+ // the TV centers the cameras in its screen and leaves black margins; bound the shown
+ // cameras tightly, so there is no wasted black around the group
  var bx=1e9,by=1e9,bX=0,bY=0;
- s.cams.forEach(function(c){if(c.w){bx=Math.min(bx,c.x);by=Math.min(by,c.y);bX=Math.max(bX,c.x+c.w);bY=Math.max(bY,c.y+c.h)}});
+ s.cams.forEach(function(c,i){if(c.w&&(!showBig||i==s.big)){bx=Math.min(bx,c.x);by=Math.min(by,c.y);bX=Math.max(bX,c.x+c.w);bY=Math.max(bY,c.y+c.h)}});
  var bw=bX-bx,bh=bY-by;
  if(bw>0&&bh>0)g.style.aspectRatio=bw+'/'+bh;
- s.cams.forEach(function(c,i){var d=g.children[i];d.classList.toggle('big',i==s.big);
+ // all cameras: make the grid fill the phone's height (object-fit:cover crops a little) so
+ // the tiles and their buttons are not tiny; a big camera keeps its natural height, to
+ // leave room for the PTZ and zoom controls below
+ g.style.height=showBig?'':Math.max(0,window.innerHeight-g.offsetTop-70)+'px';
+ s.cams.forEach(function(c,i){var d=g.children[i];
+  d.style.display=(showBig&&i!=s.big)?'none':'';
+  d.classList.toggle('big',i==s.big);
   if(bw>0&&c.w){d.style.left=(100*(c.x-bx)/bw)+'%';d.style.top=(100*(c.y-by)/bh)+'%';d.style.width=(100*c.w/bw)+'%';d.style.height=(100*c.h/bh)+'%';
    d.classList.toggle('mini',c.h<0.2*bh)}});
  // each card: its number, HD, and for the two-lens camera: Unir (on the first half) or Separar + Calibrar (joined)
  s.cams.forEach(function(c,i){var d=g.children[i],kind=/\.3$/.test(c.k)?'pano':/\.[12]$/.test(c.k)?'half':'cam';
-  d.classList.toggle('fill',kind=='cam'); // whole camera fills the square like the TV; half/pano keep their shape
   if(d.dataset.kind!=kind||d.dataset.n!=i){d.dataset.kind=kind;d.dataset.n=i;
    var b='<span>'+(kind=='pano'?(i+1)+' + '+(i+2):i+1)+'</span><span class=btns>';
    if(kind=='half'&&/\.1$/.test(c.k))b+='<button data-pano=3>Unir</button>';
