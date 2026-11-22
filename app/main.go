@@ -338,6 +338,13 @@ func (g *game) Update() error {
 		ebiten.RestoreWindow()
 		setFullscreen(true)
 	}
+	// after a suspend/resume the window can fall out of fullscreen on its own
+	// (the X server re-detects the monitor): put it back, unless the user left
+	// fullscreen on purpose (Esc), which clears wantFull
+	if wantFull && !ebiten.IsFullscreen() && !ebiten.IsWindowMaximized() {
+		log.Println("pantalla completa se salió sola (¿despertar?): la vuelvo a poner")
+		setFullscreen(true)
+	}
 	mx, my := ebiten.CursorPosition()
 	if anyInput(image.Pt(mx, my), &g.lastCursor) {
 		redraw()
@@ -956,12 +963,19 @@ func (g *game) statsLog() {
 // alwaysDraw (FPSFULL=1, for measurements): draw every refresh even when nothing changed.
 var alwaysDraw bool
 
+// wantFull is the fullscreen state the user asked for. After a suspend/resume the
+// window can drop out of fullscreen on its own (the X server re-detects the
+// monitor); Update puts it back when this is true, but not when the user left
+// fullscreen with Esc.
+var wantFull bool
+
 var iconOnce sync.Once
 
 // setFullscreen switches between fullscreen and a window (Esc, F11). The window
 // icon is set the first time the app is in a window, never while fullscreen
 // (see main).
 func setFullscreen(on bool) {
+	wantFull = on
 	ebiten.SetFullscreen(on)
 	if !on {
 		iconOnce.Do(setWindowIcon)
@@ -1068,6 +1082,7 @@ func main() {
 		}
 	}()
 	if os.Getenv("WINDOWED") == "" {
+		wantFull = true
 		ebiten.SetFullscreen(true)
 	}
 	// killed (a new version, the TV PC shutting down, Ctrl+C): say goodbye to the
