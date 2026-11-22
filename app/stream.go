@@ -84,12 +84,9 @@ func (s *stream) open(slow bool) (*video.Decoder, int, error) {
 	if hd && !(s.split && pano && !haveMesh) {
 		sub = 0
 	}
-	maxW := 0
-	if sub == 0 {
-		s.g.mu.Lock()
-		maxW = s.g.sw // never decode wider than the screen
-		s.g.mu.Unlock()
-	}
+	maxW := 0 // sub 0 (HD): decode at the camera's native size, so the digital
+	// zoom (up to 4x on the big camera) stays sharp. The decode already runs at
+	// native size; only the texture is bigger.
 	// CAMARAS_MAXW overrides it, for measurements (-1 = never shrink)
 	if v, err := strconv.Atoi(os.Getenv("CAMARAS_MAXW")); err == nil && sub == 0 {
 		maxW = v
