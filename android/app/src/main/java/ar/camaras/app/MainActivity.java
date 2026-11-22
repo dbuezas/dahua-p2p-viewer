@@ -85,6 +85,9 @@ public class MainActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         gl = new GLSurfaceView(this);
         gl.setEGLContextClientVersion(2);
+        // keep the GL textures (one SurfaceTexture per camera) alive across a pause,
+        // so the players' surfaces are still valid when the app returns to the front
+        gl.setPreserveEGLContextOnPause(true);
         renderer = new CamRenderer(gl);
         gl.setRenderer(renderer);
         gl.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
@@ -260,9 +263,19 @@ public class MainActivity extends Activity {
             ui.postDelayed(new Runnable() {
                 int n;
                 @Override public void run() {
+                    long nowMs = android.os.SystemClock.elapsedRealtime();
                     for (int i = 0; i < players.size() && i < streams.size(); i++) {
                         ExoPlayer p = players.get(i);
                         CamRenderer.Stream st = streams.get(i);
+                        // single owner of "keep playing": a player that fell to IDLE (stopped
+                        // on pause, or an error reset it) is restarted here, a few seconds apart
+                        // so a down tunnel is not hammered. This revives the cameras when the
+                        // app returns from the background, after an error, or after any stall.
+                        if (p.getPlaybackState() == Player.STATE_IDLE && !released.contains(p)
+                                && nowMs - st.lastStart > 3000) {
+                            start(p, st);
+                            continue;
+                        }
                         // stay near live, like the TV app's cushion (1.2 s): a little behind, play
                         // a bit faster (not noticeable); far behind after a stall (3 cushions),
                         // jump ahead to one cushion instead of playing the backlog fast (live view)
@@ -317,7 +330,8 @@ public class MainActivity extends Activity {
                     s.software = true; // the selector now gives the software decoder
                     android.util.Log.w("camaras", "canal " + s.ch + ": decodificador por software");
                 }
-                ui.postDelayed(() -> start(p, s), 2000); // try again, like the TV app's watchdog
+                // the error drops the player to IDLE; the once-a-second loop restarts any
+                // IDLE player (with a few seconds between tries). One place owns restarting.
             }
         });
         if (go) start(p, s);
@@ -329,6 +343,7 @@ public class MainActivity extends Activity {
     private void start(ExoPlayer p, CamRenderer.Stream s) {
         Session ss = session;
         if (ss == null || released.contains(p)) return; // stopped meanwhile
+        s.lastStart = android.os.SystemClock.elapsedRealtime();
         boolean hd = wantHD(s);
         s.hd = hd;
         p.setMediaSource(new RtspMediaSource.Factory().setForceUseRtpTcp(true)
@@ -429,6 +444,21 @@ public class MainActivity extends Activity {
         Session s = session;
         if (s != null) new Thread(s::close).start();
         super.onDestroy();
+    }
+
+    @Override protected void onPause() {
+        super.onPause();
+        gl.onPause(); // pause the GL thread (the surfaces survive, see setPreserveEGLContextOnPause)
+        // stop pulling video while in the background: the NVR frees the stream, and the
+        // decoder does not block on a frame no one is drawing. The players fall to IDLE;
+        // the once-a-second loop re-opens them when the app comes back to the front.
+        for (Integer ch : new ArrayList<>(opening.keySet())) dropOpening(ch);
+        for (ExoPlayer p : players) p.stop();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        gl.onResume();
     }
 
     // ---- tiles (same keys as the TV app: "2", "2.1", "2.2", "2.3") ----
