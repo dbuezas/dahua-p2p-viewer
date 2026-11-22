@@ -38,7 +38,10 @@ final class CamRenderer implements GLSurfaceView.Renderer {
         volatile boolean software; // its hardware decoder failed: use the software one
         volatile boolean hd;       // what its player asked for (HD or the low quality)
         volatile int frames;       // frames drawn into the texture (for the log)
+        volatile boolean live;     // new frames are arriving now (for the on-screen status)
         long lastStart;            // when its player was last (re)started (ms), to space out retries
+        int lastFrames;            // frames seen at the last check (to tell if video moves on)
+        long lastProgressMs;       // when a new frame last arrived (ms)
         volatile Mesh mesh;
         Mesh uploaded;
         int meshTex, seamTex;

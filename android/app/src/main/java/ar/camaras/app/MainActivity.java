@@ -264,15 +264,26 @@ public class MainActivity extends Activity {
                 int n;
                 @Override public void run() {
                     long nowMs = android.os.SystemClock.elapsedRealtime();
+                    boolean statusChanged = false;
                     for (int i = 0; i < players.size() && i < streams.size(); i++) {
                         ExoPlayer p = players.get(i);
                         CamRenderer.Stream st = streams.get(i);
-                        // single owner of "keep playing": a player that fell to IDLE (stopped
-                        // on pause, or an error reset it) is restarted here, a few seconds apart
-                        // so a down tunnel is not hammered. This revives the cameras when the
-                        // app returns from the background, after an error, or after any stall.
-                        if (p.getPlaybackState() == Player.STATE_IDLE && !released.contains(p)
-                                && nowMs - st.lastStart > 3000) {
+                        // track real progress: new frames reaching the screen. A frozen
+                        // picture (no new frames) is the only honest "stuck" signal; the
+                        // player can sit in BUFFERING or even READY and still show nothing.
+                        if (st.frames != st.lastFrames) { st.lastFrames = st.frames; st.lastProgressMs = nowMs; }
+                        // live = real frames reached the screen in the last 3 s (never a frame
+                        // yet => not live, so the first connect still shows "conectando")
+                        boolean live = st.lastProgressMs != 0 && nowMs - st.lastProgressMs < 3000;
+                        if (live != st.live) { st.live = live; statusChanged = true; }
+                        // single owner of "keep playing": restart a player that is IDLE
+                        // (stopped/errored) OR stuck (no new frame for 8 s: a dead tunnel
+                        // after the app was in the background, a silent RTSP drop, any
+                        // stall), at most once every 5 s so a down tunnel is not hammered.
+                        long sinceFrame = st.lastProgressMs != 0 ? nowMs - st.lastProgressMs : nowMs - st.lastStart;
+                        boolean stuck = sinceFrame > 8000;
+                        if ((p.getPlaybackState() == Player.STATE_IDLE || stuck) && !released.contains(p)
+                                && nowMs - st.lastStart > 5000) {
                             start(p, st);
                             continue;
                         }
@@ -290,6 +301,7 @@ public class MainActivity extends Activity {
                             android.util.Log.i("camaras", "canal " + st.ch + ": estado " + p.getPlaybackState() + " jugando " + p.isPlaying()
                                     + " adelante " + ahead + " ms, velocidad " + speed + ", cuadros " + st.frames + (st.software ? " (software)" : ""));
                     }
+                    if (statusChanged) overlay.invalidate(); // redraw the conectando/reconectando label
                     n++;
                     ui.postDelayed(this, 1000);
                 }
@@ -683,7 +695,11 @@ public class MainActivity extends Activity {
                 CamRenderer.Stream s = streams.get(t.stream);
                 RectF r = t.rect;
                 boolean small = renderer.big >= 0 && i != renderer.big;
-                if (!s.playing) { text.setTextSize(small ? 18 : 30); c.drawText(t.name + "  (conectando...)", r.left + 12, r.top + 40, text); }
+                if (!s.live) { // no fresh frames: say so instead of leaving a frozen picture silent
+                    String msg = s.playing ? "  (reconectando...)" : "  (conectando...)";
+                    text.setTextSize(small ? 18 : 30);
+                    c.drawText(t.name + msg, r.left + 12, r.top + 40, text);
+                }
                 if (small) continue;
                 tag.setTextSize(34);
                 float tw = tag.measureText("HD");
