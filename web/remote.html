@@ -54,7 +54,6 @@ body.off #off{display:block}
  <canvas id=calc style='width:100%;margin-top:10px;background:#111;touch-action:none'></canvas>
  <p class=tip style='margin:6px 0'>Lineas: donde cada lente ve el mismo punto (verde = encaja, rojo = no).</p>
  <div id=calhand style='display:none;margin:10px 0'><button id=calfine style='width:100%;background:#fc0;color:#000;font-weight:bold'>Listo, afinar</button></div>
- <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button><button id=calmix style='flex:1;display:none'>Ver superpuestas</button></div>
 </div>
 <p class=tip id=msg style='color:#fc0'></p>
 <div id=grid></div><img id=ghost>
@@ -174,14 +173,14 @@ document.addEventListener('click',function(e){var b=e.target;if(!b.dataset)retur
  if(b.dataset.hd==null)return;var i=+b.dataset.hd,on=!st.cams[i].hd;st.cams[i].hd=on;draw(st);cmd('hd '+i+' '+(on?1:0))});
 // ---- Panorama calibration on this phone (mode 3): calib.js runs in a worker and sends pictures of its work. ----
 var IN_APP=/[?&]app=1(&|$)/.test(location.search);
-var calW=null,calMesh=null,calBox=document.getElementById('cal'),calCv=document.getElementById('calc'),calGo=document.getElementById('calgo');
+var calW=null,calMesh=null,calBox=document.getElementById('cal'),calCv=document.getElementById('calc');
 function calText(t,f){document.getElementById('calt').textContent=t;if(f!=null)document.getElementById('calp').style.width=Math.round(f*100)+'%'}
 function calOpen(){calBox.style.display='block';calRun()}
-// The result, zoomed on the seam, as drawn (seam) or both lenses half and half (shows how well they really fit).
-var calFinal=null,calFinalMix=false;
-document.getElementById('calmix').addEventListener('click',function(){var m=calFinal;if(!m)return;calFinalMix=!calFinalMix;this.textContent=calFinalMix?'Ver costura':'Ver superpuestas';
- calCv.width=m.w;calCv.height=m.h;calCv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(calFinalMix?m.mix:m.seam),m.w,m.h),0,0)});
-function calRun(){calQ=[];calBusy=false;calFinal=null;document.getElementById('calmix').style.display='none';calMesh=null;calGo.disabled=true;calText('Sacando una foto de las camaras 3 y 4...',0);
+// apply the fine calibration on the TV right away (meshReceived there enters panorama by
+// itself); st.pano=3 shows it at once in the remote too
+function applyCal(){if(!calMesh||!ws||ws.readyState!=1){calText('Sin conexion con la tele, proba de nuevo');return}
+ ws.send(calMesh);calBox.style.display='none';st.pano=3;draw(st)}
+function calRun(){calQ=[];calBusy=false;calMesh=null;calText('Sacando una foto de las camaras 3 y 4...',0);
  Promise.all([fetch('/calibsnap?t='+Date.now()).then(function(r){if(!r.ok)throw Error('no pude sacar la foto');return r.blob()}).then(function(bl){return createImageBitmap(bl)}),
   fetch('/calibprev?t='+Date.now()).then(function(r){return r.json()}).catch(function(){return {}})]).then(function(res){var bm=res[0],prev=res[1];
   // each lens as 640x360; shrink in two steps so fine detail does not shimmer
@@ -214,8 +213,8 @@ function calMsg(e){var m=e.data;
  calQ.push(m);if(!calBusy)calNext()}
 function calNext(){var m=calQ.shift();if(!m){calBusy=false;return}calBusy=true;
  if(m.t=='error'){calText('No pude: '+m.text);calQ=[];calBusy=false;return}
- if(m.t=='done'){calMesh=m.mesh;calGo.disabled=false;calNext();return}
- if(m.t=='final'){calFinal=m;calFinalMix=false;var bm=document.getElementById('calmix');bm.style.display='';bm.textContent='Ver superpuestas';calNext();return}
+ if(m.t=='done'){calMesh=m.mesh;applyCal();return} // calibrated: use it on the TV right away
+ if(m.t=='final'){calNext();return}
  if(m.kind=='text'){calText(m.text,m.frac);setTimeout(calNext,0);return}
  calText(m.text,m.frac);
  if(m.kind=='slide'){calSlide(m);return}
@@ -285,14 +284,11 @@ function calOver(g,m,a){var W=m.w,H=m.h,lw=Math.max(1.5,W/400);
  g.restore();
  // the seam, drawn from the top down
  var S=m.seam||[];if(S.length>3){var n=Math.round(S.length/2*(m.reveal!=null?m.reveal:m.anim&&!m.cut?a:1));g.save();g.strokeStyle='#fc0';g.lineWidth=lw*1.6;g.shadowColor='#fc0';g.shadowBlur=W/80;g.beginPath();g.moveTo(S[0],S[1]);for(i=1;i<n;i++)g.lineTo(S[2*i],S[2*i+1]);g.stroke();g.restore()}}
-calGo.addEventListener('click',function(){if(!calMesh||!ws||ws.readyState!=1){calText('Sin conexion con la tele, proba de nuevo');return}
- ws.send(calMesh);calBox.style.display='none';st.pano=3;draw(st)});
-document.getElementById('calre').addEventListener('click',calRun);
 document.getElementById('calx').addEventListener('click',function(){calBox.style.display='none';if(calW){calW.terminate();calW=null}
  if(IN_APP)location.href='camaras-app://cerrar'});
 // Inside the Android app (?app=1) this page is only the calibration: the result stays on the phone, there is no
 // TV to show a QR on, and "Cerrar" closes the whole page.
-if(IN_APP){calGo.textContent='Usar esta calibracion';var shareDiv=document.getElementById('share');if(shareDiv)shareDiv.style.display='none'}
+if(IN_APP){var shareDiv=document.getElementById('share');if(shareDiv)shareDiv.style.display='none'}
 // ---- Mejorar foto. The photo belongs to the TV: every page shows it while the TV has it (st.foto: id, view,
 // finished parts). The page that asked for it (or, if nobody works on it for a while, any page) makes it 4x bigger
 // with AI (ia.js, on this phone's graphics card), part by part, nearest to where the person looks first, and sends
