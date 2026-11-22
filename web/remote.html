@@ -9,6 +9,10 @@ button:disabled{opacity:.35}
 /* the remote shows the same layout the TV shows: a box with the TV's shape, each
    camera placed where the TV draws it (scaled). */
 #grid{position:relative;margin:10px auto;width:calc(100% - 20px);background:#000}
+/* a big camera in landscape: camera on the left at full height, controls on the right, no scroll */
+body.bigland{display:flex;height:100vh;height:100dvh;overflow:hidden;align-items:stretch}
+body.bigland #grid{flex:1 1 0;width:auto;height:auto;margin:0;aspect-ratio:auto}
+body.bigland #bigctl{flex:0 0 auto;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:14px;padding:0 10px}
 .cam{position:absolute;background:#000;overflow:hidden;border:2px solid transparent;box-sizing:border-box}
 .cam.big{border-color:#fc0;z-index:2}
 .cam img{width:100%;height:100%;object-fit:cover;display:block;background:#000;touch-action:none;-webkit-user-drag:none;user-select:none}
@@ -16,7 +20,7 @@ button:disabled{opacity:.35}
 .cam.mini .row{display:none}
 #ghost{position:fixed;width:140px;pointer-events:none;opacity:.8;border-radius:6px;display:none;z-index:9}
 p.tip{color:#888;font-size:13px;margin:0 10px}
-.row{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:space-between;align-items:center;padding:3px 5px;gap:6px;background:linear-gradient(#0000,#000c);color:#eee;font-size:13px}.row .btns{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.row button{font-size:13px;padding:5px 8px}
+.row{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:space-between;align-items:center;padding:3px 5px;gap:6px;background:linear-gradient(#0000,#000c);color:#eee;font-size:13px}.row .btns{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.row button{font-size:14px;padding:10px 11px}
 .hd{background:#333}.hd.on{background:#c00;color:#fff;font-weight:bold}
 /* HD loading: a piece of the button's outline turns around it (a turning conic gradient, kept to a 3 px ring) */
 @property --vuelta{syntax:'<angle>';initial-value:0deg;inherits:false}
@@ -54,11 +58,11 @@ body.off #off{display:block}
 </div>
 <p class=tip id=msg style='color:#fc0'></p>
 <div id=grid></div><img id=ghost>
-<div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
-<div id=iarow><button id=iabtn>Mejorar foto con IA</button></div>
+<div id=bigctl><div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
+<div id=iarow><button id=iabtn>Mejorar foto con IA</button></div></div>
 <div id=pruebas><b>Pruebas (para comparar en la tele)</b><div id=prlist></div></div>
 <div id=share><button id=sharebtn>Mostrar en la tele el QR de configuracion</button>
-<p class=tip style='margin:4px 0 0'>Para copiar todo (serie, usuario, clave y ajustes) a la app de otro telefono: escanealo con su camara. Incluye la clave; se oculta solo en 60 s.</p></div>
+</div>
 <script src='/ia.js'></script>
 <script>
 var st={big:-1,cams:[]};
@@ -98,13 +102,20 @@ function draw(s){st=s;var g=document.getElementById('grid');
  document.getElementById('ptz').style.display=bigc?'flex':'none';
  document.getElementById('iarow').style.display=bigc?'block':'none';
  document.getElementById('share').style.display=showBig?'none':'';
- // size the grid to the height left below it, so the page never scrolls; grow the all-cameras
- // grid up to 1.8x its no-crop height (object-fit:cover crops a little) so tiles and buttons
- // are not tiny, but a big camera is never stretched past its natural height
- var naturalH=bw>0?g.clientWidth*bh/bw:0,below=0;
- for(var el=g.nextElementSibling;el;el=el.nextElementSibling){var cs=getComputedStyle(el);if(cs.display!='none'&&cs.position!='fixed')below+=el.getBoundingClientRect().height}
- var avail=Math.max(0,window.innerHeight-g.offsetTop-below-6),cap=showBig?naturalH:naturalH*1.8;
- g.style.height=naturalH?Math.min(avail,cap)+'px':'';
+ // a big camera in landscape goes side by side with the controls (CSS .bigland): the camera
+ // takes the width left of them at full height, so it is not a thin strip
+ var landBig=showBig&&window.innerWidth>window.innerHeight;
+ document.body.classList.toggle('bigland',landBig);
+ if(landBig){g.style.height='';g.style.aspectRatio=''}
+ else{
+  // size the grid to the height left below it, so the page never scrolls; grow the all-cameras
+  // grid up to 1.8x its no-crop height (object-fit:cover crops a little) so tiles and buttons
+  // are not tiny, but a big camera is never stretched past its natural height
+  var naturalH=bw>0?g.clientWidth*bh/bw:0,below=0;
+  for(var el=g.nextElementSibling;el;el=el.nextElementSibling){var cs=getComputedStyle(el);if(cs.display!='none'&&cs.position!='fixed')below+=el.getBoundingClientRect().height}
+  var avail=Math.max(0,window.innerHeight-g.offsetTop-below-6),cap=showBig?naturalH:naturalH*1.8;
+  g.style.height=naturalH?Math.min(avail,cap)+'px':'';
+ }
  s.cams.forEach(function(c,i){var d=g.children[i];
   d.style.display=(showBig&&i!=s.big)?'none':'';
   d.classList.toggle('big',i==s.big);
