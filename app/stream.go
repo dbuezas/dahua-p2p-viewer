@@ -85,9 +85,7 @@ func (s *stream) open(slow bool) (*video.Decoder, int, error) {
 		sub = 0
 	}
 	maxW := 0
-	if sub == 0 && s.split && pano {
-		maxW = 1152 // the panorama is 1400 wide from two lenses: half the HD size is plenty
-	} else if sub == 0 {
+	if sub == 0 {
 		s.g.mu.Lock()
 		maxW = s.g.sw // never decode wider than the screen
 		s.g.mu.Unlock()
