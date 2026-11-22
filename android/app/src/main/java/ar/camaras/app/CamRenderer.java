@@ -184,6 +184,7 @@ final class CamRenderer implements GLSurfaceView.Renderer {
         if (t.stream >= streams.size()) return;
         Stream s = streams.get(t.stream);
         if (!s.playing) return;
+        if (!s.live) return; // reconnecting: leave the tile black instead of a frozen frame
         RectF r = fitted(t);
         float u0 = 0, u1 = 1, y0 = 0, y1 = 1; // the part of the picture shown, 0..1 from the top left
         if (isBig && zoom > 1.01f) {

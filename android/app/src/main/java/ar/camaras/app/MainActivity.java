@@ -301,7 +301,10 @@ public class MainActivity extends Activity {
                             android.util.Log.i("camaras", "canal " + st.ch + ": estado " + p.getPlaybackState() + " jugando " + p.isPlaying()
                                     + " adelante " + ahead + " ms, velocidad " + speed + ", cuadros " + st.frames + (st.software ? " (software)" : ""));
                     }
-                    if (statusChanged) overlay.invalidate(); // redraw the conectando/reconectando label
+                    if (statusChanged) {
+                        overlay.invalidate(); // redraw the conectando/reconectando label
+                        gl.requestRender();   // and the GL view, to black out (or restore) the tile
+                    }
                     n++;
                     ui.postDelayed(this, 1000);
                 }
