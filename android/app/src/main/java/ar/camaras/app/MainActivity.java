@@ -459,9 +459,29 @@ public class MainActivity extends Activity {
             else if (isSplit(s.ch)) { tiles.add(new CamRenderer.Tile(i, 1, n)); tiles.add(new CamRenderer.Tile(i, 2, n)); }
             else tiles.add(new CamRenderer.Tile(i, 0, n));
         }
+        // show them in the saved order (same keys as the TV: "0", "2.3", "100"); unknown keys keep their place
+        final java.util.List<String> ord = java.util.Arrays.asList(prefs.getString("orden", "").split(","));
+        java.util.Collections.sort(tiles, (a, b) -> {
+            int ia = ord.indexOf(key(a)), ib = ord.indexOf(key(b));
+            if (ia < 0) ia = Integer.MAX_VALUE;
+            if (ib < 0) ib = Integer.MAX_VALUE;
+            return Integer.compare(ia, ib);
+        });
         renderer.big = -1;
         renderer.zoom = 1;
         relayout();
+    }
+
+    /** Trade two cameras' places and save the order (drag to reorder). */
+    private void swapTiles(int a, int b) {
+        if (a < 0 || b < 0 || a >= tiles.size() || b >= tiles.size() || a == b) return;
+        java.util.List<String> keys = new ArrayList<>();
+        for (CamRenderer.Tile t : tiles) keys.add(key(t));
+        String ka = keys.get(a);
+        keys.set(a, keys.get(b));
+        keys.set(b, ka);
+        prefs.edit().putString("orden", android.text.TextUtils.join(",", keys)).apply();
+        buildTiles();
     }
 
     private void relayout() {
@@ -511,9 +531,16 @@ public class MainActivity extends Activity {
         final ScaleGestureDetector sgd;
         float pressX, pressY;
         boolean ptzDrag, scaling;
+        // drag to reorder (all-cameras view): the picked tile, the one under the finger, and where the finger is
+        int dragFrom = -1, dragTo = -1;
+        boolean dragging;
+        float dragX, dragY, downX, downY;
+        final int slop;
+        final Paint hl = new Paint(Paint.ANTI_ALIAS_FLAG);
 
         Overlay(Context c) {
             super(c);
+            slop = android.view.ViewConfiguration.get(c).getScaledTouchSlop() * 2;
             text.setColor(Color.rgb(0xc0, 0xc0, 0xc0));
             text.setTextSize(38);
             tag.setColor(Color.WHITE);
@@ -578,9 +605,29 @@ public class MainActivity extends Activity {
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
+            int a = e.getActionMasked();
+            float x = e.getX(), y = e.getY();
+            // drag to reorder, only in the all-cameras view and only a real drag (not a tap or a pinch)
+            if (renderer.big < 0 && !scaling) {
+                if (a == MotionEvent.ACTION_DOWN) { dragFrom = tileAt(x, y); downX = x; downY = y; dragging = false; }
+                else if (a == MotionEvent.ACTION_MOVE && dragFrom >= 0 && !dragging && Math.hypot(x - downX, y - downY) > slop) {
+                    dragging = true; // stop the tap/long-press/scroll from also firing
+                    MotionEvent cxl = MotionEvent.obtain(e); cxl.setAction(MotionEvent.ACTION_CANCEL);
+                    gd.onTouchEvent(cxl); sgd.onTouchEvent(cxl); cxl.recycle();
+                }
+                if (dragging) {
+                    if (a == MotionEvent.ACTION_MOVE) { dragX = x; dragY = y; int t = tileAt(x, y); dragTo = (t >= 0 && t != dragFrom) ? t : -1; invalidate(); }
+                    else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) {
+                        if (a == MotionEvent.ACTION_UP) swapTiles(dragFrom, dragTo);
+                        dragFrom = dragTo = -1; dragging = false; invalidate();
+                    }
+                    return true;
+                }
+                if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) dragFrom = -1;
+            }
             sgd.onTouchEvent(e);
             gd.onTouchEvent(e);
-            if ((e.getActionMasked() == MotionEvent.ACTION_UP || e.getActionMasked() == MotionEvent.ACTION_CANCEL) && ptzDrag) {
+            if ((a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) && ptzDrag) {
                 ptzDrag = false;
                 Session s = session;
                 if (s != null) s.ptzRelease();
@@ -619,6 +666,15 @@ public class MainActivity extends Activity {
                     float g = 34 / 6f;
                     snake(c, new RectF(r.left + 24 - g, r.top + 20 - g, r.left + 24 + tw + 20 + g, r.top + 66 + g), 34 / 4f);
                     snaking = true;
+                }
+            }
+            if (dragging && renderer.big < 0) {
+                if (dragTo >= 0 && dragTo < tiles.size()) { hl.setColor(0x5540a0ff); c.drawRect(tiles.get(dragTo).rect, hl); }
+                if (dragFrom >= 0) {
+                    hl.setColor(0xcc000000); c.drawCircle(dragX, dragY, 46, hl);
+                    tag.setTextSize(44);
+                    String lbl = String.valueOf(dragFrom + 1);
+                    c.drawText(lbl, dragX - tag.measureText(lbl) / 2, dragY + 16, tag);
                 }
             }
             if (snaking) postInvalidateOnAnimation();
@@ -854,6 +910,23 @@ public class MainActivity extends Activity {
         JSONObject pano = new JSONObject();
         for (int ch : splitSet()) pano.put(String.valueOf(ch), panoOn() ? 3 : 0);
         if (pano.length() > 0) o.put("pano", pano);
+        // standalone cameras (own serial): share them too (each password in the clear, like the NVR's)
+        String exjs = prefs.getString("extra_cams", "");
+        if (!exjs.isEmpty()) {
+            JSONArray src = new JSONArray(exjs);
+            JSONArray out = new JSONArray();
+            for (int i = 0; i < src.length(); i++) {
+                JSONObject c = src.getJSONObject(i);
+                JSONObject d = new JSONObject();
+                d.put("sn", c.optString("sn"));
+                if (!c.optString("u").isEmpty()) d.put("u", c.optString("u"));
+                String sealed = c.optString("p", "");
+                if (!sealed.isEmpty()) d.put("p", Secret.open(sealed));
+                if (!c.optString("n").isEmpty()) d.put("n", c.optString("n"));
+                out.put(d);
+            }
+            if (out.length() > 0) o.put("extra", out);
+        }
         return o;
     }
 
