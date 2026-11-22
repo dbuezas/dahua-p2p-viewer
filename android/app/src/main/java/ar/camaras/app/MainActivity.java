@@ -282,7 +282,7 @@ public class MainActivity extends Activity {
                         // stall), at most once every 5 s so a down tunnel is not hammered.
                         long sinceFrame = st.lastProgressMs != 0 ? nowMs - st.lastProgressMs : nowMs - st.lastStart;
                         boolean stuck = sinceFrame > 8000;
-                        if ((p.getPlaybackState() == Player.STATE_IDLE || stuck) && !released.contains(p)
+                        if (foreground && (p.getPlaybackState() == Player.STATE_IDLE || stuck) && !released.contains(p)
                                 && nowMs - st.lastStart > 5000) {
                             start(p, st);
                             continue;
@@ -461,18 +461,24 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    private boolean foreground = true;
+
     @Override protected void onPause() {
         super.onPause();
+        foreground = false; // the loop must not re-open the videos while we are in the background
         gl.onPause(); // pause the GL thread (the surfaces survive, see setPreserveEGLContextOnPause)
         // stop pulling video while in the background: the NVR frees the stream, and the
         // decoder does not block on a frame no one is drawing. The players fall to IDLE;
         // the once-a-second loop re-opens them when the app comes back to the front.
+        // (Some phones, e.g. Samsung, keep the app's threads running in the background,
+        // so without the foreground flag the loop would restart the video right away.)
         for (Integer ch : new ArrayList<>(opening.keySet())) dropOpening(ch);
         for (ExoPlayer p : players) p.stop();
     }
 
     @Override protected void onResume() {
         super.onResume();
+        foreground = true;
         gl.onResume();
     }
 
