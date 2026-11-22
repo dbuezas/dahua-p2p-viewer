@@ -74,6 +74,19 @@ func (s *stream) rtspURL(sub int) string {
 }
 
 // open starts the video with the current HD / panorama choice (sub 0 = HD, 1 = the small stream).
+// wantSub is the sub stream the current choice (HD/SD, panorama with or without
+// the phone's mesh) needs, worked out without opening anything: the same rule open()
+// uses. It lets a switch in progress check what the user wants now, not when it started.
+func (s *stream) wantSub() int {
+	s.mu.Lock()
+	hd, pano, haveMesh, split := s.hd, s.pano, s.mesh != nil, s.split
+	s.mu.Unlock()
+	if hd && !(split && pano && !haveMesh) {
+		return 0
+	}
+	return 1
+}
+
 func (s *stream) open(slow bool) (*video.Decoder, int, error) {
 	s.mu.Lock()
 	hd, pano, haveMesh := s.hd, s.pano, s.mesh != nil
@@ -169,7 +182,16 @@ func (s *stream) run() {
 		for {
 			select {
 			case <-s.swapReq:
-				if !opening && nd == nil {
+				if s.wantSub() == sub {
+					// back to the stream already playing: cancel the switch and keep it,
+					// instead of waiting for the new one. Any video still opening is
+					// dropped when it reports in on `opened`.
+					if nd != nil {
+						nd.Close()
+						nd, nframes, side, sideStart = nil, nil, nil, time.Time{}
+					}
+					s.setSwitching(false)
+				} else if !opening && nd == nil {
 					opening, oldLast, oldGap = true, time.Now(), 0
 					s.setSwitching(true)
 					go func() {
@@ -197,9 +219,17 @@ func (s *stream) run() {
 					s.setSwitching(false)
 					break frames
 				}
-				if o.sub == sub { // same video as now (e.g. a panorama without the phone's mesh stays small)
+				want := s.wantSub()
+				if want == sub { // the user is back on the stream already playing (or it is the
+					// same video, e.g. a panorama without the phone's mesh): drop the new one, stay
 					o.d.Close()
 					s.setSwitching(false)
+					continue
+				}
+				if o.sub != want { // the user changed again while this opened: open the right one
+					o.d.Close()
+					s.setSwitching(false)
+					s.switchTo()
 					continue
 				}
 				nd, nsub, nframes, side, sideStart = o.d, o.sub, o.d.Frames, nil, time.Time{}
