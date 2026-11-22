@@ -72,6 +72,7 @@ func newInner(serial string) (*tunnel, error) {
 		events:   make(chan event, 256),
 		stop:     make(chan struct{}),
 		lastRx:   time.Now().UnixNano(),
+		lastAny:  time.Now().UnixNano(),
 		channels: map[uint32]chan []byte{},
 		conns:    map[uint32]chan bool{},
 	}
@@ -92,6 +93,9 @@ func (tn *Tunnel) cur() *tunnel {
 func (tn *Tunnel) watchdog() {
 	tk := time.NewTicker(time.Second)
 	defer tk.Stop()
+	// when the current session started: a fresh session (CONN alone can take 8 s,
+	// then the RTSP setup of every camera) needs time before we judge it stuck.
+	sessionStart := time.Now()
 	for range tk.C {
 		tn.mu.Lock()
 		if tn.closed {
@@ -100,14 +104,33 @@ func (tn *Tunnel) watchdog() {
 		}
 		t := tn.t
 		tn.mu.Unlock()
-		silent := time.Since(time.Unix(0, atomic.LoadInt64(&t.lastRx)))
-		// one rule: the video must move on. No in-order data for 5 s (silence, a
-		// hole never refilled, only copies, a CONN never answered) = new session.
-		if silent < 5*time.Second {
+		now := time.Now()
+		sinceVideo := now.Sub(time.Unix(0, atomic.LoadInt64(&t.lastRx)))
+		sinceAny := now.Sub(time.Unix(0, atomic.LoadInt64(&t.lastAny)))
+		hole := t.sess.holeAge()
+		establishing := now.Sub(sessionStart) < 15*time.Second
+
+		// Only replace the whole session when it is really broken, not on a normal
+		// video pause. Replacing churns every camera at once and, done too often,
+		// makes the NVR demand P2P auth (which we cannot do) and drop us to the slow
+		// relay, so a trigger-happy rule spirals into "nothing ever connects".
+		//   - dead: no packet of ANY kind for 15 s (or the NVR reset us) = dead link.
+		//   - stuckHole: a gap in the stream the device never refills in 12 s = stuck.
+		//   - longNoVideo: no video for 30 s even while the link still answers = give up.
+		// The soft reasons wait out the startup grace; a dead link does not.
+		dead := sinceAny >= 15*time.Second
+		stuckHole := hole >= 12*time.Second && sinceVideo >= 12*time.Second
+		longNoVideo := sinceVideo >= 30*time.Second
+		if !(dead || (!establishing && (stuckHole || longNoVideo))) {
 			continue
 		}
-		fmt.Printf("tunel: sesion trabada (%v sin avanzar, hueco %v): abro otra\n",
-			silent.Round(100*time.Millisecond), t.sess.holeAge().Round(100*time.Millisecond))
+		reason := "sin video 30s"
+		if dead {
+			reason = fmt.Sprintf("enlace muerto %v sin un solo paquete", sinceAny.Round(100*time.Millisecond))
+		} else if stuckHole {
+			reason = fmt.Sprintf("hueco sin rellenar %v", hole.Round(100*time.Millisecond))
+		}
+		fmt.Printf("tunel: sesion trabada (%s): abro otra\n", reason)
 		// end the old session first, like the DLL: the NVR keeps one direct
 		// session per client, so the new one can only go direct once it is gone
 		t.goodbye()
@@ -130,6 +153,7 @@ func (tn *Tunnel) watchdog() {
 		tn.t = nt
 		closed := tn.closed
 		tn.mu.Unlock()
+		sessionStart = time.Now() // give the fresh session its startup grace
 		if closed {
 			nt.shutdown()
 			return
@@ -669,8 +693,9 @@ type tunnel struct {
 	sock   *udp
 	sess   *session
 	events chan event
-	stop   chan struct{}
-	lastRx int64 // unixnano of the last in-order packet from the device (atomic)
+	stop    chan struct{}
+	lastRx  int64 // unixnano of the last in-order VIDEO packet from the device (atomic)
+	lastAny int64 // unixnano of the last packet of any kind from the device (atomic)
 
 	sendMu sync.Mutex // serializes build+send so packets leave in sequence order
 
@@ -796,9 +821,14 @@ func (t *tunnel) readerLoop() {
 			continue
 		}
 		logPkt("<<<R", buf[:n])
+		// a valid packet of any kind: the link is alive (ACKs, keepalives, copies
+		// and video). The watchdog uses this to tell "link dead" from "video paused".
+		atomic.StoreInt64(&t.lastAny, time.Now().UnixNano())
 		if pkt.flags&flagReset != 0 {
 			fmt.Println("tunel: el NVR cerro la sesion (reset)")
-			atomic.StoreInt64(&t.lastRx, 0) // the watchdog opens a new one
+			// the NVR closed us on purpose: force the watchdog to reconnect now
+			atomic.StoreInt64(&t.lastRx, 0)
+			atomic.StoreInt64(&t.lastAny, 0)
 			continue
 		}
 		t.sendRaw(t.sess.resends(pkt)) // the device's ACK / hole list for what we sent
