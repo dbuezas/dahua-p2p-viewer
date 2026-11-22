@@ -11,6 +11,8 @@ button:disabled{opacity:.35}
 .cam{position:absolute;background:#000;overflow:hidden;border:2px solid transparent;box-sizing:border-box}
 .cam.big{border-color:#fc0;z-index:2}
 .cam img{width:100%;height:100%;object-fit:contain;display:block;background:#000;touch-action:none;-webkit-user-drag:none;user-select:none}
+/* a whole camera fills its square like the TV does (drawTile stretches it, no black bars); a half or the panorama keeps its shape (contain) */
+.cam.fill img{object-fit:fill}
 .cam.target{border-color:#4af;z-index:3}.cam.drag{opacity:.5}
 .cam.mini .row{display:none}
 #ghost{position:fixed;width:140px;pointer-events:none;opacity:.8;border-radius:6px;display:none;z-index:9}
@@ -90,6 +92,7 @@ function draw(s){st=s;var g=document.getElementById('grid');
    d.classList.toggle('mini',c.h<0.2*s.sh)}});
  // each card: its number, HD, and for the two-lens camera: Unir (on the first half) or Separar + Calibrar (joined)
  s.cams.forEach(function(c,i){var d=g.children[i],kind=/\.3$/.test(c.k)?'pano':/\.[12]$/.test(c.k)?'half':'cam';
+  d.classList.toggle('fill',kind=='cam'); // whole camera fills the square like the TV; half/pano keep their shape
   if(d.dataset.kind!=kind||d.dataset.n!=i){d.dataset.kind=kind;d.dataset.n=i;
    var b='<span>'+(kind=='pano'?(i+1)+' + '+(i+2):i+1)+'</span><span class=btns>';
    if(kind=='half'&&/\.1$/.test(c.k))b+='<button data-pano=3>Unir</button>';
