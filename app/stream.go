@@ -147,6 +147,10 @@ func (s *stream) run() {
 		saveN := 0
 		// HD on / off (s.switchTo): the new video opens next to the old one, which keeps playing; the new one's
 		// frames wait apart until they fill a cushion, then it takes the old one's place (no stop on screen)
+		type openResult struct {
+			d   *video.Decoder
+			sub int
+		}
 		var nd *video.Decoder
 		var nsub int
 		var nframes chan *video.Frame
@@ -154,10 +158,7 @@ func (s *stream) run() {
 		var sideStart time.Time
 		var oldLast time.Time    // the old video's last frame while the new one opens
 		var oldGap time.Duration // its longest wait meanwhile (does opening the new one hold the old one back?)
-		opened := make(chan struct {
-			d   *video.Decoder
-			sub int
-		}, 1)
+		opened := make(chan openResult, 1)
 		opening := false
 		take := func() { // the new video replaces the old one
 			d.Close()
@@ -178,61 +179,65 @@ func (s *stream) run() {
 			side = nil
 			s.setSwitching(false)
 		}
+		// startOpen opens the wanted stream in the background and reports it on `opened`.
+		startOpen := func() {
+			opening, oldLast, oldGap = true, time.Now(), 0
+			s.setSwitching(true)
+			go func() {
+				for tries := 0; tries < 3; tries++ {
+					x, xs, err := s.open(true)
+					if err == nil {
+						opened <- openResult{x, xs}
+						return
+					}
+					log.Printf("canal %d: cambio de video: %v", s.ch, err)
+					time.Sleep(time.Second)
+				}
+				opened <- openResult{nil, 0}
+			}()
+		}
+		// dropNew abandons the new stream being opened/buffered toward.
+		dropNew := func() {
+			if nd != nil {
+				nd.Close()
+				nd, nframes, side, sideStart = nil, nil, nil, time.Time{}
+			}
+		}
+		// reconcile is the single source of truth for switching: it drives the stream
+		// toward wantSub(). Called on a switch request and after an open finishes; it never
+		// touches the frame pumping. It cannot abort a goroutine already opening, so that
+		// stream is checked against wantSub() again when it reports in on `opened`.
+		reconcile := func() {
+			want := s.wantSub()
+			if want == sub { // desired == what is playing: no switch, cancel any in flight
+				dropNew()
+				s.setSwitching(false)
+				return
+			}
+			if nd != nil && nsub != want { // a new stream is buffering but to the wrong one
+				dropNew()
+			}
+			if nd == nil && !opening { // nothing heading to `want`: start opening it
+				startOpen()
+			}
+		}
 	frames:
 		for {
 			select {
 			case <-s.swapReq:
-				if s.wantSub() == sub {
-					// back to the stream already playing: cancel the switch and keep it,
-					// instead of waiting for the new one. Any video still opening is
-					// dropped when it reports in on `opened`.
-					if nd != nil {
-						nd.Close()
-						nd, nframes, side, sideStart = nil, nil, nil, time.Time{}
-					}
-					s.setSwitching(false)
-				} else if !opening && nd == nil {
-					opening, oldLast, oldGap = true, time.Now(), 0
-					s.setSwitching(true)
-					go func() {
-						for tries := 0; tries < 3; tries++ {
-							if x, xs, err := s.open(true); err == nil {
-								opened <- struct {
-									d   *video.Decoder
-									sub int
-								}{x, xs}
-								return
-							} else {
-								log.Printf("canal %d: cambio de video: %v", s.ch, err)
-							}
-							time.Sleep(time.Second)
-						}
-						opened <- struct {
-							d   *video.Decoder
-							sub int
-						}{nil, 0}
-					}()
-				}
+				reconcile()
 			case o := <-opened:
 				opening = false
-				if o.d == nil { // the new one does not open: the old way (stop and open again)
+				if o.d == nil { // could not open after retries: fall back to stop-and-reopen
 					s.setSwitching(false)
 					break frames
 				}
-				want := s.wantSub()
-				if want == sub { // the user is back on the stream already playing (or it is the
-					// same video, e.g. a panorama without the phone's mesh): drop the new one, stay
+				if o.sub == s.wantSub() && o.sub != sub { // what we want now: buffer it to take over
+					nd, nsub, nframes, side, sideStart = o.d, o.sub, o.d.Frames, nil, time.Time{}
+				} else { // not wanted any more (back on current, or changed again): drop it, reconcile
 					o.d.Close()
-					s.setSwitching(false)
-					continue
+					reconcile()
 				}
-				if o.sub != want { // the user changed again while this opened: open the right one
-					o.d.Close()
-					s.setSwitching(false)
-					s.switchTo()
-					continue
-				}
-				nd, nsub, nframes, side, sideStart = o.d, o.sub, o.d.Frames, nil, time.Time{}
 			case f, ok := <-nframes:
 				if !ok { // the new one ended before taking over: forget it
 					nd, nframes = nil, nil
