@@ -1,8 +1,9 @@
 <!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Camaras</title><style>
 body{margin:0;background:#111;color:#eee;font-family:sans-serif}
-header{position:sticky;top:0;background:#111;padding:10px;display:flex;gap:10px;align-items:center;z-index:1}
-h1{font-size:18px;margin:0;flex:1}
+#net{position:fixed;top:6px;left:50%;transform:translateX(-50%);background:#000c;color:#fc0;padding:4px 12px;border-radius:8px;z-index:50;font-size:14px}
+#net:empty{display:none}
+#msg:empty{display:none}
 button{font-size:16px;padding:10px 14px;border:0;border-radius:8px;background:#333;color:#eee}
 button:disabled{opacity:.35}
 /* the remote shows the same layout the TV shows: a box with the TV's shape, each
@@ -42,7 +43,7 @@ body.off #off{display:block}
 </style></head><body class=off>
 <div id=off>Conectando con la tele...</div>
 <div id=foto><div id=fotobar><span id=fotomsg></span><button id=fotoab>Ver original</button><button id=fotox>Cerrar</button></div><canvas id=fotocv></canvas><canvas id=fotoorig></canvas></div>
-<header><h1>Camaras</h1><span id=net></span></header>
+<span id=net></span>
 <div id=cal style='display:none;position:fixed;inset:0;background:#000;z-index:20;overflow:auto;padding:10px'>
  <div style='display:flex;align-items:center;gap:8px'><b style='flex:1'>Calibrar panoramica (dos camaras a 9 cm)</b><button id=calx>Cerrar</button></div>
  <p id=calt style='margin:8px 0;min-height:2.6em'></p><div style='height:6px;background:#333;border-radius:3px'><div id=calp style='height:6px;width:0;background:#fc0;border-radius:3px'></div></div>
@@ -51,7 +52,6 @@ body.off #off{display:block}
  <div id=calhand style='display:none;margin:10px 0'><button id=calfine style='width:100%;background:#fc0;color:#000;font-weight:bold'>Listo, afinar</button></div>
  <div style='display:flex;gap:10px'><button id=calgo disabled style='flex:1;background:#fc0;color:#000;font-weight:bold'>Usar en la tele</button><button id=calre style='flex:1'>Calcular de nuevo</button><button id=calmix style='flex:1;display:none'>Ver superpuestas</button></div>
 </div>
-<p class=tip>Tocar una camara: grande / todas. Arrastrarla sobre otra: cambian de lugar.</p>
 <p class=tip id=msg style='color:#fc0'></p>
 <div id=grid></div><img id=ghost>
 <div id=ptz><div id=pad><div id=knob></div></div><div id=zoom><button id=zin>+</button><button id=zout>&minus;</button></div></div>
@@ -92,10 +92,19 @@ function draw(s){st=s;var g=document.getElementById('grid');
  s.cams.forEach(function(c,i){if(c.w&&(!showBig||i==s.big)){bx=Math.min(bx,c.x);by=Math.min(by,c.y);bX=Math.max(bX,c.x+c.w);bY=Math.max(bY,c.y+c.h)}});
  var bw=bX-bx,bh=bY-by;
  if(bw>0&&bh>0)g.style.aspectRatio=bw+'/'+bh;
- // all cameras: make the grid fill the phone's height (object-fit:cover crops a little) so
- // the tiles and their buttons are not tiny; a big camera keeps its natural height, to
- // leave room for the PTZ and zoom controls below
- g.style.height=showBig?'':Math.max(0,window.innerHeight-g.offsetTop-70)+'px';
+ // show only the controls of the current mode, so we can reserve exactly their height:
+ // the PTZ + zoom + IA button for a big camera; the share/QR box when showing all
+ var bigc=showBig?s.cams[s.big]:null;
+ document.getElementById('ptz').style.display=bigc?'flex':'none';
+ document.getElementById('iarow').style.display=bigc?'block':'none';
+ document.getElementById('share').style.display=showBig?'none':'';
+ // size the grid to the height left below it, so the page never scrolls; grow the all-cameras
+ // grid up to 1.8x its no-crop height (object-fit:cover crops a little) so tiles and buttons
+ // are not tiny, but a big camera is never stretched past its natural height
+ var naturalH=bw>0?g.clientWidth*bh/bw:0,below=0;
+ for(var el=g.nextElementSibling;el;el=el.nextElementSibling){var cs=getComputedStyle(el);if(cs.display!='none'&&cs.position!='fixed')below+=el.getBoundingClientRect().height}
+ var avail=Math.max(0,window.innerHeight-g.offsetTop-below-6),cap=showBig?naturalH:naturalH*1.8;
+ g.style.height=naturalH?Math.min(avail,cap)+'px':'';
  s.cams.forEach(function(c,i){var d=g.children[i];
   d.style.display=(showBig&&i!=s.big)?'none':'';
   d.classList.toggle('big',i==s.big);
@@ -111,7 +120,7 @@ function draw(s){st=s;var g=document.getElementById('grid');
   d.querySelector('.hd').classList.toggle('on',c.hd);d.querySelector('.hd').classList.toggle('load',!!c.load)});
  document.getElementById('msg').textContent=s.msg||'';
  var sb=document.getElementById('sharebtn');sb.classList.toggle('on',!!s.share);sb.textContent=s.share?'Ocultar el QR de la tele':'Mostrar en la tele el QR de configuracion';
- var c=s.cams[s.big];document.getElementById('ptz').style.display=c?'flex':'none';document.getElementById('iarow').style.display=c?'block':'none';pruebasDraw(s);fotoState(s)}
+ pruebasDraw(s);fotoState(s)}
 // Joystick pad: the knob follows the finger; direction and distance from the center = direction and speed.
 var pad=document.getElementById('pad'),knob=document.getElementById('knob'),padOn=false,lastSend=0;
 function padMove(e){var r=pad.getBoundingClientRect(),dx=e.clientX-r.left-r.width/2,dy=e.clientY-r.top-r.height/2,m=Math.hypot(dx,dy),max=r.width/2-30;
