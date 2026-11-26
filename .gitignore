@@ -13,7 +13,6 @@ video/vtest/vtest
 /camaras-ui.exe
 go.work.sum
 # my local notes and third-party reference code (not mine to publish)
-/ref/
 /PLAN.md
 /bench.sh
 dist/
